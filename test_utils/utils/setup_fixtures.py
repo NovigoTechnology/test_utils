@@ -423,14 +423,18 @@ def create_quarantine_warehouse(
 			a.company = settings.company
 			a.root_type = "Asset"
 			a.report_type = "Balance Sheet"
-			a.account_currency = frappe.get_value("Company", settings.company, "default_currency")
+			a.account_currency = frappe.get_value(
+				"Company", settings.company, "default_currency"
+			)
 			a.parent_account = parent_account
 			a.account_type = "Stock"
 			a.save()
 			account_name = a.name
 
 	if not parent_wh:
-		parent_wh = frappe.get_value("Warehouse", {"company": settings.company, "is_group": 1})
+		parent_wh = frappe.get_value(
+			"Warehouse", {"company": settings.company, "is_group": 1}
+		)
 
 	wh_type = "Quarantine"
 	if not frappe.db.exists("Warehouse Type", wh_type):
