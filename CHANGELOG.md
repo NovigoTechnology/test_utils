@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.1.1 (2024-08-26)
+
+### Fix
+
+* fix: copyright ([`9624a87`](https://github.com/earona/test_utils/commit/9624a87cb4eaaa7111b63c71acf92ec3760b0c7a))
+
 ## v0.1.0 (2024-08-26)
 
 ### Chore
