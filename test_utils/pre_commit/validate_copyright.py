@@ -8,13 +8,15 @@ from typing import Sequence
 
 import tomli
 
+
 def get_dependencies():
 	apps_dir = pathlib.Path().resolve()
 	if pathlib.Path.exists(apps_dir / "pyproject.toml"):
-		with open(apps_dir  / "pyproject.toml", "rb") as f:
+		with open(apps_dir / "pyproject.toml", "rb") as f:
 			return tomli.load(f)
 
-def validate_copyright( files):
+
+def validate_copyright(files):
 
 	year = datetime.datetime.now().year
 	app_publisher = ""
@@ -42,7 +44,7 @@ def validate_copyright( files):
 		elif file.endswith(".py"):
 			validate_and_write_file(file, initial_py_string, copyright_py_string)
 
-		elif file.endswith(".md")  or file.endswith(".html"):
+		elif file.endswith(".md") or file.endswith(".html"):
 			validate_and_write_file(file, initial_md_string, copyright_md_string)
 
 
@@ -59,7 +61,7 @@ def validate_and_write_file(file, initial_string, copyright_string):
 			# Replace the original file with the temp file
 			os.replace(temp_file_path, file)
 		else:
-			#license.txt
+			# license.txt
 			dos_line = original_file.readline()
 			if not "license.txt" in dos_line:
 				temp_file.write(copyright_string)
@@ -68,7 +70,7 @@ def validate_and_write_file(file, initial_string, copyright_string):
 				temp_file.write(copyright_string)
 
 			temp_file.writelines(original_file)
-  			 # Replace the original file with the temp file
+			# Replace the original file with the temp file
 			os.replace(temp_file_path, file)
 
 
@@ -76,7 +78,6 @@ def main(argv: Sequence[str] = None):
 	parser = argparse.ArgumentParser()
 	parser.add_argument("filenames", nargs="*")
 	args = parser.parse_args(argv)
-
 
 	files = args.filenames
 	if files:
