@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## v0.1.2 (2024-08-27)
+
+### Chore
+
+* chore: pre-commint ([`f0e3ff5`](https://github.com/earona/test_utils/commit/f0e3ff5cf1757a68d67567973ffa003d4b20af0f))
+
+### Fix
+
+* fix: python version ([`db5c934`](https://github.com/earona/test_utils/commit/db5c934f7618c657820f886b9c30e07ecf6cdcdb))
+
 ## v0.1.1 (2024-08-26)
 
 ### Fix
