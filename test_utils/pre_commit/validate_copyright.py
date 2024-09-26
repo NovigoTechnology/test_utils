@@ -1,6 +1,6 @@
 import argparse
 import datetime
-import os
+import shutil
 import pathlib
 import sys
 import tempfile
@@ -59,7 +59,7 @@ def validate_and_write_file(file, initial_string, copyright_string):
 			temp_file.writelines(original_file)
 
 			# Replace the original file with the temp file
-			os.replace(temp_file_path, file)
+			shutil.move(temp_file_path, file)
 		else:
 			# license.txt
 			dos_line = original_file.readline()
@@ -71,7 +71,7 @@ def validate_and_write_file(file, initial_string, copyright_string):
 
 			temp_file.writelines(original_file)
 			# Replace the original file with the temp file
-			os.replace(temp_file_path, file)
+			shutil.move(temp_file_path, file)
 
 
 def main(argv: Sequence[str] = None):
