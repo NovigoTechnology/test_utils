@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.1.4 (2024-09-26)
+
+### Fix
+
+* fix: pyproject.toml ([`fa4e5cd`](https://github.com/earona/test_utils/commit/fa4e5cd53ac2b605286b7351c540cdd57bce983a))
+
 ## v0.1.3 (2024-09-26)
 
 ### Fix
