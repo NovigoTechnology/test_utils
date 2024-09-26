@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.1.3 (2024-09-26)
+
+### Fix
+
+* fix: validate_copyright.py ([`e48dc2e`](https://github.com/earona/test_utils/commit/e48dc2eb94669e52334d4b02626cc6cab4f90204))
+
 ## v0.1.2 (2024-08-27)
 
 ### Chore
