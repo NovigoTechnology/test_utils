@@ -58,6 +58,9 @@ def validate_and_write_file(file, initial_string, copyright_string):
 			temp_file.write(first_line)
 			temp_file.writelines(original_file)
 
+			# If file is not closed, terrible things happen
+			temp_file.close()
+
 			# Replace the original file with the temp file
 			shutil.move(temp_file_path, file)
 		else:
@@ -70,6 +73,10 @@ def validate_and_write_file(file, initial_string, copyright_string):
 				temp_file.write(copyright_string)
 
 			temp_file.writelines(original_file)
+
+			# If file is not closed, terrible things happen
+			temp_file.close()
+
 			# Replace the original file with the temp file
 			shutil.move(temp_file_path, file)
 
