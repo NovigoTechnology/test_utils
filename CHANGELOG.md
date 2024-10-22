@@ -1,6 +1,25 @@
 # CHANGELOG
 
 
+## v0.1.6 (2024-10-22)
+
+### Bug Fixes
+
+* fix: Added .close() call for temp_file ([`8fc1cdc`](https://github.com/NovigoTechnology/test_utils/commit/8fc1cdce1ca7e17482629576e325128eaad1d297))
+
+### Chores
+
+* chore: Merge with nvg-develop ([`7c5486c`](https://github.com/NovigoTechnology/test_utils/commit/7c5486c3d74c28825092dc00eb2fc6d25da365a4))
+
+* chore: Added env dir ignore ([`ed1789f`](https://github.com/NovigoTechnology/test_utils/commit/ed1789f632a3a4c39f80c4af7bf680c1eb6e952d))
+
+### Unknown
+
+* Merge pull request #1 from NovigoTechnology/fix/random-writing-on-files
+
+fix: fix/random writing on files ([`33943d4`](https://github.com/NovigoTechnology/test_utils/commit/33943d415f6e07c79eb8ac0d3152a67c43ff977c))
+
+
 ## v0.1.5 (2024-10-22)
 
 ### Bug Fixes
