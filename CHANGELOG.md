@@ -159,7 +159,7 @@ Co-authored-by: Rohan Bansal <rohan@agritheory.dev> ([`934c926`](https://github.
 
 * refactor: fix spelling, add error string
 
-* refactor: check value exists for invalid accout links
+* refactor: check value exists for invalid account links
 
 * fix: duplicate account numbers
 
@@ -279,11 +279,11 @@ Co-authored-by: Rohan Bansal <rohan@agritheory.dev> ([`01cacc5`](https://github.
 
 * feat: added customize.py
 
-* format: formate customize.py with black
+* format: format customize.py with black
 
 * fix: compute hash for concatenated data for standard and custom json
 
-* wip: restruacture
+* wip: restructure
 
 ---------
 
