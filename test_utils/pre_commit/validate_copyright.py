@@ -32,10 +32,12 @@ def validate_copyright(files):
 	initial_js_string = "// Copyright (c) "
 	initial_py_string = "# Copyright (c) "
 	initial_md_string = "<!-- Copyright (c) "
+	initial_sql_string = "-- Copyright (c) "
 
-	copyright_js_string = f"// Copyright (c) {year}, {app_publisher} and contributors\n// For license information, please see license.txt\n"
-	copyright_py_string = f"# Copyright (c) {year}, {app_publisher} and contributors\n# For license information, please see license.txt\n"
-	copyright_md_string = f"<!-- Copyright (c) {year}, {app_publisher} and contributors\nFor license information, please see license.txt-->\n"
+	copyright_js_string = f"// Copyright (c) {year}, {app_publisher} and contributors\n// For license information, please see license.txt\n\n"
+	copyright_py_string = f"# Copyright (c) {year}, {app_publisher} and contributors\n# For license information, please see license.txt\n\n"
+	copyright_md_string = f"<!-- Copyright (c) {year}, {app_publisher} and contributors\nFor license information, please see license.txt-->\n\n"
+	copyright_sql_string = f"-- Copyright (c) {year}, {app_publisher} and contributors\n-- For license information, please see license.txt\n\n"
 
 	for file in files:
 		if file.endswith(".js") or file.endswith(".ts"):
@@ -46,6 +48,9 @@ def validate_copyright(files):
 
 		elif file.endswith(".md") or file.endswith(".html"):
 			validate_and_write_file(file, initial_md_string, copyright_md_string)
+
+		elif file.endswith(".sql"):
+			validate_and_write_file(file, initial_sql_string, copyright_sql_string)
 
 
 def validate_and_write_file(file, initial_string, copyright_string):
@@ -91,6 +96,10 @@ def main(argv: Sequence[str] | None = None):
 		validate_copyright(files)
 
 	sys.exit(0)
+
+
+if __name__ == "__main__":
+	main()
 
 
 if __name__ == "__main__":
