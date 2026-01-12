@@ -1682,9 +1682,6 @@ def create_partition_phase2(
 	- Populates posting_date in all child tables from their parent tables
 	- Uses chunked updates for progress tracking
 	- Can be resumed if interrupted
-
-	WARNING: This can take 24-48+ hours for tables with millions of rows
-	Safe to run on production but monitor performance
 	"""
 	from frappe.utils import get_table_name
 
@@ -1758,9 +1755,6 @@ def create_partition_phase3(
 	- Modifies primary keys to include posting_date/transaction_date
 	- Applies RANGE partitioning to tables
 	- Uses Percona if enabled for large tables
-
-	WARNING: This modifies table structure and can take hours
-	Requires table locks - schedule during maintenance window
 	"""
 	from frappe.utils import get_table_name
 
@@ -1856,7 +1850,6 @@ def create_partition_phase3(
 def get_phase_status(doc=None):
 	"""
 	Check the status of each phase for doctypes
-
 	Returns a report showing which phases are complete for each doctype
 	"""
 	from frappe.utils import get_table_name
