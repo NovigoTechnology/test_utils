@@ -44,9 +44,11 @@ requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 requests = "^2.32.3"
 sqlglot = "^25.33.0"
+asttokens = ">=2.4.0"
+astpath = {extras = ["xpath"], version = "^0.9.1"}
 
 [tool.codespell]
-skip = "CHANGELOG.md"
+skip = "CHANGELOG.md, poetry.lock"
 
 [tool.ruff]
 line-length = 110
