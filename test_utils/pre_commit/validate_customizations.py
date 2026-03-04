@@ -4,7 +4,7 @@ import json
 import pathlib
 import sys
 import types
-from typing import Sequence
+from collections.abc import Sequence
 
 
 def scrub(txt: str) -> str:
@@ -30,9 +30,7 @@ def get_customized_doctypes():
 		for module in modules:
 			if not (app_dir / _app_dir / scrub(module) / "custom").exists():
 				continue
-			for custom_file in list(
-				(app_dir / _app_dir / scrub(module) / "custom").glob("**/*.json")
-			):
+			for custom_file in list((app_dir / _app_dir / scrub(module) / "custom").glob("**/*.json")):
 				if custom_file.stem in customized_doctypes:
 					customized_doctypes[custom_file.stem].append(custom_file.resolve())
 				else:
@@ -66,9 +64,9 @@ def validate_module(customized_doctypes):
 		modules = []
 	else:
 		modules = (app_dir / this_app / "modules.txt").read_text().split("\n")
-	for doctype, customize_files in customized_doctypes.items():
+	for _doctype, customize_files in customized_doctypes.items():
 		for customize_file in customize_files:
-			if not this_app in str(customize_file):
+			if this_app not in str(customize_file):
 				continue
 			file_contents = json.loads(customize_file.read_text())
 			if file_contents.get("custom_fields"):
@@ -102,15 +100,13 @@ def validate_module(customized_doctypes):
 def validate_no_custom_perms(customized_doctypes):
 	exceptions = []
 	this_app = pathlib.Path().resolve().stem
-	for doctype, customize_files in customized_doctypes.items():
+	for _doctype, customize_files in customized_doctypes.items():
 		for customize_file in customize_files:
-			if not this_app in str(customize_file):
+			if this_app not in str(customize_file):
 				continue
 			file_contents = json.loads(customize_file.read_text())
 			if file_contents.get("custom_perms"):
-				exceptions.append(
-					f"Customization for {doctype} in {this_app} contains custom permissions"
-				)
+				exceptions.append(f"Customization for {_doctype} in {this_app} contains custom permissions")
 	return exceptions
 
 
@@ -128,11 +124,9 @@ def validate_duplicate_customizations(customized_doctypes):
 		for customize_file in customize_files:
 			if isinstance(customize_file, dict):
 				module = "hrms"
-				app = "hrms"
 				file_contents = customize_file
 			else:
 				module = customize_file.parent.parent.stem
-				app = customize_file.parent.parent.parent.parent.stem
 				file_contents = json.loads(customize_file.read_text())
 			if file_contents.get("custom_fields"):
 				fields = [cf.get("fieldname") for cf in file_contents.get("custom_fields")]
@@ -169,12 +163,12 @@ def validate_duplicate_customizations(customized_doctypes):
 def validate_system_generated(customized_doctypes):
 	exceptions = []
 	this_app = pathlib.Path().resolve().stem
-	for doctype, customize_files in customized_doctypes.items():
+	for _doctype, customize_files in customized_doctypes.items():
 		for customize_file in customize_files:
 			# checking if customize_file is a dict, as for hrms it returns a dict of custom_fields
 			if isinstance(customize_file, dict):
 				continue
-			if not this_app in str(customize_file):
+			if this_app not in str(customize_file):
 				continue
 			file_contents = json.loads(customize_file.read_text())
 			if file_contents.get("custom_fields"):
@@ -215,17 +209,17 @@ def validate_customizations_on_own_doctypes(customized_doctypes):
 				if name:
 					own_doctypes[name] = (module, doctype_definition)
 
-	for doctype, customize_files in customized_doctypes.items():
+	for _doctype, customize_files in customized_doctypes.items():
 		for customize_file in customize_files:
 			# checking if customize_file is a dict, as for hrms it returns a dict of custom_fields
 			if isinstance(customize_file, dict):
 				continue
-			if not this_app in str(customize_file):
+			if this_app not in str(customize_file):
 				continue
 			file_contents = json.loads(customize_file.read_text())
 			if file_contents.get("doctype") in own_doctypes.keys():
 				exceptions.append(
-					f"Customizations for doctype defined in {own_doctypes[ file_contents.get('doctype')][0]} for {file_contents.get('doctype')} exist"
+					f"Customizations for doctype defined in {own_doctypes[file_contents.get('doctype')][0]} for {file_contents.get('doctype')} exist"
 				)
 	return exceptions
 
@@ -240,10 +234,10 @@ def validate_customizations():
 	return exceptions
 
 
-def main(argv: Sequence[str] = None):
+def main(argv: Sequence[str] | None = None):
 	parser = argparse.ArgumentParser()
 	parser.add_argument("filenames", nargs="*")
-	args = parser.parse_args(argv)
+	parser.parse_args(argv)
 
 	exceptions = validate_customizations()
 	if exceptions:

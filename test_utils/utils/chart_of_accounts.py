@@ -57,7 +57,11 @@ def setup_chart_of_accounts(company=None, chart_template="Standard with Numbers"
 		create_charts(company=company, custom_chart=custom_chart)
 
 		args = frappe._dict(
-			{"company_name": company, "bank_account": "Primary Checking", "set_default": 1}
+			{
+				"company_name": company,
+				"bank_account": "Primary Checking",
+				"set_default": 1,
+			}
 		)
 		create_bank_account(args)
 		set_default_accounts(
@@ -149,13 +153,16 @@ def create_electronic_payments_accounts(company=None):
 		based_on, coa, existing_co = frappe.get_value(
 			"Company",
 			coa_company,
-			["create_chart_of_accounts_based_on", "chart_of_accounts", "existing_company"],
+			[
+				"create_chart_of_accounts_based_on",
+				"chart_of_accounts",
+				"existing_company",
+			],
 		)
 		if based_on == "Standard Template":
 			break
 		coa_company = existing_co
 	with_numbers = "Numbers" in coa
-	company_abbr = frappe.get_value("Company", company, "abbr") or ""
 
 	rca = frappe.new_doc("Account")  # receivable clearing account
 	rca.account_name = "Electronic Payments Receivable"
@@ -172,9 +179,7 @@ def create_electronic_payments_accounts(company=None):
 	pca.account_name = "Electronic Payments Payable"
 	pca.account_number = "2130" if with_numbers else ""
 	pca.account_type = "Payable"
-	pca.parent_account = frappe.get_value(
-		"Account", {"name": ["like", "%Accounts Payable%"], "is_group": 1}
-	)
+	pca.parent_account = frappe.get_value("Account", {"name": ["like", "%Accounts Payable%"], "is_group": 1})
 	pca.currency = "USD"
 	pca.company = company
 	pca.save()
@@ -183,9 +188,7 @@ def create_electronic_payments_accounts(company=None):
 	fee.account_name = "Electronic Payments Provider Fees"
 	fee.account_number = "5223" if with_numbers else ""
 	# fee.account_type = ""
-	fee.parent_account = frappe.get_value(
-		"Account", {"name": ["like", "%Indirect Expenses%"], "is_group": 1}
-	)
+	fee.parent_account = frappe.get_value("Account", {"name": ["like", "%Indirect Expenses%"], "is_group": 1})
 	fee.currency = "USD"
 	fee.company = company
 	fee.save()
@@ -230,16 +233,20 @@ def find_invalid_account_links():
 			continue
 
 		try:
-			for doc in frappe.get_all(doctype, ["name"] + fieldnames):
+			for doc in frappe.get_all(doctype, ["name", *fieldnames]):
 				for fieldname in fieldnames:
 					if doc[fieldname] and not frappe.db.exists("Account", doc[fieldname]):
 						invalid_accounts.append(
-							frappe._dict({"dt": doctype, "dn": doc["name"], "fieldname": fieldname})
+							frappe._dict(
+								{
+									"dt": doctype,
+									"dn": doc["name"],
+									"fieldname": fieldname,
+								}
+							)
 						)
-		except Exception as e:  # Bank Clearance and QuickBooks Migrator doctypes throw missing table error
+		except Exception:  # Bank Clearance and QuickBooks Migrator doctypes throw missing table error
 			continue
-
-	return invalid_accounts
 
 
 def create_bank_and_bank_account(settings):
@@ -276,11 +283,18 @@ def create_bank_and_bank_account(settings):
 	opening_balance = 50000.00
 	doc.append(
 		"accounts",
-		{"account": settings.company_account, "debit_in_account_currency": opening_balance},
+		{
+			"account": settings.company_account,
+			"debit_in_account_currency": opening_balance,
+		},
 	)
 	retained_earnings = frappe.get_value(
 		"Account",
-		{"account_name": "Retained Earnings", "company": settings.company, "is_group": 0},
+		{
+			"account_name": "Retained Earnings",
+			"company": settings.company,
+			"is_group": 0,
+		},
 	)
 	doc.append(
 		"accounts",

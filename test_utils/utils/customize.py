@@ -111,9 +111,7 @@ def sync_hrms_customizations():
 
 def add_customization_hash(doctype, file):
 	module = get_doctype_module(doctype)
-	standard_json_file = frappe.get_module_path(
-		module, "doctype", doctype, f"{frappe.scrub(doctype)}.json"
-	)
+	standard_json_file = frappe.get_module_path(module, "doctype", doctype, f"{frappe.scrub(doctype)}.json")
 
 	with open(standard_json_file, "rb") as file1, open(file, "rb") as file2:
 		standard_file_data = file1.read()

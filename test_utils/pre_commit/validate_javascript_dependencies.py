@@ -2,7 +2,7 @@ import argparse
 import json
 import pathlib
 import sys
-from typing import Sequence
+from collections.abc import Sequence
 
 
 def get_package_json(app):
@@ -52,10 +52,10 @@ def get_mismatched_versions():
 	return exceptions
 
 
-def main(argv: Sequence[str] = None):
+def main(argv: Sequence[str] | None = None):
 	parser = argparse.ArgumentParser()
 	parser.add_argument("filenames", nargs="*")
-	args = parser.parse_args(argv)
+	parser.parse_args(argv)
 
 	exceptions = get_mismatched_versions()
 	if exceptions:

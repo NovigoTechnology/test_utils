@@ -1,10 +1,10 @@
 import argparse
 import datetime
-import shutil
 import pathlib
+import shutil
 import sys
 import tempfile
-from typing import Sequence
+from collections.abc import Sequence
 
 import tomli
 
@@ -66,7 +66,7 @@ def validate_and_write_file(file, initial_string, copyright_string):
 		else:
 			# license.txt
 			dos_line = original_file.readline()
-			if not "license.txt" in dos_line:
+			if "license.txt" not in dos_line:
 				temp_file.write(copyright_string)
 				temp_file.write(dos_line)
 			else:
@@ -81,7 +81,7 @@ def validate_and_write_file(file, initial_string, copyright_string):
 			shutil.move(temp_file_path, file)
 
 
-def main(argv: Sequence[str] = None):
+def main(argv: Sequence[str] | None = None):
 	parser = argparse.ArgumentParser()
 	parser.add_argument("filenames", nargs="*")
 	args = parser.parse_args(argv)

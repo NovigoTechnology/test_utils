@@ -6,7 +6,7 @@ import os
 import pathlib
 import sys
 import tempfile
-from typing import Sequence
+from collections.abc import Sequence
 
 from test_utils.pre_commit.validate_customizations import scrub
 
@@ -36,7 +36,7 @@ def get_customized_doctypes_to_clean(app):
 
 def validate_and_clean_customized_doctypes(customized_doctypes):
 	modified_files = []
-	for doctype, customize_files in customized_doctypes.items():
+	for _doctype, customize_files in customized_doctypes.items():
 		for customize_file in customize_files:
 			temp_file_path = tempfile.mktemp()
 			with open(customize_file) as f, open(temp_file_path, "w") as temp_file:
@@ -65,7 +65,7 @@ def validate_and_clean_customized_doctypes(customized_doctypes):
 	return modified_files
 
 
-def main(argv: Sequence[str] = None):
+def main(argv: Sequence[str] | None = None):
 	parser = argparse.ArgumentParser()
 	parser.add_argument("filenames", nargs="*")
 	parser.add_argument("--app", action="append", help="An argument for the hook")
