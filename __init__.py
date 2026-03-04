@@ -1,4 +1,9 @@
+from importlib.metadata import PackageNotFoundError, version
+
 from test_utils.utils.conftest import db_instance, monkeymodule
 from test_utils.utils.customize import add_customization_hash, load_customizations
 
-__version__ = "0.13.1"
+try:
+	__version__ = version("test_utils")
+except PackageNotFoundError:
+	__version__ = "unknown"
