@@ -3,3 +3,8 @@ __pycache__/
 
 # Python virtual environment
 env/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
