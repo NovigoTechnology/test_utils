@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "test_utils"
-version = "1.0.1"
+version = "1.0.2"
 description = "Novigo Technology Test Utilities and Fixtures"
 authors = ["Novigo Technology <earona@novigo.com.ar>"]
 readme = "README.md"
