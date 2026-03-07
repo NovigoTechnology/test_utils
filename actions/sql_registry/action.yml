@@ -1,53 +1,48 @@
-# .github/workflows/database-stability-tracking.yml
-
 name: SQL Registry
+description: Track and analyze SQL operations in Frappe applications
+author: NovigoTechnology
 
-on:
-  pull_request:
-    types: [opened, synchronize]
-    paths:
-      - '**/*.py'
-  push:
-    branches: [main, develop]
+inputs:
+  registry-file:
+    description: 'Path to SQL registry JSON file'
+    required: false
+    default: '.sql_registry.json'
+  output-report:
+    description: 'Path to generated report file'
+    required: false
+    default: 'sql_registry_report.md'
 
-jobs:
-  track-database-operations:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0  # Full history for comparison
-    
+runs:
+  using: composite
+  steps:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: '3.14'
     
     - name: Install dependencies
+      shell: bash
       run: |
         pip install sqlglot>=25.0.0
-        # Install your test_utils package
         pip install -e .
     
     - name: Load previous registry (if exists)
       id: load-registry
+      shell: bash
       run: |
-        if [ -f .sql_registry.json ]; then
+        if [ -f ${{ inputs.registry-file }} ]; then
           echo "registry_exists=true" >> $GITHUB_OUTPUT
         else
           echo "registry_exists=false" >> $GITHUB_OUTPUT
         fi
     
     - name: Scan for SQL calls
+      shell: bash
       run: |
-        python -m sql_registry scan --directory . --registry .sql_registry.json
+        python -m sql_registry scan --directory . --registry ${{ inputs.registry-file }}
         echo "SQL Registry scan completed"
     
     - name: Generate stability report
+      shell: bash
       run: |
-        python -m sql_registry report --registry .sql_registry.json --output sql_registry_report.md
+        python -m sql_registry report --registry ${{ inputs.registry-file }} --output ${{ inputs.output-report }}

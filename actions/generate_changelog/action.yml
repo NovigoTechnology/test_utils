@@ -1,6 +1,6 @@
 name: 'Changelog Generator'
 description: 'Analyzes PR changes and generates a draft changelog entry as a comment'
-author: 'agritheory'
+author: 'NovigoTechnology'
 
 inputs:
   github-token:
@@ -58,9 +58,9 @@ runs:
 
     - name: Set up Python
       if: ${{ steps.should-run.outputs.should_run == 'true' }}
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: '3.14'
 
     - name: Install dependencies
       if: ${{ steps.should-run.outputs.should_run == 'true' }}

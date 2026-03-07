@@ -17,9 +17,9 @@ Registry data is stored as **JSON** (`.sql_registry.json`), which is human-reada
 The `sql_registry` command is included with test_utils:
 
 ```bash
-pip install test_utils
+pip install "git+https://github.com/NovigoTechnology/test_utils.git@v1.0.2"
 # or
-poetry add test_utils
+poetry add "git+https://github.com/NovigoTechnology/test_utils.git@v1.0.2"
 ```
 
 ## CLI Commands
@@ -408,6 +408,56 @@ poetry run sql_registry rewrite abc12345 --apply
 ```
 
 The registry file (`.sql_registry.json`) is typically added to `.gitignore` since it's project-local scan data.
+
+## GitHub Actions Integration
+
+You can automate SQL registry scanning and reporting in your CI/CD pipeline using the provided GitHub Action.
+
+### Usage
+
+Add this action to your workflow:
+
+```yaml
+name: SQL Registry Check
+
+on:
+  pull_request:
+    paths:
+      - '**/*.py'
+  push:
+    branches: [main, develop]
+
+jobs:
+  sql-registry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: SQL Registry Analysis
+        uses: NovigoTechnology/test_utils/actions/sql_registry@main
+        with:
+          registry-file: '.sql_registry.json'
+          output-report: 'sql_registry_report.md'
+```
+
+### Action Inputs
+
+| Input | Description | Default |
+|-------|-------------|---------|
+| `registry-file` | Path to SQL registry JSON file | `.sql_registry.json` |
+| `output-report` | Path to generated report file | `sql_registry_report.md` |
+
+### What the Action Does
+
+The action will:
+1. Set up Python 3.14
+2. Install dependencies (sqlglot and test_utils)
+3. Scan the repository for SQL operations
+4. Generate a comprehensive report
+
+The generated report can be uploaded as an artifact or committed back to the PR for review.
 
 ## Scanning Multiple Codebases
 

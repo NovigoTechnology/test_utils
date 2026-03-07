@@ -20,7 +20,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Install test_utils with vulture
         run: pip install ".[dev]" vulture || pip install -e . vulture

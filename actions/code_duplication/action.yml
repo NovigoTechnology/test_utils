@@ -1,6 +1,6 @@
 name: Code Duplication
 description: Run jscpd to detect copy-paste in Python, JavaScript, TypeScript
-author: AgriTheory
+author: NovigoTechnology
 
 inputs:
   max_clones:
