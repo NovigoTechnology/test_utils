@@ -2,10 +2,12 @@
 name = "test_utils"
 version = "1.0.2"
 description = "Novigo Technology Test Utilities and Fixtures"
-authors = ["Novigo Technology <earona@novigo.com.ar>"]
+authors = [
+    {name = "Novigo Technology", email = "earona@novigo.com.ar"}
+]
 readme = "README.md"
-requires-python = ">=3.10"
-dynamic = ["dependencies", "version"]
+requires-python = ">=3.14"
+dynamic = ["dependencies"]
 
 [project.scripts]
 clean_customized_doctypes = "test_utils.pre_commit.clean_customized_doctypes:main"
@@ -31,18 +33,17 @@ requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-version = "0.17.0"
+name = "test_utils"
+version = "1.0.2"
+description = "Novigo Technology Test Utilities and Fixtures"
+authors = ["Novigo Technology <earona@novigo.com.ar>"]
 packages = [{include = "test_utils"}]
 
 [tool.poetry.dependencies]
-python = ">3.13,<3.15"
+python = ">=3.14,<3.15"
 mypy = "^1.19.0"
 toml = "^0.10.2"
 tomli = "^2.4.0"
-
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
 requests = "^2.32.3"
 sqlglot = "^25.33.0"
 asttokens = ">=2.4.0"
