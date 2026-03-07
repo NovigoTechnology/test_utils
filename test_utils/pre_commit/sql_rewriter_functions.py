@@ -244,16 +244,33 @@ def strip_assignment_prefix(qb: str) -> str:
 	elif m := re.match(r"^[\w][\w.]*\s*=(?!=)\s*([\s\S]+)", s):
 		s = m.group(1).lstrip("\n")
 
-	# Collapse to a single line — Black will re-format.
+	# Collapse to a single line — ruff will re-format.
 	return " ".join(s.split())
 
 
-def apply_black(content: str) -> str:
-	"""Format Python source with the Black Python API (no subprocess, no temp files)."""
+def apply_ruff_format(content: str) -> str:
+	"""Format Python source with ruff format via subprocess."""
+	import subprocess
+	import tempfile
+	import os
+	
 	try:
-		import black
-
-		return black.format_str(content, mode=black.Mode(use_tabs=True, tab_width=4))
+		with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+			f.write(content)
+			f.flush()
+			temp_path = f.name
+		
+		subprocess.run(
+			['ruff', 'format', '--quiet', temp_path],
+			check=False,
+			capture_output=True
+		)
+		
+		with open(temp_path, 'r') as f:
+			result = f.read()
+		
+		os.unlink(temp_path)
+		return result
 	except Exception:
 		return content
 
@@ -417,7 +434,7 @@ def rewrite_file_calls(
 			all_imports.extend(imp)
 	modified = ensure_imports(modified, all_imports)
 
-	formatted = apply_black(modified)
+	formatted = apply_ruff_format(modified)
 
 	ok, err = compile_check(formatted, path)
 	if not ok and not force:
@@ -646,7 +663,7 @@ class SQLRewriter:
 				print("=" * 50)
 				self.show_diff(
 					original_content,
-					apply_black(self.replace_sql_in_content(original_content, call)),
+					apply_ruff_format(self.replace_sql_in_content(original_content, call)),
 					call.line_number,
 				)
 				print(
@@ -797,7 +814,7 @@ class SQLRewriter:
 		Delegates to :func:`locate_call_node` (XPath primary, SQL-text fallback)
 		and :func:`locate_enclosing_stmt_node` for DocType line insertion.
 		The QB expression is stripped of any leading assignment/return prefix and
-		collapsed to one line; Black re-formats afterwards.
+		collapsed to one line; ruff format re-formats afterwards.
 		"""
 		try:
 			tree = ast.parse(content)
@@ -843,12 +860,12 @@ class SQLRewriter:
 			+ content[call_end:]
 		)
 
-	def apply_black_formatting(self, content: str) -> str:
-		"""Format Python source with Black. Delegates to :func:`apply_black`."""
-		result = apply_black(content)
+	def apply_ruff_formatting(self, content: str) -> str:
+		"""Format Python source with ruff. Delegates to :func:`apply_ruff_format`."""
+		result = apply_ruff_format(content)
 		if result == content:
 			print(
-				f"{Colors.YELLOW}Warning: Black formatter not available or failed, skipping formatting{Colors.RESET}"
+				f"{Colors.YELLOW}Warning: ruff formatter not available or failed, skipping formatting{Colors.RESET}"
 			)
 		return result
 

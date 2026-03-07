@@ -329,7 +329,7 @@ flowchart TD
         W4["Collect all splices\n(call ranges + DocType inserts)"]
         W5["Apply right-to-left\none string operation"]
         W6["_ensure_imports()\nhoist missing imports to module level"]
-        W7["black.format_str()\nPython API — no subprocess"]
+        W7["ruff format\nsubprocess with temp file"]
         W8{"Compile check\nast.parse()"}
         W9["Write file\nremove .bak + __pycache__"]
         W1 --> W2 --> W3 --> W4 --> W5 --> W6 --> W7 --> W8
@@ -351,7 +351,7 @@ flowchart TD
 | Re-scan directory after each rewrite | No rescan needed — XPath is stable |
 | Sequential file processing | Parallel across files (`ProcessPoolExecutor`) |
 | One `ast.parse` + `convert_to_xml` per call | One parse + one XML build per *file* |
-| `black` subprocess + temp file per file | `black.format_str()` Python API in-process |
+| Single formatter call per file | `ruff format` subprocess with temp file |
 | `replace_sql_in_content` called N times, each re-parsing | Splices collected in one pass, applied right-to-left |
 
 ### The VarRef Type
@@ -513,7 +513,7 @@ The rewriter lives in `test_utils/pre_commit/sql_rewriter_functions.py`:
 
 | Symbol | Kind | Purpose |
 |--------|------|---------|
-| `apply_black` | function | Format Python with `black.format_str()` — no subprocess |
+| `apply_ruff_format` | function | Format Python with `ruff format` subprocess via temp file |
 | `locate_call_node` | function | Find AST Call via XPath (primary) or SQL-text+occurrence (fallback) |
 | `locate_enclosing_stmt_node` | function | Find enclosing statement for DocType line insertion |
 | `rewrite_file_calls` | function | Full per-file pipeline — picklable worker for `ProcessPoolExecutor` |
@@ -521,6 +521,7 @@ The rewriter lives in `test_utils/pre_commit/sql_rewriter_functions.py`:
 | `split_qb_code` | function | Split QB equivalent into `(imports, doctype_lines, expr)` |
 | `ensure_imports` | function | Hoist missing imports to module level (AST-aware, deduplicating) |
 | `SQLRewriter` | class | CLI entry point — orchestrates scan, show, rewrite |
+| `SQLRewriter.apply_ruff_formatting` | method | Format Python code using ruff format subprocess |
 
 Backward-compatible imports remain unchanged:
 
