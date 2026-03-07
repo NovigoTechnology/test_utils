@@ -88,12 +88,15 @@ def main() -> int:
 				data = json.load(f)
 			clones = data.get("statistics", {}).get("total", {}).get("clones", 0)
 			percentage = data.get("statistics", {}).get("total", {}).get("percentage", 0) * 100
-		except json.JSONDecodeError, KeyError:
+		except (json.JSONDecodeError, KeyError):
 			return 0
 
 		failed = False
 		if clones > args.max_clones:
-			print(f"Clone count {clones} exceeds threshold of {args.max_clones}", file=sys.stderr)
+			print(
+				f"Found {clones} duplicate clones, exceeds threshold of {args.max_clones}",
+				file=sys.stderr,
+			)
 			failed = True
 		if percentage > args.max_percentage:
 			print(
