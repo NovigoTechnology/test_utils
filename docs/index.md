@@ -1,6 +1,6 @@
-# AgriTheory Test Utils — Documentation Index
+# Novigo Technology Test Utils — Documentation Index
 
-Test Utils is a collection of development tools for [Frappe](https://frappeframework.com) apps: test fixtures, pre-commit hooks, GitHub Action templates, and static analysis. It is maintained by [AgriTheory](https://agritheory.dev) and published at [github.com/agritheory/test_utils](https://github.com/agritheory/test_utils).
+Test Utils is a collection of development tools for [Frappe](https://frappeframework.com) apps: test fixtures, pre-commit hooks, GitHub Action templates, and static analysis. It is maintained by [Novigo Technology](https://novigo.com.ar) and published at [github.com/NovigoTechnology/test_utils](https://github.com/NovigoTechnology/test_utils).
 
 ---
 

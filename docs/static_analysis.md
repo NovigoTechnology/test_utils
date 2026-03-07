@@ -96,8 +96,8 @@ frappe.call("my_app.some.path");  // frappe-vulture:ignore
 Add the hook to your app's `.pre-commit-config.yaml`:
 
 ```yaml
-- repo: https://github.com/agritheory/test_utils
-  rev: v0.17.0  # use the current release
+- repo: https://github.com/NovigoTechnology/test_utils
+  rev: v1.0.2  # use the current release
   hooks:
     - id: static_analysis
       args: ['--no-orphans']  # remove if vulture is available in the hook env
@@ -110,8 +110,8 @@ The hook is configured with `always_run: true` and `pass_filenames: false` — i
 Orphan detection requires Vulture. The hook definition in this repo already declares it as an `additional_dependency`, so it will be installed automatically in the pre-commit environment:
 
 ```yaml
-- repo: https://github.com/agritheory/test_utils
-  rev: v0.17.0
+- repo: https://github.com/NovigoTechnology/test_utils
+  rev: v1.0.2
   hooks:
     - id: static_analysis
 ```
@@ -141,7 +141,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install
-        run: pip install "git+https://github.com/agritheory/test_utils.git" vulture
+        run: pip install "git+https://github.com/NovigoTechnology/test_utils.git" vulture
 
       - name: Run
           run: static_analysis . --no-orphans
@@ -156,7 +156,7 @@ If your CI workflow already sets up a complete bench (e.g. using `frappe/frappe-
 ```yaml
       - name: Static analysis
         run: |
-          pip install "git+https://github.com/agritheory/test_utils.git" vulture
+          pip install "git+https://github.com/NovigoTechnology/test_utils.git" vulture
           static_analysis apps/my_app
 ```
 

@@ -58,7 +58,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Translate Docs
-        uses: agritheory/test_utils/actions/translate_docs@main
+        uses: NovigoTechnology/test_utils/actions/translate_docs@main
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}

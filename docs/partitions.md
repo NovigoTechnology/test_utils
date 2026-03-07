@@ -125,7 +125,7 @@ from test_utils.utils.restore_partitions import restore
 restore(
     mariadb_user="root",                  # MariaDB root username
     mariadb_password="123",               # MariaDB root password
-    to_site="demo2.agritheory.com",       # Target site URL
+    to_site="demo.example.com",           # Target site URL
     to_database=None,                     # Optional: specify a target database name (instead a to_site)
     backup_dir="/tmp",                    # Directory where the backup file will be stored
     partitioned_doctypes_to_restore=None, # Restore all partitioned doctypes if None, or specify a list (e.g., ["Sales Order", "Sales Invoice"])

@@ -85,7 +85,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Track Overrides
-        uses: agritheory/test_utils/actions/track_overrides@main
+        uses: NovigoTechnology/test_utils/actions/track_overrides@main
         with:
           post-comment: false
 ```

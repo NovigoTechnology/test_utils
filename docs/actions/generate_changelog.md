@@ -50,7 +50,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Generate Changelog
-        uses: agritheory/test_utils/actions/generate_changelog@main
+        uses: NovigoTechnology/test_utils/actions/generate_changelog@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}

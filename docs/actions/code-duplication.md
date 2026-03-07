@@ -34,7 +34,7 @@ jobs:
         with:
           node-version: '18'
 
-      - uses: agritheory/test_utils/actions/code_duplication@main
+      - uses: NovigoTechnology/test_utils/actions/code_duplication@main
         with:
           max_clones: 60      # Fail if clones exceed this (default: 60)
           max_percentage: 5.0 # Warn if duplication % exceeds this (default: 5.0)
@@ -66,6 +66,6 @@ columns = [...]
 ## App detection
 
 The workflow detects the app name from:
-1. A directory matching the repository name (e.g. `inventory_tools/` for `agritheory/inventory_tools`)
+1. A directory matching the repository name (e.g. `inventory_tools/` for `NovigoTechnology/inventory_tools`)
 2. The `name` in `setup.py` if no such directory exists
 3. The repository name as fallback

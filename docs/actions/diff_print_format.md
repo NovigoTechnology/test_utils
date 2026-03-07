@@ -30,7 +30,7 @@ jobs:
       - name: Checkout test_utils
         uses: actions/checkout@v4
         with:
-          repository: agritheory/test_utils
+          repository: NovigoTechnology/test_utils
           ref: main
           path: test_utils
 
