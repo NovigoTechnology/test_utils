@@ -99,9 +99,7 @@ def check_report_file(filepath: Path) -> list[ReportIssue]:
 		tree = ast.parse(source, filename=str(filepath))
 	except SyntaxError as exc:
 		issues.append(
-			ReportIssue(
-				file=str(filepath), line=1, function="<module>", message=f"syntax error: {exc}"
-			)
+			ReportIssue(file=str(filepath), line=1, function="<module>", message=f"syntax error: {exc}")
 		)
 		return issues
 

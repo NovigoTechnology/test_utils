@@ -1,18 +1,16 @@
-import ast
 import argparse
-import tokenize
+import ast
 import os
 import re
 import sys
+import tokenize
 import traceback
-
-from io import StringIO
-from typing import List, Tuple, Optional
-
 from collections.abc import Sequence
+from io import StringIO
 from pathlib import Path
-from sqlglot import parse, transpile, ErrorLevel, exp
+from typing import List, Optional, Tuple
 
+from sqlglot import ErrorLevel, exp, parse, transpile
 
 RED = "\033[91m"
 BLUE = "\033[94m"
@@ -329,9 +327,7 @@ def replace_sql_patterns(sql: str) -> tuple[str, list[tuple[str, str]]]:
 	return sql, list(set(replacements))
 
 
-def update_file_content(
-	file_path: str, replacements: list[tuple[int, str, str]]
-) -> bool:
+def update_file_content(file_path: str, replacements: list[tuple[int, str, str]]) -> bool:
 	try:
 		with open(file_path, encoding="utf-8") as f:
 			source = f.read()
@@ -371,18 +367,14 @@ def update_file_content(
 		return False
 
 
-def process_file(
-	file_path: str, dialect: str
-) -> list[tuple[int, str, str, bool, list[str]]]:
+def process_file(file_path: str, dialect: str) -> list[tuple[int, str, str, bool, list[str]]]:
 	try:
 		content = Path(file_path).read_text()
 		sql_docstrings = find_sql_docstrings(content)
 		results = []
 
 		for line_num, sql in sql_docstrings:
-			formatted_sql, is_valid, warnings = format_sql_content(
-				sql, file_path, line_num, dialect
-			)
+			formatted_sql, is_valid, warnings = format_sql_content(sql, file_path, line_num, dialect)
 			results.append((line_num, sql, formatted_sql, is_valid, warnings))
 
 		return results
@@ -391,9 +383,7 @@ def process_file(
 		return []
 
 
-def format_files(
-	filenames: list[str], write: bool = False, dialect: str = "mysql"
-) -> bool:
+def format_files(filenames: list[str], write: bool = False, dialect: str = "mysql") -> bool:
 	total_formatted = 0
 	has_warnings = False
 	shown_recommendation = False
@@ -433,9 +423,7 @@ def format_files(
 			if write and valid_replacements:
 				update_file_content(file_path, valid_replacements)
 
-	print(
-		f"\n{BLUE}Formatted {total_formatted} SQL statement{'s' if total_formatted != 1 else ''}{RESET}"
-	)
+	print(f"\n{BLUE}Formatted {total_formatted} SQL statement{'s' if total_formatted != 1 else ''}{RESET}")
 	return True
 
 

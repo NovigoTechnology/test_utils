@@ -336,6 +336,4 @@ def analyze_app(
 ) -> StaticAnalysisResult:
 	"""Convenience wrapper around :class:`StaticAnalyzer`."""
 	config = StaticAnalysisConfig(**config_kwargs)
-	return StaticAnalyzer(
-		Path(app_path), dependency_paths=dependency_paths, config=config
-	).analyze()
+	return StaticAnalyzer(Path(app_path), dependency_paths=dependency_paths, config=config).analyze()

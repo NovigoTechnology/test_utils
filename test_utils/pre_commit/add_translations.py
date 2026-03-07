@@ -41,9 +41,7 @@ def main(argv: Sequence[str] = None):
 	parser = argparse.ArgumentParser()
 	parser.add_argument("filenames", nargs="*")
 	parser.add_argument("--lang", action="append", help="Language to translate strings")
-	parser.add_argument(
-		"--app", action="append", help="App to get untranslated string and translate them"
-	)
+	parser.add_argument("--app", action="append", help="App to get untranslated string and translate them")
 	args = parser.parse_args(argv)
 
 	lang = args.lang[0]

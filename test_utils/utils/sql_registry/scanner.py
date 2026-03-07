@@ -2,6 +2,7 @@
 
 import ast
 import re
+
 from sqlglot import exp
 
 from test_utils.utils.sql_registry.models import VarRef
@@ -212,20 +213,12 @@ def can_use_frappe_orm(select: exp.Select) -> bool:
 			if from_part.count(",") > 0:
 				return False
 
-	if (
-		len(tables) > 1
-		or select.find(exp.Group)
-		or select.find(exp.Having)
-		or select.find(exp.Union)
-	):
+	if len(tables) > 1 or select.find(exp.Group) or select.find(exp.Having) or select.find(exp.Union):
 		return False
 
 	for expr in select.expressions:
 		expr_str = str(expr).upper()
-		if any(
-			agg in expr_str
-			for agg in ["COUNT(", "SUM(", "AVG(", "MIN(", "MAX(", "GROUP_CONCAT("]
-		):
+		if any(agg in expr_str for agg in ["COUNT(", "SUM(", "AVG(", "MIN(", "MAX(", "GROUP_CONCAT("]):
 			return False
 
 	for node in select.walk():
@@ -284,18 +277,16 @@ def extract_value(expr: exp.Expression, replacements: list, sql_params: dict = N
 			return str(expr.this)  # SQL string literal → plain str (caller quotes it)
 		try:
 			return int(expr.this)
-		except (ValueError, TypeError):
+		except ValueError, TypeError:
 			try:
 				return float(expr.this)
-			except (ValueError, TypeError):
+			except ValueError, TypeError:
 				return str(expr.this)
 	# Fallback for identifiers / columns that weren't in replacements
 	return value_str
 
 
-def convert_where_to_filters(
-	condition: exp.Expression, replacements: list, sql_params: dict = None
-):
+def convert_where_to_filters(condition: exp.Expression, replacements: list, sql_params: dict = None):
 	try:
 		if isinstance(condition, exp.EQ):
 			field = extract_field_name(condition.left)
@@ -500,9 +491,7 @@ def convert_select_to_orm(
 				inner_exprs = expr.expressions if hasattr(expr, "expressions") else [expr.this]
 				for inner in inner_exprs:
 					field_name = (
-						str(inner.this).strip("`\"'")
-						if hasattr(inner, "this")
-						else str(inner).strip("`\"'")
+						str(inner.this).strip("`\"'") if hasattr(inner, "this") else str(inner).strip("`\"'")
 					)
 					if "." in field_name:
 						_, field_name = field_name.rsplit(".", 1)
@@ -546,9 +535,7 @@ def convert_select_to_orm(
 			order_by = ", ".join(order_parts)
 
 	limit_clause = select.find(exp.Limit)
-	limit = (
-		str(limit_clause.expression) if limit_clause and limit_clause.expression else None
-	)
+	limit = str(limit_clause.expression) if limit_clause and limit_clause.expression else None
 
 	lines.append(f"{result_prefix}frappe.get_all(")
 	lines.append(f'\t"{doctype}",')

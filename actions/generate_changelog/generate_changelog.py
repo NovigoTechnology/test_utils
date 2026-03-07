@@ -1,9 +1,10 @@
 #!/usr/bin/env python
+import json
 import os
 import sys
-import json
-from github import Github
+
 from anthropic import Anthropic
+from github import Github
 
 
 def get_env_vars():
@@ -71,9 +72,7 @@ def get_custom_prompt_template(env_vars):
 	"""Load custom prompt template if provided, otherwise use the default template file."""
 	# Try to load custom prompt from the path provided in env vars
 	try:
-		if env_vars["prompt_template_path"] and os.path.exists(
-			env_vars["prompt_template_path"]
-		):
+		if env_vars["prompt_template_path"] and os.path.exists(env_vars["prompt_template_path"]):
 			with open(env_vars["prompt_template_path"]) as f:
 				return f.read()
 	except Exception as e:

@@ -30,9 +30,7 @@ class SiteConnection:
 			db_host = self.config.get("db_host", "localhost")
 
 			try:
-				result = subprocess.run(
-					["getent", "hosts", db_host], capture_output=True, text=True
-				)
+				result = subprocess.run(["getent", "hosts", db_host], capture_output=True, text=True)
 				if result.stdout:
 					return result.stdout.split()[0]
 			except Exception:
@@ -170,9 +168,7 @@ class BackupEngine:
 
 		full_backup_file = f"{self.backup_dir}/full_backup_file.sql"
 		try:
-			with importlib.resources.path(
-				"test_utils.utils", "mysqldump_wrapper.sh"
-			) as script_path:
+			with importlib.resources.path("test_utils.utils", "mysqldump_wrapper.sh") as script_path:
 				temp_script_path = "/tmp/mysqldump_wrapper.sh"
 				with open(script_path) as src_file:
 					with open(temp_script_path, "w") as temp_file:
@@ -213,7 +209,7 @@ class BackupEngine:
 	def backup_partition(self, table: str, partition: str) -> str:
 		timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 		output_file = os.path.join(
-			self.backup_dir, f'{table.lower().replace(" ", "")}_{partition}_{timestamp}.csv'
+			self.backup_dir, f"{table.lower().replace(' ', '')}_{partition}_{timestamp}.csv"
 		)
 		sql_query = f"SELECT * FROM `{table}` PARTITION ({partition});"
 		try:
@@ -239,9 +235,7 @@ class BackupEngine:
 					with gzip.open(compressed_file_path, "wb") as f_out:
 						shutil.copyfileobj(f_in, f_out)
 				os.remove(output_file)
-				print(
-					f"Backup of partition {partition} completed and compressed: {compressed_file_path}"
-				)
+				print(f"Backup of partition {partition} completed and compressed: {compressed_file_path}")
 				return compressed_file_path
 			else:
 				print(f"Backup of partition {partition} completed: {output_file}")
@@ -254,9 +248,7 @@ class BackupEngine:
 			return None
 
 	@staticmethod
-	def merge_sql_files(
-		schema_dump_path: str, full_backup_path: str, backup_dir: str, compress: bool
-	) -> str:
+	def merge_sql_files(schema_dump_path: str, full_backup_path: str, backup_dir: str, compress: bool) -> str:
 		output_path = f"{backup_dir}/schema_and_non_partitioned_data.sql"
 		try:
 			command = [
@@ -376,8 +368,8 @@ class RestoreEngine:
 				for row in reader:
 					row = [None if field == "" else field for field in row]
 					sql_query = f"""
-					INSERT INTO `{table}` ({', '.join(sanitized_header)})
-					VALUES ({', '.join(['%s'] * len(header))});
+					INSERT INTO `{table}` ({", ".join(sanitized_header)})
+					VALUES ({", ".join(["%s"] * len(header))});
 					"""
 					try:
 						cursor.execute(sql_query, row)
@@ -414,9 +406,7 @@ def restore_partitions(
 			if partition_bkp_file is not None:
 				bkps_files.append({"table": table, "partition_bkp_file": partition_bkp_file})
 			else:
-				print(
-					f"WARNING: Skipping restore for {table} partition {partition} (backup failed)"
-				)
+				print(f"WARNING: Skipping restore for {table} partition {partition} (backup failed)")
 
 	for file in bkps_files:
 		restore_engine.restore_partition(file["table"], file["partition_bkp_file"])

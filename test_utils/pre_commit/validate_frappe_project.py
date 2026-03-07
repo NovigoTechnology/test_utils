@@ -83,9 +83,7 @@ def validate_required_sections(data: dict, app_name: str) -> list[str]:
 		errors.append(f"{app_name}: pyproject.toml is missing required [project] section")
 
 	if "build-system" not in data:
-		errors.append(
-			f"{app_name}: pyproject.toml is missing required [build-system] section"
-		)
+		errors.append(f"{app_name}: pyproject.toml is missing required [build-system] section")
 
 	return errors
 
@@ -111,21 +109,13 @@ def validate_project_metadata(data: dict, app_name: str) -> list[str]:
 	# Warnings for missing optional but recommended fields
 	warnings = []
 	if "authors" not in project:
-		warnings.append(
-			f"{app_name}: [project] section is missing recommended 'authors' field"
-		)
+		warnings.append(f"{app_name}: [project] section is missing recommended 'authors' field")
 	if "description" not in project:
-		warnings.append(
-			f"{app_name}: [project] section is missing recommended 'description' field"
-		)
+		warnings.append(f"{app_name}: [project] section is missing recommended 'description' field")
 	if "readme" not in project:
-		warnings.append(
-			f"{app_name}: [project] section is missing recommended 'readme' field"
-		)
+		warnings.append(f"{app_name}: [project] section is missing recommended 'readme' field")
 	if "requires-python" not in project:
-		warnings.append(
-			f"{app_name}: [project] section is missing recommended 'requires-python' field"
-		)
+		warnings.append(f"{app_name}: [project] section is missing recommended 'requires-python' field")
 
 	# Print warnings but don't add to errors
 	for warning in warnings:
@@ -134,9 +124,7 @@ def validate_project_metadata(data: dict, app_name: str) -> list[str]:
 	return errors
 
 
-def validate_build_system(
-	data: dict, app_name: str, backend: BuildBackend
-) -> list[str]:
+def validate_build_system(data: dict, app_name: str, backend: BuildBackend) -> list[str]:
 	"""
 	Validate build system configuration and check for hybrid configurations.
 
@@ -214,9 +202,7 @@ def validate_build_system(
 	return errors
 
 
-def validate_version_consistency(
-	data: dict, app_name: str, backend: BuildBackend
-) -> list[str]:
+def validate_version_consistency(data: dict, app_name: str, backend: BuildBackend) -> list[str]:
 	"""
 	Validate version consistency for Poetry projects.
 

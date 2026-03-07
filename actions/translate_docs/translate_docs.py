@@ -12,7 +12,7 @@ from google.cloud import translate_v2 as translate
 
 def get_languages(app_directory):
 	print("app_directory:", app_directory)
-	hooks = importlib.import_module(f'{app_directory.split("/")[-1]}.hooks')
+	hooks = importlib.import_module(f"{app_directory.split('/')[-1]}.hooks")
 	try:
 		return hooks.docs_languages
 	except Exception:
@@ -33,9 +33,7 @@ def get_pull_request_number():
 
 
 def translate_file(source_file, target_file, target_language, translate_client):
-	translation = translate_client.translate(
-		source_file, target_language=target_language, format_="text"
-	)
+	translation = translate_client.translate(source_file, target_language=target_language, format_="text")
 	with open(target_file, "w", encoding="utf-8") as f:
 		f.write(translation["translatedText"])
 
@@ -48,9 +46,7 @@ def translate_md_files(app_directory):
 
 	set_google_credentials()
 	translate_client = translate.Client()
-	base_branch = os.getenv(
-		"GITHUB_BASE_REF", "main"
-	)  # Default to 'main' if not available
+	base_branch = os.getenv("GITHUB_BASE_REF", "main")  # Default to 'main' if not available
 	repo_name = os.getenv("GITHUB_REPOSITORY")
 	g = Github(os.getenv("GITHUB_TOKEN"))
 
@@ -58,9 +54,7 @@ def translate_md_files(app_directory):
 	origin = repo.remote(name="origin")
 	origin.fetch()
 
-	version_folders = [
-		f for f in os.listdir("docs") if os.path.isdir(os.path.join("docs", f))
-	]
+	version_folders = [f for f in os.listdir("docs") if os.path.isdir(os.path.join("docs", f))]
 
 	pull_request_number = get_pull_request_number()
 	repository = g.get_repo(repo_name, lazy=False)

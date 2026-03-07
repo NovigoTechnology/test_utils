@@ -185,9 +185,7 @@ def create_warehouses(settings):
 	company_abbr = frappe.db.get_value("Company", settings.company, "abbr")
 	root_wh = frappe.get_value("Warehouse", {"company": settings.company, "is_group": 1})
 	if frappe.db.exists("Warehouse", f"Stores - {company_abbr}"):
-		frappe.rename_doc(
-			"Warehouse", f"Stores - {company_abbr}", f"Storeroom - {company_abbr}", force=True
-		)
+		frappe.rename_doc("Warehouse", f"Stores - {company_abbr}", f"Storeroom - {company_abbr}", force=True)
 	if frappe.db.exists("Warehouse", f"Finished Goods - {company_abbr}"):
 		frappe.rename_doc(
 			"Warehouse",
@@ -197,9 +195,7 @@ def create_warehouses(settings):
 		)
 		frappe.set_value("Warehouse", f"Baked Goods - {company_abbr}", "is_group", 1)
 
-	for wh in frappe.get_all(
-		"Warehouse", {"company": settings.company}, ["name", "is_group"]
-	):
+	for wh in frappe.get_all("Warehouse", {"company": settings.company}, ["name", "is_group"]):
 		if wh.name not in warehouses and not wh.is_group:
 			frappe.delete_doc("Warehouse", wh.name)
 
@@ -477,18 +473,14 @@ def create_quarantine_warehouse(
 			a.company = settings.company
 			a.root_type = "Asset"
 			a.report_type = "Balance Sheet"
-			a.account_currency = frappe.get_value(
-				"Company", settings.company, "default_currency"
-			)
+			a.account_currency = frappe.get_value("Company", settings.company, "default_currency")
 			a.parent_account = parent_account
 			a.account_type = "Stock"
 			a.save()
 			account_name = a.name
 
 	if not parent_wh:
-		parent_wh = frappe.get_value(
-			"Warehouse", {"company": settings.company, "is_group": 1}
-		)
+		parent_wh = frappe.get_value("Warehouse", {"company": settings.company, "is_group": 1})
 
 	wh_type = "Quarantine"
 	if not frappe.db.exists("Warehouse Type", wh_type):

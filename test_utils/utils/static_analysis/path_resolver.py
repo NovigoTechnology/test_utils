@@ -40,9 +40,7 @@ def is_dynamic_path(s: str) -> bool:
 class ResolvedPath:
 	dotted_path: str
 	exists: bool
-	kind: str | None = (
-		None  # "function", "async_function", "class", "attribute", "module", "whitelisted"
-	)
+	kind: str | None = None  # "function", "async_function", "class", "attribute", "module", "whitelisted"
 	location: tuple[Path, int] | None = None
 	is_whitelisted: bool = False
 	error: str | None = None
@@ -54,10 +52,7 @@ def load_whitelist(app_path: Path) -> list[str]:
 			try:
 				data = toml.load(candidate)
 				return (
-					data.get("tool", {})
-					.get("test_utils", {})
-					.get("static-analysis", {})
-					.get("whitelist", [])
+					data.get("tool", {}).get("test_utils", {}).get("static-analysis", {}).get("whitelist", [])
 				)
 			except Exception:
 				pass
@@ -74,9 +69,7 @@ class PathResolver:
 		self.prefix_whitelist: list[str] = [p[:-2] for p in wl if p.endswith(".*")]
 
 	@classmethod
-	def from_app(
-		cls, app_path: Path, dependency_paths: list[Path] | None = None
-	) -> "PathResolver":
+	def from_app(cls, app_path: Path, dependency_paths: list[Path] | None = None) -> PathResolver:
 		"""Create a resolver, loading the whitelist from the app's pyproject.toml."""
 		whitelist = load_whitelist(app_path)
 		return cls([app_path] + (dependency_paths or []), whitelist=whitelist)
@@ -85,8 +78,7 @@ class PathResolver:
 		if dotted_path in self.exact_whitelist:
 			return True
 		return any(
-			dotted_path == prefix or dotted_path.startswith(prefix + ".")
-			for prefix in self.prefix_whitelist
+			dotted_path == prefix or dotted_path.startswith(prefix + ".") for prefix in self.prefix_whitelist
 		)
 
 	def find_module_file(self, parts: list[str]) -> tuple[Path | None, int]:
@@ -120,9 +112,7 @@ class PathResolver:
 						return mod2, i
 		return None, 0
 
-	def has_whitelist_decorator(
-		self, node: ast.FunctionDef | ast.AsyncFunctionDef
-	) -> bool:
+	def has_whitelist_decorator(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
 		for dec in node.decorator_list:
 			if isinstance(dec, ast.Call):
 				func = dec.func
@@ -136,9 +126,7 @@ class PathResolver:
 				return True
 		return False
 
-	def find_in_ast(
-		self, tree: ast.Module, attr_parts: list[str]
-	) -> tuple[str | None, int | None, bool]:
+	def find_in_ast(self, tree: ast.Module, attr_parts: list[str]) -> tuple[str | None, int | None, bool]:
 		"""Locate the first element of *attr_parts* inside *tree*. Returns (kind, lineno, is_whitelisted)."""
 		if not attr_parts:
 			return "module", 1, False

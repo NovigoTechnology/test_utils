@@ -1,9 +1,9 @@
 import argparse
 import json
 import pathlib
+import shutil
 import sys
 import tempfile
-import shutil
 from collections.abc import Sequence
 
 
@@ -20,9 +20,9 @@ def is_frappe_bench_environment():
 			]
 
 			sites_dir = path / "sites"
-			has_bench_files = any(
-				(path / indicator).exists() for indicator in bench_indicators
-			) or any((sites_dir / indicator).exists() for indicator in bench_indicators)
+			has_bench_files = any((path / indicator).exists() for indicator in bench_indicators) or any(
+				(sites_dir / indicator).exists() for indicator in bench_indicators
+			)
 
 			if has_bench_files:
 				return True
@@ -32,9 +32,7 @@ def is_frappe_bench_environment():
 	return False
 
 
-def validate_and_clean_customized_doctypes(
-	customized_doctypes: dict[str, list[pathlib.Path]]
-):
+def validate_and_clean_customized_doctypes(customized_doctypes: dict[str, list[pathlib.Path]]):
 	modified_files = []
 	for _doctype, customize_files in customized_doctypes.items():
 		for customize_file in customize_files:
@@ -140,9 +138,7 @@ def get_customized_doctypes():
 	for module in modules:
 		if not (this_app / this_app.stem / scrub(module) / "custom").exists():
 			continue
-		for custom_file in list(
-			(this_app / this_app.stem / scrub(module) / "custom").glob("**/*.json")
-		):
+		for custom_file in list((this_app / this_app.stem / scrub(module) / "custom").glob("**/*.json")):
 			if custom_file.stem in customized_doctypes:
 				customized_doctypes[custom_file.stem].append(custom_file.resolve())
 			else:

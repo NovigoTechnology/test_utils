@@ -151,8 +151,6 @@ class HooksValidator:
 			):
 				pass
 			else:
-				result.warnings.append(
-					f"{loc} [{context}]: '{path}' resolves to a module, not a callable"
-				)
+				result.warnings.append(f"{loc} [{context}]: '{path}' resolves to a module, not a callable")
 
 		return result

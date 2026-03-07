@@ -10,11 +10,11 @@ For pre-commit (run from bench root):
     python patch_linter.py --app inventory_tools --check
 """
 
+import argparse
 import os
 import sys
-import argparse
 from pathlib import Path
-from typing import List, Set, Dict, Tuple
+from typing import Dict, List, Set, Tuple
 
 
 class PatchLinter:
@@ -244,15 +244,9 @@ def main():
 	parser = argparse.ArgumentParser(
 		description="Lint and validate patch files for ERPNext/Frappe applications"
 	)
-	parser.add_argument(
-		"--app", required=True, help="Application name (e.g., inventory_tools)"
-	)
-	parser.add_argument(
-		"--check", action="store_true", help="Run linting checks (exit code 1 on failure)"
-	)
-	parser.add_argument(
-		"--list", action="store_true", help="List all patches with their status"
-	)
+	parser.add_argument("--app", required=True, help="Application name (e.g., inventory_tools)")
+	parser.add_argument("--check", action="store_true", help="Run linting checks (exit code 1 on failure)")
+	parser.add_argument("--list", action="store_true", help="List all patches with their status")
 
 	args = parser.parse_args()
 

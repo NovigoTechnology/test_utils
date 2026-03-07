@@ -74,12 +74,8 @@ class PatchesValidator:
 			elif resolved.kind == "module":
 				# Frappe calls execute() on plain-module patches automatically.
 				if not self.resolver.resolve(path + ".execute").exists:
-					result.warnings.append(
-						f"{loc}: '{path}' resolves to a module with no execute() function"
-					)
+					result.warnings.append(f"{loc}: '{path}' resolves to a module with no execute() function")
 			elif resolved.kind not in ("function", "async_function"):
-				result.warnings.append(
-					f"{loc}: '{path}' resolves to a {resolved.kind}, expected a function"
-				)
+				result.warnings.append(f"{loc}: '{path}' resolves to a {resolved.kind}, expected a function")
 
 		return result

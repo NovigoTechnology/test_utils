@@ -2,6 +2,7 @@
 
 import ast
 import re
+
 import sqlglot
 from sqlglot import exp
 
@@ -70,9 +71,7 @@ class SQLToQBConverter:
 				if can_use_frappe_orm(ast_object):
 					result = convert_select_to_orm(ast_object, replacements, sql_params, variable_name)
 				else:
-					result = self.convert_select_to_qb(
-						ast_object, replacements, sql_params, variable_name
-					)
+					result = self.convert_select_to_qb(ast_object, replacements, sql_params, variable_name)
 			elif isinstance(ast_object, exp.Insert):
 				result = self.convert_insert_to_qb(ast_object, replacements)
 			elif isinstance(ast_object, exp.Update):
@@ -125,9 +124,7 @@ class SQLToQBConverter:
 				field_str = self.normalize_field(str(expr))
 				fields.append(field_str)
 				# Check for aggregations
-				if any(
-					agg in str(expr).upper() for agg in ["COUNT(", "SUM(", "AVG(", "MAX(", "MIN("]
-				):
+				if any(agg in str(expr).upper() for agg in ["COUNT(", "SUM(", "AVG(", "MAX(", "MIN("]):
 					has_aggregation = True
 
 			# Extract conditions
@@ -398,9 +395,7 @@ class SQLToQBConverter:
 				fields.extend(["__tuple_elem__"] * len(arg.elts))
 		return fields
 
-	def validate_conversion(
-		self, original_ast: exp.Expression, qb_code: str
-	) -> tuple[bool, str | None]:
+	def validate_conversion(self, original_ast: exp.Expression, qb_code: str) -> tuple[bool, str | None]:
 		"""
 		Validate that QB code produces equivalent query structure.
 
@@ -420,9 +415,7 @@ class SQLToQBConverter:
 
 		# Compare query types
 		if original_struct.query_type != qb_struct.query_type:
-			errors.append(
-				f"Query type mismatch: {original_struct.query_type} vs {qb_struct.query_type}"
-			)
+			errors.append(f"Query type mismatch: {original_struct.query_type} vs {qb_struct.query_type}")
 
 		# Compare tables
 		orig_tables = set(original_struct.tables)
@@ -544,11 +537,7 @@ class SQLToQBConverter:
 		def has_subquery_in(expr):
 			if isinstance(expr, exp.In) and expr.args.get("query"):
 				return True
-			if (
-				isinstance(expr, exp.Not)
-				and isinstance(expr.this, exp.In)
-				and expr.this.args.get("query")
-			):
+			if isinstance(expr, exp.Not) and isinstance(expr.this, exp.In) and expr.this.args.get("query"):
 				return True
 			return False
 
@@ -571,9 +560,7 @@ class SQLToQBConverter:
 
 		# Generate DocType declarations
 		for table_name, alias in tables:
-			doctype_name = (
-				table_name.replace("tab", "") if table_name.startswith("tab") else table_name
-			)
+			doctype_name = table_name.replace("tab", "") if table_name.startswith("tab") else table_name
 			# Use alias for variable name if present, otherwise use table name
 			var_base = alias if alias else doctype_name
 			var_name_local = var_base.lower().replace(" ", "_").replace("-", "_")
@@ -608,9 +595,7 @@ class SQLToQBConverter:
 			if select.expressions:
 				select_fields = []
 				for expr in select.expressions:
-					field_ref = self.format_select_field(
-						expr, table_vars, main_var, replacements, sql_params
-					)
+					field_ref = self.format_select_field(expr, table_vars, main_var, replacements, sql_params)
 					select_fields.append(field_ref)
 
 				if len(select_fields) == 1:
@@ -738,16 +723,12 @@ class SQLToQBConverter:
 
 		# Handle parenthesized expressions
 		if isinstance(expr, exp.Paren):
-			inner = self.format_select_field(
-				expr.this, table_vars, main_var, replacements, sql_params
-			)
+			inner = self.format_select_field(expr.this, table_vars, main_var, replacements, sql_params)
 			return f"({inner})"
 
 		# Handle Alias expressions (e.g., COUNT(*) AS total)
 		if isinstance(expr, exp.Alias):
-			inner = self.format_select_field(
-				expr.this, table_vars, main_var, replacements, sql_params
-			)
+			inner = self.format_select_field(expr.this, table_vars, main_var, replacements, sql_params)
 			alias_name = str(expr.alias).strip("`\"'")
 			return f'{inner}.as_("{alias_name}")'
 
@@ -762,34 +743,24 @@ class SQLToQBConverter:
 				return f"fn.Count({inner_field})"
 
 		if isinstance(expr, exp.Avg):
-			inner_field = self.format_select_field(
-				expr.this, table_vars, main_var, replacements, sql_params
-			)
+			inner_field = self.format_select_field(expr.this, table_vars, main_var, replacements, sql_params)
 			return f"fn.Avg({inner_field})"
 
 		if isinstance(expr, exp.Sum):
-			inner_field = self.format_select_field(
-				expr.this, table_vars, main_var, replacements, sql_params
-			)
+			inner_field = self.format_select_field(expr.this, table_vars, main_var, replacements, sql_params)
 			return f"fn.Sum({inner_field})"
 
 		if isinstance(expr, exp.Max):
-			inner_field = self.format_select_field(
-				expr.this, table_vars, main_var, replacements, sql_params
-			)
+			inner_field = self.format_select_field(expr.this, table_vars, main_var, replacements, sql_params)
 			return f"fn.Max({inner_field})"
 
 		if isinstance(expr, exp.Min):
-			inner_field = self.format_select_field(
-				expr.this, table_vars, main_var, replacements, sql_params
-			)
+			inner_field = self.format_select_field(expr.this, table_vars, main_var, replacements, sql_params)
 			return f"fn.Min({inner_field})"
 
 		# Handle Date/Cast functions
 		if isinstance(expr, (exp.Date, exp.TsOrDsToDate, exp.Cast)):
-			inner_field = self.format_select_field(
-				expr.this, table_vars, main_var, replacements, sql_params
-			)
+			inner_field = self.format_select_field(expr.this, table_vars, main_var, replacements, sql_params)
 			if isinstance(expr, exp.Cast) and hasattr(expr, "to"):
 				cast_type = str(expr.to).upper()
 				return f'fn.Cast({inner_field}, "{cast_type}")'
@@ -798,9 +769,7 @@ class SQLToQBConverter:
 		# Handle DateDiff function - use CustomFunction since pypika doesn't have DateDiff
 		if isinstance(expr, exp.DateDiff):
 			# DATEDIFF(end, start) -> difference in days
-			end_field = self.format_select_field(
-				expr.this, table_vars, main_var, replacements, sql_params
-			)
+			end_field = self.format_select_field(expr.this, table_vars, main_var, replacements, sql_params)
 			start_field = self.format_select_field(
 				expr.expression, table_vars, main_var, replacements, sql_params
 			)
@@ -808,9 +777,7 @@ class SQLToQBConverter:
 
 		# Handle Coalesce/IfNull
 		if isinstance(expr, exp.Coalesce):
-			inner = self.format_select_field(
-				expr.this, table_vars, main_var, replacements, sql_params
-			)
+			inner = self.format_select_field(expr.this, table_vars, main_var, replacements, sql_params)
 			if expr.expressions:
 				fallback = self.format_select_field(
 					expr.expressions[0], table_vars, main_var, replacements, sql_params
@@ -826,9 +793,7 @@ class SQLToQBConverter:
 			parts = ["Case()"]
 			ifs = expr.args.get("ifs", [])
 			for if_clause in ifs:
-				condition = self.convert_condition_to_qb(
-					if_clause.this, replacements, table_vars, sql_params
-				)
+				condition = self.convert_condition_to_qb(if_clause.this, replacements, table_vars, sql_params)
 				result_val = self.format_select_field(
 					if_clause.args.get("true"), table_vars, main_var, replacements, sql_params
 				)
@@ -843,46 +808,28 @@ class SQLToQBConverter:
 
 		# Handle ABS function
 		if isinstance(expr, exp.Abs):
-			inner = self.format_select_field(
-				expr.this, table_vars, main_var, replacements, sql_params
-			)
+			inner = self.format_select_field(expr.this, table_vars, main_var, replacements, sql_params)
 			return f"fn.Abs({inner})"
 
 		# Handle arithmetic expressions (Sub, Add, Mul, Div)
 		if isinstance(expr, exp.Sub):
-			left = self.format_select_field(
-				expr.this, table_vars, main_var, replacements, sql_params
-			)
-			right = self.format_select_field(
-				expr.expression, table_vars, main_var, replacements, sql_params
-			)
+			left = self.format_select_field(expr.this, table_vars, main_var, replacements, sql_params)
+			right = self.format_select_field(expr.expression, table_vars, main_var, replacements, sql_params)
 			return f"({left} - {right})"
 
 		if isinstance(expr, exp.Add):
-			left = self.format_select_field(
-				expr.this, table_vars, main_var, replacements, sql_params
-			)
-			right = self.format_select_field(
-				expr.expression, table_vars, main_var, replacements, sql_params
-			)
+			left = self.format_select_field(expr.this, table_vars, main_var, replacements, sql_params)
+			right = self.format_select_field(expr.expression, table_vars, main_var, replacements, sql_params)
 			return f"({left} + {right})"
 
 		if isinstance(expr, exp.Mul):
-			left = self.format_select_field(
-				expr.this, table_vars, main_var, replacements, sql_params
-			)
-			right = self.format_select_field(
-				expr.expression, table_vars, main_var, replacements, sql_params
-			)
+			left = self.format_select_field(expr.this, table_vars, main_var, replacements, sql_params)
+			right = self.format_select_field(expr.expression, table_vars, main_var, replacements, sql_params)
 			return f"({left} * {right})"
 
 		if isinstance(expr, exp.Div):
-			left = self.format_select_field(
-				expr.this, table_vars, main_var, replacements, sql_params
-			)
-			right = self.format_select_field(
-				expr.expression, table_vars, main_var, replacements, sql_params
-			)
+			left = self.format_select_field(expr.this, table_vars, main_var, replacements, sql_params)
+			right = self.format_select_field(expr.expression, table_vars, main_var, replacements, sql_params)
 			return f"({left} / {right})"
 
 		expr_str = str(expr)
@@ -982,15 +929,11 @@ class SQLToQBConverter:
 		try:
 			if isinstance(condition, exp.EQ):
 				left = self.format_field(condition.left, table_vars)
-				right = self.format_value_or_field(
-					condition.right, replacements, table_vars, sql_params
-				)
+				right = self.format_value_or_field(condition.right, replacements, table_vars, sql_params)
 				return f"({left} == {right})"
 
 			elif isinstance(condition, exp.And):
-				left_cond = self.convert_condition_to_qb(
-					condition.left, replacements, table_vars, sql_params
-				)
+				left_cond = self.convert_condition_to_qb(condition.left, replacements, table_vars, sql_params)
 				if left_cond.startswith("# MANUAL:"):
 					return left_cond
 				right_cond = self.convert_condition_to_qb(
@@ -1009,9 +952,7 @@ class SQLToQBConverter:
 				return f"({left_cond} & {right_cond})"
 
 			elif isinstance(condition, exp.Or):
-				left_cond = self.convert_condition_to_qb(
-					condition.left, replacements, table_vars, sql_params
-				)
+				left_cond = self.convert_condition_to_qb(condition.left, replacements, table_vars, sql_params)
 				if left_cond.startswith("# MANUAL:"):
 					return left_cond
 				right_cond = self.convert_condition_to_qb(
@@ -1030,30 +971,22 @@ class SQLToQBConverter:
 
 			elif isinstance(condition, exp.GT):
 				left = self.format_field(condition.left, table_vars)
-				right = self.format_value_or_field(
-					condition.right, replacements, table_vars, sql_params
-				)
+				right = self.format_value_or_field(condition.right, replacements, table_vars, sql_params)
 				return f"({left} > {right})"
 
 			elif isinstance(condition, exp.GTE):
 				left = self.format_field(condition.left, table_vars)
-				right = self.format_value_or_field(
-					condition.right, replacements, table_vars, sql_params
-				)
+				right = self.format_value_or_field(condition.right, replacements, table_vars, sql_params)
 				return f"({left} >= {right})"
 
 			elif isinstance(condition, exp.LT):
 				left = self.format_field(condition.left, table_vars)
-				right = self.format_value_or_field(
-					condition.right, replacements, table_vars, sql_params
-				)
+				right = self.format_value_or_field(condition.right, replacements, table_vars, sql_params)
 				return f"({left} < {right})"
 
 			elif isinstance(condition, exp.LTE):
 				left = self.format_field(condition.left, table_vars)
-				right = self.format_value_or_field(
-					condition.right, replacements, table_vars, sql_params
-				)
+				right = self.format_value_or_field(condition.right, replacements, table_vars, sql_params)
 				return f"({left} <= {right})"
 
 			elif isinstance(condition, exp.In):
@@ -1093,17 +1026,13 @@ class SQLToQBConverter:
 
 			elif isinstance(condition, exp.Like):
 				left = self.format_field(condition.this, table_vars)
-				right = self.format_value_or_field(
-					condition.expression, replacements, table_vars, sql_params
-				)
+				right = self.format_value_or_field(condition.expression, replacements, table_vars, sql_params)
 				return f"{left}.like({right})"
 
 			elif isinstance(condition, exp.Between):
 				# Frappe QB uses slice syntax for BETWEEN: field[start:end]
 				left = self.format_field(condition.this, table_vars)
-				low = self.format_value_or_field(
-					condition.args["low"], replacements, table_vars, sql_params
-				)
+				low = self.format_value_or_field(condition.args["low"], replacements, table_vars, sql_params)
 				high = self.format_value_or_field(
 					condition.args["high"], replacements, table_vars, sql_params
 				)
@@ -1111,16 +1040,12 @@ class SQLToQBConverter:
 
 			elif isinstance(condition, exp.NEQ):
 				left = self.format_field(condition.left, table_vars)
-				right = self.format_value_or_field(
-					condition.right, replacements, table_vars, sql_params
-				)
+				right = self.format_value_or_field(condition.right, replacements, table_vars, sql_params)
 				return f"({left} != {right})"
 
 			elif isinstance(condition, exp.Paren):
 				# Parenthesized expression - recursively convert the inner expression
-				inner = self.convert_condition_to_qb(
-					condition.this, replacements, table_vars, sql_params
-				)
+				inner = self.convert_condition_to_qb(condition.this, replacements, table_vars, sql_params)
 				if inner.startswith("# MANUAL:"):
 					return inner
 				return f"({inner})"
@@ -1144,9 +1069,7 @@ class SQLToQBConverter:
 					if subquery:
 						inner_select = subquery.this if isinstance(subquery, exp.Subquery) else subquery
 						if isinstance(inner_select, exp.Select):
-							subquery_str = self.convert_subquery_to_qb(
-								inner_select, replacements, sql_params
-							)
+							subquery_str = self.convert_subquery_to_qb(inner_select, replacements, sql_params)
 							return f"{left}.notin(SubQuery({subquery_str}))"
 						else:
 							return "# TODO: Complex NOT IN subquery"
@@ -1158,9 +1081,7 @@ class SQLToQBConverter:
 						return f"{left}.notin([{', '.join(values)}])"
 				else:
 					# General NOT
-					inner_cond = self.convert_condition_to_qb(
-						inner, replacements, table_vars, sql_params
-					)
+					inner_cond = self.convert_condition_to_qb(inner, replacements, table_vars, sql_params)
 					return f"~({inner_cond})"
 
 			elif isinstance(condition, exp.Is):
@@ -1233,9 +1154,7 @@ class SQLToQBConverter:
 		main_key = main_alias if main_alias else main_table_name
 		main_var = table_vars[main_key]
 		doctype_name = (
-			main_table_name.replace("tab", "")
-			if main_table_name.startswith("tab")
-			else main_table_name
+			main_table_name.replace("tab", "") if main_table_name.startswith("tab") else main_table_name
 		)
 
 		# Build the query chain
@@ -1245,18 +1164,14 @@ class SQLToQBConverter:
 		if select.expressions:
 			select_fields = []
 			for expr in select.expressions:
-				field_ref = self.format_select_field(
-					expr, table_vars, main_var, replacements, sql_params
-				)
+				field_ref = self.format_select_field(expr, table_vars, main_var, replacements, sql_params)
 				select_fields.append(field_ref)
 			parts.append(f".select({', '.join(select_fields)})")
 
 		# Add WHERE clause
 		where_clause = select.find(exp.Where)
 		if where_clause:
-			condition = self.convert_condition_to_qb(
-				where_clause.this, replacements, table_vars, sql_params
-			)
+			condition = self.convert_condition_to_qb(where_clause.this, replacements, table_vars, sql_params)
 			parts.append(f".where({condition})")
 
 		return "".join(parts)
@@ -1396,9 +1311,7 @@ class SQLToQBConverter:
 
 		return f'"{field_str}"'
 
-	def convert_insert_to_qb(
-		self, insert: exp.Insert, replacements: list[tuple[str, str]]
-	) -> str:
+	def convert_insert_to_qb(self, insert: exp.Insert, replacements: list[tuple[str, str]]) -> str:
 		table = str(insert.this).strip("`\"'")
 		return f"""# INSERT operations typically use frappe.get_doc() in Frappe:
 doc = frappe.get_doc({{
@@ -1457,9 +1370,7 @@ doc.insert()"""
 
 		# Check if WHERE is simple "name = value" pattern
 		where_cond = where_clause.this
-		is_name_filter, name_value = self.is_simple_name_filter(
-			where_cond, replacements, sql_params
-		)
+		is_name_filter, name_value = self.is_simple_name_filter(where_cond, replacements, sql_params)
 
 		if is_name_filter and name_value:
 			# Use frappe.db.set_value with name
@@ -1475,9 +1386,7 @@ doc.insert()"""
 		try:
 			var_name = doctype.replace(" ", "").replace("-", "")
 			table_vars = {table_name: var_name}
-			condition = self.convert_condition_to_qb(
-				where_cond, replacements, table_vars, sql_params
-			)
+			condition = self.convert_condition_to_qb(where_cond, replacements, table_vars, sql_params)
 
 			# Check for unresolved placeholders
 			if "__PH" in condition or "%s" in condition:
@@ -1500,9 +1409,7 @@ doc.insert()"""
 			var_name = doctype.replace(" ", "").replace("-", "")
 			return f'# MANUAL: UPDATE with complex WHERE on {doctype}\n# frappe.db.set_value("{doctype}", filters, fields_dict) or use Query Builder'
 
-	def resolve_update_value(
-		self, value_str: str, replacements: list, sql_params: dict
-	) -> str:
+	def resolve_update_value(self, value_str: str, replacements: list, sql_params: dict) -> str:
 		"""Resolve a value from UPDATE SET clause."""
 		for placeholder, original in replacements:
 			if placeholder in value_str:
@@ -1591,9 +1498,7 @@ doc.insert()"""
 		# Try to convert WHERE to filters for frappe.db.delete()
 		try:
 			filters = convert_where_to_filters(where_clause.this, replacements, sql_params)
-			if filters and not any(
-				isinstance(v, str) and v.startswith("__PH") for v in filters.values()
-			):
+			if filters and not any(isinstance(v, str) and v.startswith("__PH") for v in filters.values()):
 				# Successfully converted to simple filters
 				filter_str = self.format_filters_dict(filters)
 				return f'frappe.db.delete("{doctype}", {filter_str})'
@@ -1604,9 +1509,7 @@ doc.insert()"""
 		try:
 			var_name = doctype.replace(" ", "").replace("-", "")
 			table_vars = {table_name: var_name}
-			condition = self.convert_condition_to_qb(
-				where_clause.this, replacements, table_vars, sql_params
-			)
+			condition = self.convert_condition_to_qb(where_clause.this, replacements, table_vars, sql_params)
 			# Check if condition contains unresolved placeholders
 			if "__PH" not in condition and "%s" not in condition:
 				lines = [
@@ -1614,7 +1517,7 @@ doc.insert()"""
 					f"frappe.qb.from_({var_name}).delete().where({condition}).run()",
 				]
 				return "\n".join(lines)
-		except (UnresolvedParameterError, Exception):
+		except UnresolvedParameterError, Exception:
 			pass
 
 		# Fall back to manual review

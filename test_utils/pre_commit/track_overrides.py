@@ -89,12 +89,8 @@ def check_tracked_methods(repo_directory, base_branch, apps_filter=None):
 			if not latest_commit_hash or latest_commit_hash == commit_hash:
 				continue
 
-			old_file_content = download_file_from_commit(
-				repo_url, commit_hash, original_file_path
-			)
-			new_file_content = download_file_from_commit(
-				repo_url, latest_commit_hash, original_file_path
-			)
+			old_file_content = download_file_from_commit(repo_url, commit_hash, original_file_path)
+			new_file_content = download_file_from_commit(repo_url, latest_commit_hash, original_file_path)
 
 			method_at_hash = extract_method(old_file_content, method_name)
 			latest_method = extract_method(new_file_content, method_name)
@@ -114,16 +110,12 @@ def check_tracked_methods(repo_directory, base_branch, apps_filter=None):
 
 def main(argv: Sequence[str] = None):
 	parser = argparse.ArgumentParser()
-	parser.add_argument(
-		"--app", action="append", help="App name(s) to scan (resolves to app directory)"
-	)
+	parser.add_argument("--app", action="append", help="App name(s) to scan (resolves to app directory)")
 	parser.add_argument(
 		"--directory",
 		help="Directory to scan (e.g. workspace root); overrides --app when set. Use for monorepos to match GHA behavior.",
 	)
-	parser.add_argument(
-		"--base-branch", action="append", help="Base branch to compare against"
-	)
+	parser.add_argument("--base-branch", action="append", help="Base branch to compare against")
 	args = parser.parse_args(argv)
 
 	if not args.base_branch:
@@ -148,9 +140,7 @@ def main(argv: Sequence[str] = None):
 				check_tracked_methods(repo_directory, base_branch, apps_filter=apps_filter)
 			)
 		if changed_methods:
-			print(
-				"\n[PRE-COMMIT HOOK] Method changes detected! Please review before committing."
-			)
+			print("\n[PRE-COMMIT HOOK] Method changes detected! Please review before committing.")
 			for change in changed_methods:
 				print(change["title"])
 				print_diff(change["diff"])

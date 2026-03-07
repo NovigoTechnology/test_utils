@@ -1,7 +1,8 @@
 import argparse
 import sys
-from pathlib import Path
 from collections.abc import Sequence
+from pathlib import Path
+
 from test_utils.pre_commit.sql_rewriter_functions import SQLRewriter
 from test_utils.utils.sql_registry import SQLRegistry
 
@@ -15,57 +16,35 @@ def main(argv: Sequence[str] = None):
 
 	# Scan command
 	scan_parser = subparsers.add_parser("scan", help="Scan for SQL operations")
-	scan_parser.add_argument(
-		"filenames", nargs="*", help="Files to check (provided by pre-commit)"
-	)
-	scan_parser.add_argument(
-		"--registry", default=".sql_registry.json", help="Registry file path"
-	)
+	scan_parser.add_argument("filenames", nargs="*", help="Files to check (provided by pre-commit)")
+	scan_parser.add_argument("--registry", default=".sql_registry.json", help="Registry file path")
 	scan_parser.add_argument("--directory", help="Directory to scan (overrides filenames)")
-	scan_parser.add_argument(
-		"--scan-all", action="store_true", help="Scan entire repository"
-	)
+	scan_parser.add_argument("--scan-all", action="store_true", help="Scan entire repository")
 
 	# List command
 	list_parser = subparsers.add_parser("list", help="List SQL calls")
-	list_parser.add_argument(
-		"--registry", default=".sql_registry.json", help="Registry file path"
-	)
+	list_parser.add_argument("--registry", default=".sql_registry.json", help="Registry file path")
 	list_parser.add_argument("--file-filter", help="Filter by file path")
 
 	# Show command
 	show_parser = subparsers.add_parser("show", help="Show details for specific call")
 	show_parser.add_argument("call_id", help="Call ID to show details for")
-	show_parser.add_argument(
-		"--registry", default=".sql_registry.json", help="Registry file path"
-	)
+	show_parser.add_argument("--registry", default=".sql_registry.json", help="Registry file path")
 
 	# Rewrite command
-	rewrite_parser = subparsers.add_parser(
-		"rewrite", help="Rewrite SQL call to Query Builder"
-	)
+	rewrite_parser = subparsers.add_parser("rewrite", help="Rewrite SQL call to Query Builder")
 	rewrite_parser.add_argument("call_id", help="Call ID to rewrite")
-	rewrite_parser.add_argument(
-		"--registry", default=".sql_registry.json", help="Registry file path"
-	)
-	rewrite_parser.add_argument(
-		"--apply", action="store_true", help="Apply changes to file"
-	)
+	rewrite_parser.add_argument("--registry", default=".sql_registry.json", help="Registry file path")
+	rewrite_parser.add_argument("--apply", action="store_true", help="Apply changes to file")
 
 	# Report command
 	report_parser = subparsers.add_parser("report", help="Generate usage report")
-	report_parser.add_argument(
-		"--registry", default=".sql_registry.json", help="Registry file path"
-	)
+	report_parser.add_argument("--registry", default=".sql_registry.json", help="Registry file path")
 	report_parser.add_argument("--output", help="Output file for report")
 
 	# Todos command - list calls with TODO in their conversion
-	todos_parser = subparsers.add_parser(
-		"todos", help="List calls with TODO in conversion"
-	)
-	todos_parser.add_argument(
-		"--registry", default=".sql_registry.json", help="Registry file path"
-	)
+	todos_parser = subparsers.add_parser("todos", help="List calls with TODO in conversion")
+	todos_parser.add_argument("--registry", default=".sql_registry.json", help="Registry file path")
 
 	args = parser.parse_args(argv)
 
@@ -98,9 +77,7 @@ def main(argv: Sequence[str] = None):
 		else:
 			# Only scan provided filenames that are Python files
 			files_to_scan = [
-				Path(f)
-				for f in getattr(args, "filenames", [])
-				if f.endswith(".py") and Path(f).exists()
+				Path(f) for f in getattr(args, "filenames", []) if f.endswith(".py") and Path(f).exists()
 			]
 
 		if not files_to_scan:
@@ -112,9 +89,7 @@ def main(argv: Sequence[str] = None):
 		for file_path in files_to_scan:
 			try:
 				# Count operations before scanning
-				old_operations = [
-					c for c in registry.data["calls"].values() if c.file_path == str(file_path)
-				]
+				old_operations = [c for c in registry.data["calls"].values() if c.file_path == str(file_path)]
 				old_count = len(old_operations)
 
 				file_new_ops = registry.scan_file(file_path)
@@ -173,9 +148,7 @@ def main(argv: Sequence[str] = None):
 	elif args.command == "show":
 		# Find call by ID (support partial IDs)
 		matching_calls = [
-			call
-			for call in registry.data["calls"].values()
-			if call.call_id.startswith(args.call_id)
+			call for call in registry.data["calls"].values() if call.call_id.startswith(args.call_id)
 		]
 
 		if not matching_calls:

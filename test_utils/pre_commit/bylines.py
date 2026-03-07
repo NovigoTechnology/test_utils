@@ -10,9 +10,9 @@ import os
 import re
 import subprocess
 import sys
-from pathlib import Path
-from datetime import datetime
 from collections import OrderedDict
+from datetime import datetime
+from pathlib import Path
 
 
 def build_global_identity_map(file_paths, alias_map=None):
@@ -228,9 +228,7 @@ def names_match(name1, name2):
 			if n1_clean.startswith(part[:1]):
 				remaining = n1_clean[1:]
 				for other_part in n2_parts:
-					if other_part != part and remaining.startswith(
-						other_part[: min(3, len(other_part))]
-					):
+					if other_part != part and remaining.startswith(other_part[: min(3, len(other_part))]):
 						return True
 		if n1_clean in n2_clean:
 			return True
@@ -239,9 +237,7 @@ def names_match(name1, name2):
 			if n2_clean.startswith(part[:1]):
 				remaining = n2_clean[1:]
 				for other_part in n1_parts:
-					if other_part != part and remaining.startswith(
-						other_part[: min(3, len(other_part))]
-					):
+					if other_part != part and remaining.startswith(other_part[: min(3, len(other_part))]):
 						return True
 		if n2_clean in n1_clean:
 			return True
@@ -335,7 +331,7 @@ def get_last_modified_date(file_path):
 			timestamp = int(result.stdout.strip())
 			return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
 
-	except (subprocess.CalledProcessError, ValueError):
+	except subprocess.CalledProcessError, ValueError:
 		pass
 
 	return datetime.now().strftime("%Y-%m-%d")
@@ -348,7 +344,9 @@ def find_byline_div(content):
 	"""
 	lines = content.split("\n")
 
-	opening_pattern = r'^(\s*)<div\s+class\s*=\s*["\']byline["\'](?:\s+data-manual-authors\s*=\s*["\']([^"\']*)["\'])?\s*>'
+	opening_pattern = (
+		r'^(\s*)<div\s+class\s*=\s*["\']byline["\'](?:\s+data-manual-authors\s*=\s*["\']([^"\']*)["\'])?\s*>'
+	)
 	closing_pattern = r"^(\s*)</div>"
 
 	for i, line in enumerate(lines):
@@ -446,18 +444,11 @@ def update_markdown_byline(
 		print(f"    Byline div found: {start_idx is not None}")
 
 	if start_idx is not None:
-		new_content = format_byline_content(
-			contributors, last_modified, indent, manual_authors
-		)
+		new_content = format_byline_content(contributors, last_modified, indent, manual_authors)
 		div_attrs = 'class="byline"'
 		if manual_authors:
 			div_attrs += f' data-manual-authors="{manual_authors}"'
-		new_lines = (
-			lines[:start_idx]
-			+ [f"{indent}<div {div_attrs}>"]
-			+ [new_content]
-			+ lines[end_idx - 1 :]
-		)
+		new_lines = lines[:start_idx] + [f"{indent}<div {div_attrs}>"] + [new_content] + lines[end_idx - 1 :]
 		new_content_str = "\n".join(new_lines)
 	else:
 		title_idx = None
@@ -468,9 +459,7 @@ def update_markdown_byline(
 					print(f"    Found heading at line {i + 1}: {line[:50]}")
 				break
 
-		byline_div = create_byline_div(
-			contributors, last_modified, manual_authors=manual_authors
-		)
+		byline_div = create_byline_div(contributors, last_modified, manual_authors=manual_authors)
 
 		if title_idx is not None:
 			new_lines = lines[: title_idx + 1] + ["", byline_div, ""] + lines[title_idx + 1 :]

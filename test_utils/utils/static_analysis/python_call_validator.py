@@ -85,11 +85,7 @@ def collect_calls(source: str, filepath: Path) -> list[tuple[str, int]]:
 		return []
 	visitor = FrappeCallVisitor()
 	visitor.visit(tree)
-	return [
-		(path, lineno)
-		for path, lineno in visitor.found
-		if not has_ignore_comment(source, lineno)
-	]
+	return [(path, lineno) for path, lineno in visitor.found if not has_ignore_comment(source, lineno)]
 
 
 class PythonCallValidator:

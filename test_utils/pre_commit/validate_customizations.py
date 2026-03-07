@@ -1,8 +1,8 @@
 import argparse
 import json
 import pathlib
-import sys
 import shutil
+import sys
 import types
 from collections.abc import Sequence
 
@@ -35,9 +35,9 @@ def is_frappe_bench_environment():
 
 			# Check for bench files in the bench root or sites directory
 			sites_dir = path / "sites"
-			has_bench_files = any(
-				(path / indicator).exists() for indicator in bench_indicators
-			) or any((sites_dir / indicator).exists() for indicator in bench_indicators)
+			has_bench_files = any((path / indicator).exists() for indicator in bench_indicators) or any(
+				(sites_dir / indicator).exists() for indicator in bench_indicators
+			)
 
 			if has_bench_files:
 				return True
@@ -190,18 +190,14 @@ def load_customization_allowlist(app_dir: pathlib.Path) -> dict:
 		try:
 			with open(pyproject, "rb") as f:
 				data = tomllib.load(f)
-			config = (
-				data.get("tool", {}).get("test_utils", {}).get("validate_customizations", {})
-			)
+			config = data.get("tool", {}).get("test_utils", {}).get("validate_customizations", {})
 			if config:
 				allowlist["allow_duplicate_property_setters"] = config.get(
 					"allow_duplicate_property_setters", []
 				)
-				allowlist["allow_duplicate_custom_fields"] = config.get(
-					"allow_duplicate_custom_fields", []
-				)
+				allowlist["allow_duplicate_custom_fields"] = config.get("allow_duplicate_custom_fields", [])
 				break
-		except (ValueError, OSError):
+		except ValueError, OSError:
 			pass
 	return allowlist
 
@@ -368,9 +364,7 @@ def validate_customizations(app_dir: pathlib.Path):
 def main(argv: Sequence[str] | None = None):
 	parser = argparse.ArgumentParser()
 	parser.add_argument("filenames", nargs="*")
-	parser.add_argument(
-		"--app", help="App name (e.g. cad); used to locate app dir and pyproject.toml"
-	)
+	parser.add_argument("--app", help="App name (e.g. cad); used to locate app dir and pyproject.toml")
 	args = parser.parse_args(argv)
 
 	if is_frappe_bench_environment():

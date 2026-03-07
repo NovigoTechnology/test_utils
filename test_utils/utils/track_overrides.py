@@ -9,9 +9,7 @@ import requests
 def download_file_from_commit(repo_url, commit_hash, file_path):
 	repo_url_split = repo_url.strip("/").split("/")
 	username, repo_name = repo_url_split[-2], repo_url_split[-1]
-	raw_url = (
-		f"https://raw.githubusercontent.com/{username}/{repo_name}/{commit_hash}/{file_path}"
-	)
+	raw_url = f"https://raw.githubusercontent.com/{username}/{repo_name}/{commit_hash}/{file_path}"
 	response = requests.get(raw_url)
 	if response.status_code == 200:
 		return response.text

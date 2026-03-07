@@ -1,4 +1,5 @@
 import ast
+import difflib
 import re
 import shutil
 import sys
@@ -6,13 +7,14 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-import difflib
+
 import asttokens
+
 from test_utils.utils.sql_registry import SQLRegistry
 from test_utils.utils.sql_registry.scanner import (
-	is_frappe_db_sql_call,
 	extract_sql_from_call,
 	get_function_context,
+	is_frappe_db_sql_call,
 )
 
 
@@ -205,11 +207,7 @@ def find_enclosing_stmt(tree: ast.AST, target: ast.AST) -> ast.AST:
 	while id(current) in parents:
 		parent = parents[id(current)]
 		for field_name, field_value in ast.iter_fields(parent):
-			if (
-				field_name in _BODY_FIELDS
-				and isinstance(field_value, list)
-				and current in field_value
-			):
+			if field_name in _BODY_FIELDS and isinstance(field_value, list) and current in field_value:
 				return current
 		current = parent
 	return current  # fallback
@@ -250,25 +248,21 @@ def strip_assignment_prefix(qb: str) -> str:
 
 def apply_ruff_format(content: str) -> str:
 	"""Format Python source with ruff format via subprocess."""
+	import os
 	import subprocess
 	import tempfile
-	import os
-	
+
 	try:
-		with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+		with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
 			f.write(content)
 			f.flush()
 			temp_path = f.name
-		
-		subprocess.run(
-			['ruff', 'format', '--quiet', temp_path],
-			check=False,
-			capture_output=True
-		)
-		
-		with open(temp_path, 'r') as f:
+
+		subprocess.run(["ruff", "format", "--quiet", temp_path], check=False, capture_output=True)
+
+		with open(temp_path) as f:
 			result = f.read()
-		
+
 		os.unlink(temp_path)
 		return result
 	except Exception:
@@ -293,7 +287,7 @@ def locate_call_node(
 	xml_tree,
 	node_mappings: dict,
 	atok: asttokens.ASTTokens,
-) -> "ast.Call | None":
+) -> ast.Call | None:
 	"""Return the AST Call node for *call*, preferring the XPath pin over text match."""
 	ast_path_val = getattr(call, "ast_path", None)
 	if ast_path_val and xml_tree is not None:
@@ -396,9 +390,7 @@ def rewrite_file_calls(
 	for call in calls:
 		target = locate_call_node(call, tree, xml_tree, node_mappings, atok)
 		if target is None:
-			msgs.append(
-				("warn", f"  Could not locate {call.call_id[:8]} in {file_path} — skipping")
-			)
+			msgs.append(("warn", f"  Could not locate {call.call_id[:8]} in {file_path} — skipping"))
 			failed_ids.append(call.call_id)
 			continue
 
@@ -441,9 +433,7 @@ def rewrite_file_calls(
 		msgs.append(("err", f"Aborting {file_path}: generated code does not compile — {err}"))
 		return FileRewriteResult(file_path, [], all_call_ids, False, False, msgs)
 	if not ok:
-		msgs.append(
-			("warn", f"--force: {file_path} does not compile ({err}); writing anyway")
-		)
+		msgs.append(("warn", f"--force: {file_path} does not compile ({err}); writing anyway"))
 
 	if dry_run:
 		msgs.append(("ok", f"DRY RUN — would modify: {file_path}"))
@@ -459,9 +449,7 @@ def rewrite_file_calls(
 	else:
 		msgs.append(("warn", f"Backup kept for manual recovery: {backup_path}"))
 
-	return FileRewriteResult(
-		file_path, success_ids if (ok or force) else [], failed_ids, ok, True, msgs
-	)
+	return FileRewriteResult(file_path, success_ids if (ok or force) else [], failed_ids, ok, True, msgs)
 
 
 # ANSI color codes
@@ -524,9 +512,7 @@ class SQLRewriter:
 
 		for call in sorted(filtered_calls, key=lambda x: (x.file_path, x.line_number)):
 			file_name = Path(call.file_path).name
-			print(
-				f"\n{Colors.CYAN}{call.call_id[:8]}{Colors.RESET}  {file_name}:{call.line_number}"
-			)
+			print(f"\n{Colors.CYAN}{call.call_id[:8]}{Colors.RESET}  {file_name}:{call.line_number}")
 			print(f"   Function: {call.function_context}")
 			print(f"   Variable: {call.variable_name or 'None'}")
 			print(f"   SQL: {call.sql_query[:100]}{'...' if len(call.sql_query) > 100 else ''}")
@@ -534,21 +520,15 @@ class SQLRewriter:
 	def show_sql_details(self, call_id: str):
 		"""Show detailed information about a specific SQL call"""
 		matching_calls = [
-			call
-			for call in self.registry.data["calls"].values()
-			if call.call_id.startswith(call_id)
+			call for call in self.registry.data["calls"].values() if call.call_id.startswith(call_id)
 		]
 
 		if not matching_calls:
-			print(
-				f"{Colors.RED}No SQL call found with ID starting with '{call_id}'{Colors.RESET}"
-			)
+			print(f"{Colors.RED}No SQL call found with ID starting with '{call_id}'{Colors.RESET}")
 			return
 
 		if len(matching_calls) > 1:
-			print(
-				f"{Colors.YELLOW}Multiple calls match '{call_id}'. Please be more specific:{Colors.RESET}"
-			)
+			print(f"{Colors.YELLOW}Multiple calls match '{call_id}'. Please be more specific:{Colors.RESET}")
 			for call in matching_calls:
 				print(f"  {call.call_id[:12]} - {Path(call.file_path).name}:{call.line_number}")
 			return
@@ -591,21 +571,15 @@ class SQLRewriter:
 		     created) and a prominent warning is printed.
 		"""
 		matching_calls = [
-			call
-			for call in self.registry.data["calls"].values()
-			if call.call_id.startswith(call_id)
+			call for call in self.registry.data["calls"].values() if call.call_id.startswith(call_id)
 		]
 
 		if not matching_calls:
-			print(
-				f"{Colors.RED}No SQL call found with ID starting with '{call_id}'{Colors.RESET}"
-			)
+			print(f"{Colors.RED}No SQL call found with ID starting with '{call_id}'{Colors.RESET}")
 			return False
 
 		if len(matching_calls) > 1:
-			print(
-				f"{Colors.YELLOW}Multiple calls match '{call_id}'. Please be more specific.{Colors.RESET}"
-			)
+			print(f"{Colors.YELLOW}Multiple calls match '{call_id}'. Please be more specific.{Colors.RESET}")
 			return False
 
 		import copy
@@ -614,8 +588,7 @@ class SQLRewriter:
 
 		# Check if this call is flagged for manual review or has a conversion error
 		if call.query_builder_equivalent and (
-			"# MANUAL:" in call.query_builder_equivalent
-			or "# Error" in call.query_builder_equivalent
+			"# MANUAL:" in call.query_builder_equivalent or "# Error" in call.query_builder_equivalent
 		):
 			if not force:
 				print(
@@ -714,15 +687,12 @@ class SQLRewriter:
 		calls_to_rewrite = []
 		skipped_manual = []
 		for call_id in call_ids:
-			matching = [
-				c for c in self.registry.data["calls"].values() if c.call_id.startswith(call_id)
-			]
+			matching = [c for c in self.registry.data["calls"].values() if c.call_id.startswith(call_id)]
 			if not matching:
 				continue
 			call = copy.copy(matching[0])
 			if call.query_builder_equivalent and (
-				"# MANUAL:" in call.query_builder_equivalent
-				or "# Error" in call.query_builder_equivalent
+				"# MANUAL:" in call.query_builder_equivalent or "# Error" in call.query_builder_equivalent
 			):
 				if force:
 					unvalidated = extract_unvalidated_qb(call.query_builder_equivalent)
@@ -789,9 +759,7 @@ class SQLRewriter:
 					continue
 
 				for level, text in result.messages:
-					color = {"ok": Colors.GREEN, "warn": Colors.YELLOW, "err": Colors.RED}.get(
-						level, ""
-					)
+					color = {"ok": Colors.GREEN, "warn": Colors.YELLOW, "err": Colors.RED}.get(level, "")
 					print(f"{color}{text}{Colors.RESET}")
 
 				success_count += len(result.success_ids)
@@ -834,10 +802,7 @@ class SQLRewriter:
 		target = locate_call_node(call, tree, xml_tree, node_mappings, atok)
 
 		if target is None:
-			print(
-				f"  Warning: could not locate SQL call '{call.call_id}' in "
-				f"{call.file_path} — skipping"
-			)
+			print(f"  Warning: could not locate SQL call '{call.call_id}' in {call.file_path} — skipping")
 			return content
 
 		call_start, call_end = atok.get_text_range(target)
@@ -853,11 +818,7 @@ class SQLRewriter:
 
 		setup_text = "".join(indent + dl + "\n" for dl in doctype_lines)
 		return (
-			content[:line_start]
-			+ setup_text
-			+ content[line_start:call_start]
-			+ qb_expr
-			+ content[call_end:]
+			content[:line_start] + setup_text + content[line_start:call_start] + qb_expr + content[call_end:]
 		)
 
 	def apply_ruff_formatting(self, content: str) -> str:

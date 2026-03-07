@@ -12,13 +12,13 @@ import os
 import pickle
 import subprocess
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from test_utils.utils.sql_registry import SQLRegistry, SQLCall
 from test_utils.pre_commit.sql_rewriter_functions import SQLRewriter
+from test_utils.utils.sql_registry import SQLCall, SQLRegistry
 
 
 # ANSI color codes
@@ -94,7 +94,7 @@ class PipelineState:
 		}
 
 	@classmethod
-	def from_dict(cls, data: dict) -> "PipelineState":
+	def from_dict(cls, data: dict) -> PipelineState:
 		chunks = {k: Chunk(**v) for k, v in data.get("chunks", {}).items()}
 		return cls(
 			app=data["app"],
@@ -211,11 +211,7 @@ class ChunkGenerator:
 		for call in calls:
 			# Estimate: original SQL lines + QB equivalent lines
 			original_lines = call.sql_query.count("\n") + 1
-			qb_lines = (
-				call.query_builder_equivalent.count("\n") + 1
-				if call.query_builder_equivalent
-				else 0
-			)
+			qb_lines = call.query_builder_equivalent.count("\n") + 1 if call.query_builder_equivalent else 0
 			total += original_lines + qb_lines
 		return total
 
@@ -274,9 +270,7 @@ class ChunkGenerator:
 
 			# Check if adding this call would exceed constraints
 			would_exceed_loc = current_loc + call_loc > max_loc
-			would_exceed_files = (
-				call_file not in current_files and len(current_files) >= max_files
-			)
+			would_exceed_files = call_file not in current_files and len(current_files) >= max_files
 
 			if current_calls and (would_exceed_loc or would_exceed_files):
 				# Create chunk from current batch
@@ -354,9 +348,7 @@ class SQLPipeline:
 					data = json.load(f)
 				return PipelineState.from_dict(data)
 			except Exception as e:
-				print(
-					f"{Colors.YELLOW}Warning: Could not load state ({e}), creating new{Colors.RESET}"
-				)
+				print(f"{Colors.YELLOW}Warning: Could not load state ({e}), creating new{Colors.RESET}")
 
 		return PipelineState(
 			app=self.app,
@@ -418,9 +410,7 @@ class SQLPipeline:
 		print(f"{Colors.GREEN}Generated {len(chunks)} chunks{Colors.RESET}")
 		return chunks
 
-	def list_chunks(
-		self, filter_status: str | None = None, filter_type: str | None = None
-	):
+	def list_chunks(self, filter_status: str | None = None, filter_type: str | None = None):
 		"""List all chunks with their status."""
 		if not self.state.chunks:
 			print(f"{Colors.YELLOW}No chunks found. Run 'chunks generate' first.{Colors.RESET}")
@@ -438,9 +428,7 @@ class SQLPipeline:
 		# Print summary
 		total = sum(len(v) for v in by_type.values())
 		completed = sum(1 for c in self.state.chunks.values() if c.status == "completed")
-		print(
-			f"\n{Colors.BOLD}Chunks for {self.app}: {total} total, {completed} completed{Colors.RESET}"
-		)
+		print(f"\n{Colors.BOLD}Chunks for {self.app}: {total} total, {completed} completed{Colors.RESET}")
 		print("=" * 70)
 
 		type_colors = {
@@ -519,9 +507,7 @@ class SQLPipeline:
 				preview = call.sql_query.replace("\n", " ")[:60]
 				print(f"  {call_id[:8]} L{call.line_number}: {preview}...")
 
-	def apply_chunk(
-		self, chunk_id: str, dry_run: bool = True, commit: bool = False
-	) -> bool:
+	def apply_chunk(self, chunk_id: str, dry_run: bool = True, commit: bool = False) -> bool:
 		"""Apply conversions for a chunk using batch processing."""
 		# Find chunk
 		matches = [c for c in self.state.chunks.values() if c.chunk_id.startswith(chunk_id)]
@@ -686,9 +672,7 @@ Examples:
 	)
 
 	parser.add_argument("--app", required=True, help="App name (e.g., hrms, erpnext)")
-	parser.add_argument(
-		"--app-path", help="Path to app (defaults to ~/ironwood/apps/<app>)"
-	)
+	parser.add_argument("--app-path", help="Path to app (defaults to ~/ironwood/apps/<app>)")
 
 	subparsers = parser.add_subparsers(dest="command", help="Commands")
 
@@ -702,9 +686,7 @@ Examples:
 	chunks_subparsers.add_parser("generate", help="Generate chunks from registry")
 
 	list_parser = chunks_subparsers.add_parser("list", help="List chunks")
-	list_parser.add_argument(
-		"--status", choices=["pending", "in_progress", "completed", "failed"]
-	)
+	list_parser.add_argument("--status", choices=["pending", "in_progress", "completed", "failed"])
 	list_parser.add_argument("--type", choices=["test", "report", "orm", "qb"])
 
 	show_parser = chunks_subparsers.add_parser("show", help="Show chunk details")
@@ -712,18 +694,12 @@ Examples:
 
 	apply_parser = chunks_subparsers.add_parser("apply", help="Apply chunk conversions")
 	apply_parser.add_argument("chunk_id", help="Chunk ID to apply")
-	apply_parser.add_argument(
-		"--no-dry-run", action="store_true", help="Actually apply changes"
-	)
-	apply_parser.add_argument(
-		"--commit", action="store_true", help="Create git commit after apply"
-	)
+	apply_parser.add_argument("--no-dry-run", action="store_true", help="Actually apply changes")
+	apply_parser.add_argument("--commit", action="store_true", help="Create git commit after apply")
 
 	# validate command
 	validate_parser = subparsers.add_parser("validate", help="Run tests against a site")
-	validate_parser.add_argument(
-		"--site", required=True, help="Site name (e.g., test_postgres)"
-	)
+	validate_parser.add_argument("--site", required=True, help="Site name (e.g., test_postgres)")
 	validate_parser.add_argument("--test", help="Specific test filter")
 
 	# status command

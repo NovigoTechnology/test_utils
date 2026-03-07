@@ -47,9 +47,7 @@ def get_partitioned_tables():
 
 
 def dump_schema_only(site, backup_dir, compress):
-	exclude_tables = list(
-		set(frappe.get_hooks("exclude_tables") + get_partitioned_tables())
-	)
+	exclude_tables = list(set(frappe.get_hooks("exclude_tables") + get_partitioned_tables()))
 	schema_dump_file = f"{backup_dir}/schema_dump.sql"
 	try:
 		command = (
@@ -68,9 +66,7 @@ def dump_schema_only(site, backup_dir, compress):
 			return compressed_file_path
 		else:
 			with open(schema_dump_file, "w") as f:
-				subprocess.run(
-					command, shell=True, stdout=f, stderr=subprocess.PIPE, text=True, check=True
-				)
+				subprocess.run(command, shell=True, stdout=f, stderr=subprocess.PIPE, text=True, check=True)
 			print(
 				f"\033[32mSUCCESS: Schema dump completed successfully. File saved as {schema_dump_file}.\033[0m"
 			)
@@ -87,9 +83,7 @@ def backup_full_database(site, backup_dir, compress):
 
 	full_backup_file = f"{backup_dir}/full_backup_file.sql"
 	try:
-		with importlib.resources.path(
-			"test_utils.utils", "mysqldump_wrapper.sh"
-		) as script_path:
+		with importlib.resources.path("test_utils.utils", "mysqldump_wrapper.sh") as script_path:
 			temp_script_path = "/tmp/mysqldump_wrapper.sh"
 			with open(script_path) as src_file:
 				with open(temp_script_path, "w") as temp_file:
@@ -254,7 +248,7 @@ def get_partitions_to_backup(partitioned_doctypes_to_restore=None, last_n_partit
 def backup_partition(site, table, current_partition, compress):
 	timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 	output_file = os.path.join(
-		"/tmp/", f'{table.lower().replace(" ", "")}_{current_partition}_{timestamp}.csv'
+		"/tmp/", f"{table.lower().replace(' ', '')}_{current_partition}_{timestamp}.csv"
 	)
 
 	sql_query = f"""
@@ -321,8 +315,8 @@ def restore_partition(site, table, partition_bkp_file):
 			for row in reader:
 				row = [None if field == "" else field for field in row]
 				sql_query = f"""
-				INSERT INTO `{table}` ({', '.join(sanitized_header)})
-				VALUES ({', '.join(['%s'] * len(header))});
+				INSERT INTO `{table}` ({", ".join(sanitized_header)})
+				VALUES ({", ".join(["%s"] * len(header))});
 				"""
 				try:
 					cursor.execute(sql_query, row)
@@ -332,9 +326,7 @@ def restore_partition(site, table, partition_bkp_file):
 		connection.commit()
 		cursor.close()
 		connection.close()
-		print(
-			f"\033[32mSUCCESS: Data imported successfully from {partition_bkp_file}.\033[0m"
-		)
+		print(f"\033[32mSUCCESS: Data imported successfully from {partition_bkp_file}.\033[0m")
 	except pymysql.MySQLError as e:
 		print(f"\033[31mERROR: Error during import {partition_bkp_file}: {e}.\033[0m")
 	except Exception as e:
@@ -344,9 +336,7 @@ def restore_partition(site, table, partition_bkp_file):
 def restore_partitions(
 	from_site, to_site, compress, partitioned_doctypes_to_restore=None, last_n_partitions=1
 ):
-	partitions_to_backup = get_partitions_to_backup(
-		partitioned_doctypes_to_restore, last_n_partitions
-	)
+	partitions_to_backup = get_partitions_to_backup(partitioned_doctypes_to_restore, last_n_partitions)
 
 	bkps_files = []
 	for table, partitions in partitions_to_backup.items():
@@ -381,9 +371,7 @@ def get_site_config_data(site_name):
 		return site_config
 
 	except Exception as e:
-		print(
-			f"\033[31mERROR: Error reading site config for site {site_name}: {str(e)}.\033[0m"
-		)
+		print(f"\033[31mERROR: Error reading site config for site {site_name}: {str(e)}.\033[0m")
 		return None
 
 
@@ -451,9 +439,7 @@ def restore(
 		}
 	schema_dump_file = dump_schema_only(from_site_config, backup_dir, compress)
 	full_bkp_file = backup_full_database(from_site_config, backup_dir, compress)
-	schema_and_non_partitioned_data = merge_sql_files(
-		schema_dump_file, full_bkp_file, backup_dir, compress
-	)
+	schema_and_non_partitioned_data = merge_sql_files(schema_dump_file, full_bkp_file, backup_dir, compress)
 	restore_database(to_site_config, schema_and_non_partitioned_data, bubble_backup)
 	restore_partitions(
 		from_site_config,
@@ -486,9 +472,7 @@ def bubble_backup(
 	mariadb_password = config.root_password
 
 	if not mariadb_user or not mariadb_password:
-		print(
-			"\033[34mINFO: root_login and root_password must be set in common_site_config.json.\033[0m"
-		)
+		print("\033[34mINFO: root_login and root_password must be set in common_site_config.json.\033[0m")
 		return
 
 	temp_db_name = f"temp_restore_{datetime.datetime.now().strftime('%Y%m%d%H%M')}"
@@ -519,16 +503,16 @@ def bubble_backup(
 			compress=False,
 			delete_files=delete_files,
 		)
-		bubble_bkp_name = f"./{from_site}/private/backups/{datetime.datetime.now().strftime('%Y%m%d%H%M')}_bubble.sql"
+		bubble_bkp_name = (
+			f"./{from_site}/private/backups/{datetime.datetime.now().strftime('%Y%m%d%H%M')}_bubble.sql"
+		)
 		dump_command = f"mysqldump -u {mariadb_user} -h {mariadb_host} -p{mariadb_password} {temp_db_name} | gzip > {bubble_bkp_name}.gz"
 		subprocess.run(dump_command, shell=True, check=True)
 		print(f"\033[32mSUCCESS: Backup SQL dump saved to {bubble_bkp_name}.\033[0m")
 
 	finally:
 		if not keep_temp_db:
-			connection = pymysql.connect(
-				host=mariadb_host, user=mariadb_user, password=mariadb_password
-			)
+			connection = pymysql.connect(host=mariadb_host, user=mariadb_user, password=mariadb_password)
 			cursor = connection.cursor()
 			cursor.execute(f"DROP DATABASE {temp_db_name};")
 			cursor.close()
