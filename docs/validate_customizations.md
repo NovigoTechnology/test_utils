@@ -1,5 +1,7 @@
 # Frappe Customization Validation Documentation
 
+Replace `<tag-or-commit>` with a published Novigo tag or full commit SHA containing the tools you need.
+
 The `validate_customizations` hook is designed to keep Custom Fields and Property Setters with their respective apps. This has become increasingly necessary as the number of applications used in a typical ERPNext deployment increases.
 
 ## Validation Checks
@@ -98,8 +100,8 @@ While Frappe provides a fixtures feature that can export and import DocTypes inc
 To ensure customization validation runs automatically during development, add the validation hook to your pre-commit configuration:
 
 ```yaml
-- repo: https://github.com/agritheory/test_utils
-  rev: v0.17.0
+- repo: https://github.com/NovigoTechnology/test_utils
+  rev: <tag-or-commit>
   hooks:
     - id: validate_customizations
       args: ['--app', 'your_app_name']
@@ -134,8 +136,8 @@ The `clean_customized_doctypes` pre-commit hook helps maintain clean and consist
 
 Add to your pre-commit config:
 ```yaml
-- repo: https://github.com/agritheory/test_utils
-  rev: v0.17.0
+- repo: https://github.com/NovigoTechnology/test_utils
+  rev: <tag-or-commit>
   hooks:
     - id: clean_customized_doctypes
       args: ['--app', 'your_app_name']

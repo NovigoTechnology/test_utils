@@ -1,5 +1,7 @@
 # Code Duplication
 
+Replace `<tag-or-commit>` with a published Novigo tag or full commit SHA containing the tools you need.
+
 The code duplication action runs [jscpd](https://jscpd.dev/) to detect copy-paste in Python, JavaScript, and TypeScript. It reports duplications on PRs, uploads HTML/JSON artifacts when issues are found, and fails when clone/percentage thresholds are exceeded.
 
 When **no duplications are detected**, the action does nothing: no summary, no artifact upload, no PR comment.
@@ -34,7 +36,7 @@ jobs:
         with:
           node-version: '18'
 
-      - uses: agritheory/test_utils/actions/code_duplication@main
+      - uses: NovigoTechnology/test_utils/actions/code_duplication@<tag-or-commit>
         with:
           max_clones: 60      # Fail if clones exceed this (default: 60)
           max_percentage: 5.0 # Warn if duplication % exceeds this (default: 5.0)

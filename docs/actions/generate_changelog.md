@@ -1,5 +1,7 @@
 # Changelog Generator Action
 
+Replace `<tag-or-commit>` with a published Novigo tag or full commit SHA containing the tools you need.
+
 This GitHub Action automatically generates a changelog entry as a PR comment by analyzing PR changes using an LLM. It supports Anthropic Claude, OpenAI, and Amazon Bedrock.
 
 ## Features
@@ -69,7 +71,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Generate Changelog
-        uses: agritheory/test_utils/actions/generate_changelog@main
+        uses: NovigoTechnology/test_utils/actions/generate_changelog@<tag-or-commit>
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -81,7 +83,7 @@ jobs:
 
 ```yaml
       - name: Generate Changelog
-        uses: agritheory/test_utils/actions/generate_changelog@main
+        uses: NovigoTechnology/test_utils/actions/generate_changelog@<tag-or-commit>
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           llm-provider: openai
@@ -94,7 +96,7 @@ jobs:
 
 ```yaml
       - name: Generate Changelog
-        uses: agritheory/test_utils/actions/generate_changelog@main
+        uses: NovigoTechnology/test_utils/actions/generate_changelog@<tag-or-commit>
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           llm-provider: openai
@@ -107,7 +109,7 @@ jobs:
 
 ```yaml
       - name: Generate Changelog
-        uses: agritheory/test_utils/actions/generate_changelog@main
+        uses: NovigoTechnology/test_utils/actions/generate_changelog@<tag-or-commit>
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           llm-provider: bedrock
@@ -121,7 +123,7 @@ jobs:
 
 ```yaml
       - name: Generate Changelog
-        uses: agritheory/test_utils/actions/generate_changelog@main
+        uses: NovigoTechnology/test_utils/actions/generate_changelog@<tag-or-commit>
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           llm-provider: bedrock
@@ -150,7 +152,7 @@ steps:
       aws-region: us-east-1
 
   - name: Generate Changelog
-    uses: agritheory/test_utils/actions/generate_changelog@main
+    uses: NovigoTechnology/test_utils/actions/generate_changelog@<tag-or-commit>
     with:
       github-token: ${{ secrets.GITHUB_TOKEN }}
       llm-provider: bedrock

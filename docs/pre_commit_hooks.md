@@ -1,5 +1,7 @@
 ## Using test_utils with pre-commit
 
+Replace `<tag-or-commit>` with a published Novigo tag or full commit SHA containing the tools you need.
+
 Add this to your .pre-commit-config.yaml
 
 ### Hooks available
@@ -9,8 +11,8 @@ Add this to your .pre-commit-config.yaml
 Check JavaScript, TypeScript, Python, Markdown, HTML, and SQL files. Add or refresh the copyright header while preserving file contents.
 
 ```
-  - repo: https://github.com/agritheory/test_utils/
-    rev: {rev} // The revision or tag to clone. Example: rev: v0.11.0
+  - repo: https://github.com/NovigoTechnology/test_utils
+    rev: <tag-or-commit>
     hooks:
       - id: validate_copyright
         files: '\.(js|ts|py|md|html|sql)$'
@@ -26,8 +28,8 @@ The hook inserts the header after a shebang and Python encoding declaration, pre
 Remove unused keys in customizations.
 
 ```
-  - repo: https://github.com/agritheory/test_utils/
-    rev: {rev} // The revision or tag to clone. Example: rev: v0.11.0
+  - repo: https://github.com/NovigoTechnology/test_utils
+    rev: <tag-or-commit>
     hooks:
       - id: clean_customized_doctypes
         args: ["--app", "{app_name}"]
@@ -38,8 +40,8 @@ Remove unused keys in customizations.
 Examine package.json across the installed apps on the site to detect any version mismatches
 
 ```
-  - repo: https://github.com/agritheory/test_utils/
-    rev: {rev} // The revision or tag to clone. Example: rev: v0.11.0
+  - repo: https://github.com/NovigoTechnology/test_utils
+    rev: <tag-or-commit>
     hooks:
       - id: validate_javascript_dependencies
 ```
@@ -49,8 +51,8 @@ Examine package.json across the installed apps on the site to detect any version
 Examine pyproject.toml across the installed apps on the site to detect any version mismatches
 
 ```
-  - repo: https://github.com/agritheory/test_utils/
-    rev: {rev} // The revision or tag to clone. Example: rev: v0.11.0
+  - repo: https://github.com/NovigoTechnology/test_utils
+    rev: <tag-or-commit>
     hooks:
       - id: validate_python_dependencies
 ```
@@ -60,8 +62,8 @@ Examine pyproject.toml across the installed apps on the site to detect any versi
 Validate Customizations
 
 ```
-  - repo: https://github.com/agritheory/test_utils/
-    rev: {rev} // The revision or tag to clone. Example: rev: v0.11.0
+  - repo: https://github.com/NovigoTechnology/test_utils
+    rev: <tag-or-commit>
     hooks:
       - id: validate_customizations
 ```
@@ -82,8 +84,8 @@ Update the Novigo test_utils entry in `.pre-commit-config.yaml` to the latest re
 Run mypy on the codebase using a preset configuration
 
 ```
-  - repo: https://github.com/agritheory/test_utils/
-    rev: {rev} // The revision or tag to clone. Example: rev: v0.11.0
+  - repo: https://github.com/NovigoTechnology/test_utils
+    rev: <tag-or-commit>
     hooks:
       - id: mypy
 ```
@@ -93,8 +95,8 @@ Run mypy on the codebase using a preset configuration
 Ensures DocType controllers include Frappe’s auto-generated `TYPE_CHECKING` block or a documented opt-out comment when `export_python_type_annotations` is enabled. Full reference: [`validate_doctype_python_types.md`](validate_doctype_python_types.md).
 
 ```
-  - repo: https://github.com/agritheory/test_utils/
-    rev: {rev}
+  - repo: https://github.com/NovigoTechnology/test_utils
+    rev: <tag-or-commit>
     hooks:
       - id: validate_doctype_python_types
         args: ["--app", "."]

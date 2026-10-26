@@ -1,11 +1,13 @@
 # Printer mocks
 
+Replace `<tag-or-commit>` with a published Novigo tag or full commit SHA containing the tools you need.
+
 `test_utils.printers` provides a stdlib-only IPP codec and mock raw/IPP print servers for integration tests and manual development.
 
 ## Install
 
 ```bash
-pip install "git+https://github.com/agritheory/test_utils.git@v1.26.0"
+pip install "git+https://github.com/NovigoTechnology/test_utils.git@<tag-or-commit>"
 ```
 
 ## CLI

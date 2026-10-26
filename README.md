@@ -10,16 +10,18 @@ See [docs/index.md](docs/index.md) for a full overview of every tool.
 
 The Novigo fork supports Python 3.14 only (`>=3.14,<3.15`).
 
+Replace `<tag-or-commit>` with a published Novigo tag or full commit SHA containing the tools you need.
+
 ### Python
 
 ```bash
-pip install "git+https://github.com/agritheory/test_utils.git@v0.17.0"
+pip install "git+https://github.com/NovigoTechnology/test_utils.git@<tag-or-commit>"
 ```
 
 Or with [Poetry](https://python-poetry.org/):
 
 ```bash
-poetry add "git+https://github.com/agritheory/test_utils.git@v0.17.0"
+poetry add "git+https://github.com/NovigoTechnology/test_utils.git@<tag-or-commit>"
 ```
 
 ### Pre-commit
@@ -27,8 +29,8 @@ poetry add "git+https://github.com/agritheory/test_utils.git@v0.17.0"
 Add to your app's `.pre-commit-config.yaml`:
 
 ```yaml
-- repo: https://github.com/agritheory/test_utils
-  rev: v0.17.0
+- repo: https://github.com/NovigoTechnology/test_utils
+  rev: <tag-or-commit>
   hooks:
     - id: static_analysis
     # - id: validate_customizations

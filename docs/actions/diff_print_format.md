@@ -1,5 +1,7 @@
 # Print Format Diff
 
+Replace `<tag-or-commit>` with a published Novigo tag or full commit SHA containing the tools you need.
+
 This GitHub Action helps automate the process of comparing changes made to print formats in a Frappe app. It checks for changes in .json files within the print_format directory, compares them to the base branch, and then comments the diff on the pull request.
 
 
@@ -30,8 +32,8 @@ jobs:
       - name: Checkout test_utils
         uses: actions/checkout@v4
         with:
-          repository: agritheory/test_utils
-          ref: main
+          repository: NovigoTechnology/test_utils
+          ref: <tag-or-commit>
           path: test_utils
 
       - name: Diff Print Formats

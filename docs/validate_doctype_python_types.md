@@ -1,5 +1,7 @@
 # DocType Python types — `validate_doctype_python_types`
 
+Replace `<tag-or-commit>` with a published Novigo tag or full commit SHA containing the tools you need.
+
 Frappe can [auto-generate static type hints](https://frappeframework.com/docs/user/en/basics/doctypes/controllers) on DocType controllers when `export_python_type_annotations = True` is set in `hooks.py`. Saving a DocType in Desk (or calling `export_types_to_controller` on the DocType document) writes a `TYPE_CHECKING` block delimited by:
 
 - `# begin: auto-generated types`
@@ -50,8 +52,8 @@ Add a *whole-line* comment near the top of the controller (after copyright / mod
 `--app` must be the **Frappe app repository root**: the directory that contains the inner package folder (same as `static_analysis` / most other test_utils hooks).
 
 ```yaml
-- repo: https://github.com/agritheory/test_utils
-  rev: v1.25.1  # or newer tag containing this hook
+- repo: https://github.com/NovigoTechnology/test_utils
+  rev: <tag-or-commit>
   hooks:
     - id: validate_doctype_python_types
       args: ["--app", "."]

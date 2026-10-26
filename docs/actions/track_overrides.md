@@ -1,5 +1,7 @@
 # Track Overrides
 
+Replace `<tag-or-commit>` with a published Novigo tag or full commit SHA containing the tools you need.
+
 `track-overrides` is a GitHub Action designed to track method overrides in Python projects.
 It automatically detects the base branch from the pull request that triggers the action and compares the code changes in the pull request against the corresponding branch in the repository specified in the method annotations.
 
@@ -85,7 +87,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Track Overrides
-        uses: agritheory/test_utils/actions/track_overrides@main
+        uses: NovigoTechnology/test_utils/actions/track_overrides@<tag-or-commit>
         with:
           post-comment: false
 ```

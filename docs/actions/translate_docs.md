@@ -1,5 +1,7 @@
 # Translate Docs Action
 
+Replace `<tag-or-commit>` with a published Novigo tag or full commit SHA containing the tools you need.
+
 This GitHub Action translates markdown files under `docs/*/en/` to other languages using Google Cloud Translation. When a PR modifies English docs, the action creates translation PRs for each configured language.
 
 ## Requirements
@@ -58,7 +60,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Translate Docs
-        uses: agritheory/test_utils/actions/translate_docs@main
+        uses: NovigoTechnology/test_utils/actions/translate_docs@<tag-or-commit>
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
