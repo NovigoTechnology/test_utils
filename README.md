@@ -1,4 +1,4 @@
-# AgriTheory Test Utils
+# Novigo Test Utils
 
 Development tools for [Frappe](https://frappeframework.com) apps: test fixtures, pre-commit hooks, GitHub Action templates, and static analysis.
 
