@@ -68,11 +68,11 @@ Validate Customizations
 
 ### Update pre-commit config - `update_pre_commit_config`
 
-Update test_utils pre-commit config to latest
+Update the Novigo test_utils entry in `.pre-commit-config.yaml` to the latest revision using `pre-commit autoupdate --repo https://github.com/NovigoTechnology/test_utils`. The hook forwards stdout, stderr, and the process exit code. If `pre-commit` cannot be started, it reports the error on stderr and exits with code 1.
 
 ```
-  - repo: https://github.com/agritheory/test_utils/
-    rev: {rev} // The revision or tag to clone. Example: rev: v0.11.0
+  - repo: https://github.com/NovigoTechnology/test_utils
+    rev: <tag-or-commit>
     hooks:
       - id: update_pre_commit_config
 ```

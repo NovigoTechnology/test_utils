@@ -4,20 +4,18 @@ import sys
 
 def main():
 	try:
-		# Run the pre-commit autoupdate with --repo (path to test_utils) to update pre-commit config
 		result = subprocess.run(
-			["pre-commit", "autoupdate", "--repo", "https://github.com/agritheory/test_utils"],
+			["pre-commit", "autoupdate", "--repo", "https://github.com/NovigoTechnology/test_utils"],
 			capture_output=True,
 			text=True,
 		)
-
-		print(result.stdout)
-		if result.stderr:
-			print(result.stderr)
-
-	except Exception as e:
-		print(f"Error: {e}")
+	except OSError as e:
+		print(f"Error: {e}", file=sys.stderr)
 		sys.exit(1)
+
+	sys.stdout.write(result.stdout)
+	sys.stderr.write(result.stderr)
+	sys.exit(result.returncode)
 
 
 if __name__ == "__main__":
