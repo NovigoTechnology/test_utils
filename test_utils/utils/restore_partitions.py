@@ -6,9 +6,8 @@ import os
 import shutil
 import subprocess
 
-import pymysql
-
 import frappe
+import pymysql
 
 
 def _escape_tsv_value(value):
@@ -79,9 +78,7 @@ class SiteConnection:
 			db_host = self.config.get("db_host", "localhost")
 
 			try:
-				result = subprocess.run(
-					["getent", "hosts", db_host], capture_output=True, text=True
-				)
+				result = subprocess.run(["getent", "hosts", db_host], capture_output=True, text=True)
 				if result.stdout:
 					return result.stdout.split()[0]
 			except Exception:
@@ -214,9 +211,7 @@ class BackupEngine:
 				return compressed_file_path
 			else:
 				with open(schema_dump_file, "w") as f:
-					result = subprocess.run(
-						command, stdout=f, stderr=subprocess.PIPE, text=True, check=True
-					)
+					_result = subprocess.run(command, stdout=f, stderr=subprocess.PIPE, text=True, check=True)
 				print(f"Schema dump completed: {schema_dump_file}")
 				return schema_dump_file
 		except subprocess.CalledProcessError as e:
@@ -226,7 +221,7 @@ class BackupEngine:
 			print(f"ERROR: Unexpected error: {e}")
 			raise
 
-	def backup_full_database(self, append_to_file: str = None) -> str:
+	def backup_full_database(self, append_to_file: str | None = None) -> str:
 		site_dict = self.site.to_dict()
 		partitioned_tables = PartitionAnalyzer.get_partitioned_tables()
 		exclude = list(set(frappe.get_hooks("exclude_tables") + partitioned_tables))
@@ -271,12 +266,8 @@ class BackupEngine:
 					total_included_size += size_mb
 
 			print("\n  SUMMARY:")
-			print(
-				f"    Tables to INCLUDE: {len(included_tables)} ({total_included_size:.1f} MB)"
-			)
-			print(
-				f"    Tables to EXCLUDE: {len(excluded_tables)} ({total_excluded_size:.1f} MB)"
-			)
+			print(f"    Tables to INCLUDE: {len(included_tables)} ({total_included_size:.1f} MB)")
+			print(f"    Tables to EXCLUDE: {len(excluded_tables)} ({total_excluded_size:.1f} MB)")
 
 			print("\n  Top 15 INCLUDED tables:")
 			for table_name, size_mb, rows in included_tables[:15]:
@@ -317,9 +308,7 @@ class BackupEngine:
 
 			if self.compress:
 				compressed_file_path = f"{full_backup_file}.gz"
-				dump_process = subprocess.Popen(
-					command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-				)
+				dump_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 				mode = "ab" if append_to_file and os.path.exists(append_to_file) else "wb"
 
 				bytes_written = 0
@@ -356,9 +345,7 @@ class BackupEngine:
 			else:
 				mode = "ab" if append_to_file and os.path.exists(append_to_file) else "wb"
 
-				dump_process = subprocess.Popen(
-					command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-				)
+				dump_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 				bytes_written = 0
 				last_report = start_time
@@ -431,7 +418,7 @@ class BackupEngine:
 		# Use .tsv.gz for LOAD DATA INFILE compatibility
 		output_file = os.path.join(
 			self.backup_dir,
-			f'{table.lower().replace(" ", "").replace("`", "")}_{partition}_{timestamp}.tsv.gz',
+			f"{table.lower().replace(' ', '').replace('`', '')}_{partition}_{timestamp}.tsv.gz",
 		)
 		sql_query = f"SELECT * FROM `{table}` PARTITION ({partition});"
 
@@ -486,9 +473,7 @@ class BackupEngine:
 					if (now - last_report).total_seconds() >= 2:
 						elapsed = (now - start_time).total_seconds()
 						rate = rows_written / elapsed if elapsed > 0 else 0
-						print(
-							f"\r  Exporting: {rows_written:,} rows ({rate:.0f} rows/s)", end="", flush=True
-						)
+						print(f"\r  Exporting: {rows_written:,} rows ({rate:.0f} rows/s)", end="", flush=True)
 						last_report = now
 
 			cursor.close()
@@ -496,9 +481,7 @@ class BackupEngine:
 
 			elapsed = (datetime.datetime.now() - start_time).total_seconds()
 			file_size = os.path.getsize(output_file) / (1024 * 1024)
-			print(
-				f"\r  Exported: {rows_written:,} rows in {elapsed:.1f}s -> {file_size:.1f} MB compressed"
-			)
+			print(f"\r  Exported: {rows_written:,} rows in {elapsed:.1f}s -> {file_size:.1f} MB compressed")
 			return output_file
 
 		except pymysql.MySQLError as e:
@@ -512,9 +495,7 @@ class BackupEngine:
 			return None
 
 	@staticmethod
-	def merge_sql_files(
-		schema_dump_path: str, full_backup_path: str, backup_dir: str, compress: bool
-	) -> str:
+	def merge_sql_files(schema_dump_path: str, full_backup_path: str, backup_dir: str, compress: bool) -> str:
 		output_path = f"{backup_dir}/schema_and_non_partitioned_data.sql"
 		try:
 			if compress:
@@ -552,7 +533,7 @@ class BackupEngine:
 					os.remove(file_path)
 					print(f"Deleted file: {file_path}")
 		except Exception as e:
-			print(f"ERROR: Error while deleting backup files: {str(e)}")
+			print(f"ERROR: Error while deleting backup files: {e!s}")
 
 
 class RestoreEngine:
@@ -578,9 +559,7 @@ class RestoreEngine:
 		if bubble_backup:
 			try:
 				file_size = os.path.getsize(backup_file)
-				print(
-					f"\nRestoring {file_size / 1024 / 1024:.1f} MB SQL file to {site_dict['db_name']}..."
-				)
+				print(f"\nRestoring {file_size / 1024 / 1024:.1f} MB SQL file to {site_dict['db_name']}...")
 
 				command = [
 					"mysql",
@@ -636,7 +615,7 @@ class RestoreEngine:
 						except Exception:
 							pass
 
-					stdout = process.stdout.read() if process.stdout else b""
+					_stdout = process.stdout.read() if process.stdout else b""
 					stderr = process.stderr.read() if process.stderr else b""
 					process.wait()
 
@@ -740,10 +719,7 @@ class RestoreEngine:
 			elapsed = (datetime.datetime.now() - start_time).total_seconds()
 
 			if result.returncode != 0:
-				if (
-					"local infile" in result.stderr.lower()
-					or "loading local data" in result.stderr.lower()
-				):
+				if "local infile" in result.stderr.lower() or "loading local data" in result.stderr.lower():
 					print("  LOAD DATA LOCAL not enabled, falling back to INSERT method...")
 					if needs_cleanup:
 						os.remove(temp_file)
@@ -805,9 +781,7 @@ class RestoreEngine:
 				header = header_line.split("\t")
 				sanitized_header = [f"`{col}`" for col in header]
 				placeholders = ", ".join(["%s"] * len(header))
-				insert_sql = (
-					f"INSERT INTO `{table}` ({', '.join(sanitized_header)}) VALUES ({placeholders})"
-				)
+				insert_sql = f"INSERT INTO `{table}` ({', '.join(sanitized_header)}) VALUES ({placeholders})"
 
 				batch = []
 				batch_size = 5000
@@ -825,7 +799,7 @@ class RestoreEngine:
 						try:
 							cursor.executemany(insert_sql, batch)
 							total_inserted += len(batch)
-						except pymysql.MySQLError as e:
+						except pymysql.MySQLError:
 							# Fall back to individual inserts
 							for single_row in batch:
 								try:
@@ -868,9 +842,7 @@ class RestoreEngine:
 
 			elapsed = (datetime.datetime.now() - start_time).total_seconds()
 			rate = total_inserted / elapsed if elapsed > 0 else 0
-			print(
-				f"\r  ✓ INSERT completed: {total_inserted:,} rows in {elapsed:.1f}s ({rate:.0f} rows/s)"
-			)
+			print(f"\r  ✓ INSERT completed: {total_inserted:,} rows in {elapsed:.1f}s ({rate:.0f} rows/s)")
 			return True
 
 		except Exception as e:
@@ -932,9 +904,7 @@ def restore_partitions(
 			partition_bkp_file = backup_engine.backup_partition(table, partition)
 
 			if partition_bkp_file is None:
-				print(
-					f"WARNING: Skipping restore for {table} partition {partition} (backup failed)"
-				)
+				print(f"WARNING: Skipping restore for {table} partition {partition} (backup failed)")
 				continue
 
 			try:
@@ -957,7 +927,7 @@ def get_site_config_data(site_name):
 		return site_config
 
 	except Exception as e:
-		print(f"ERROR: Error reading site config for site {site_name}: {str(e)}")
+		print(f"ERROR: Error reading site config for site {site_name}: {e!s}")
 		return None
 
 
@@ -1007,9 +977,7 @@ def restore(
 
 	# Step 2: Backup full database directly appended to schema (saves disk space)
 	print("Appending full backup data to schema file...")
-	schema_and_non_partitioned_data = backup_engine.backup_full_database(
-		append_to_file=schema_dump_file
-	)
+	schema_and_non_partitioned_data = backup_engine.backup_full_database(append_to_file=schema_dump_file)
 
 	# Step 3: Restore merged database
 	restore_engine.restore_database(schema_and_non_partitioned_data, bubble_backup)

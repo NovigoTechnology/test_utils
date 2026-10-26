@@ -57,7 +57,7 @@ def _run(directory: Path | None, semgrep_args: list[str]) -> int:
 	cwd = directory.resolve() if directory else None
 
 	result = subprocess.run(
-		["semgrep", "--json", "--quiet"] + semgrep_args,
+		["semgrep", "--json", "--quiet", *semgrep_args],
 		capture_output=True,
 		text=True,
 		cwd=cwd,

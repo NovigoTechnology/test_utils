@@ -39,13 +39,13 @@ repos:
         args: ['--py314-plus']
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.4
+    rev: v0.17.2
     hooks:
-      - id: ruff
+      - id: ruff-check
         name: "Run ruff import sorter"
         args: ["--select=I", "--fix"]
 
-      - id: ruff
+      - id: ruff-check
         name: "Run ruff linter"
 
       - id: ruff-format

@@ -1,13 +1,13 @@
 #!/usr/bin/env python
+import json
 import os
 import sys
-import json
+
 import boto3
 from anthropic import Anthropic
 from botocore.exceptions import ClientError, NoCredentialsError
-from github import Github, Auth
-from openai import OpenAI, AuthenticationError, RateLimitError
-
+from github import Auth, Github
+from openai import AuthenticationError, OpenAI, RateLimitError
 
 PROVIDER_ANTHROPIC = "anthropic"
 PROVIDER_OPENAI = "openai"
@@ -103,9 +103,7 @@ def get_pr_data(env_vars):
 def get_custom_prompt_template(env_vars):
 	"""Load custom prompt template if provided, otherwise use the default template file."""
 	try:
-		if env_vars["prompt_template_path"] and os.path.exists(
-			env_vars["prompt_template_path"]
-		):
+		if env_vars["prompt_template_path"] and os.path.exists(env_vars["prompt_template_path"]):
 			with open(env_vars["prompt_template_path"]) as f:
 				return f.read()
 	except Exception as e:
@@ -221,7 +219,7 @@ def generate_changelog_with_anthropic(pr_data, env_vars):
 			comment = (
 				"## Changelog Generation Error\n\n"
 				"The changelog could not be generated due to an error with the Anthropic API.\n\n"
-				f"Error details: {str(e)}"
+				f"Error details: {e!s}"
 			)
 			post_error_comment(comment, pr_data, env_vars)
 		return None
@@ -247,7 +245,7 @@ def generate_changelog_with_openai(pr_data, env_vars):
 		)
 
 		return response.choices[0].message.content
-	except AuthenticationError as e:
+	except AuthenticationError:
 		print("ERROR: Invalid OpenAI API key.")
 		comment = (
 			"## Changelog Generation Error\n\n"
@@ -277,7 +275,7 @@ def generate_changelog_with_openai(pr_data, env_vars):
 		comment = (
 			"## Changelog Generation Error\n\n"
 			"The changelog could not be generated due to an error with the OpenAI API.\n\n"
-			f"Error details: {str(e)}"
+			f"Error details: {e!s}"
 		)
 		post_error_comment(comment, pr_data, env_vars)
 	return None
@@ -339,14 +337,14 @@ def generate_changelog_with_bedrock(pr_data, env_vars):
 				"## Changelog Generation Error\n\n"
 				"The changelog could not be generated due to an invalid request to Amazon Bedrock.\n\n"
 				f"Please verify the model ID `{env_vars['bedrock_model']}` is correct and supported in region "
-				f"`{env_vars['aws_region']}`.\n\nError details: {str(e)}"
+				f"`{env_vars['aws_region']}`.\n\nError details: {e!s}"
 			)
 		else:
 			print(f"Error generating changelog with Amazon Bedrock: {e}")
 			comment = (
 				"## Changelog Generation Error\n\n"
 				"The changelog could not be generated due to an error with Amazon Bedrock.\n\n"
-				f"Error details: {str(e)}"
+				f"Error details: {e!s}"
 			)
 		post_error_comment(comment, pr_data, env_vars)
 	except Exception as e:
@@ -354,7 +352,7 @@ def generate_changelog_with_bedrock(pr_data, env_vars):
 		comment = (
 			"## Changelog Generation Error\n\n"
 			"The changelog could not be generated due to an unexpected error with Amazon Bedrock.\n\n"
-			f"Error details: {str(e)}"
+			f"Error details: {e!s}"
 		)
 		post_error_comment(comment, pr_data, env_vars)
 	return None

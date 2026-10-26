@@ -24,7 +24,7 @@ SKIP_COMMENT_ALT = "# frappe types: ignore"
 
 
 def find_bench_root(start: pathlib.Path) -> pathlib.Path | None:
-	for p in [start] + list(start.parents):
+	for p in [start, *list(start.parents)]:
 		if (p / "sites").is_dir() and (p / "apps").is_dir() and (p / "env").is_dir():
 			return p
 	return None
@@ -43,7 +43,7 @@ def resolve_hooks_path(app_path: pathlib.Path) -> pathlib.Path | None:
 def hooks_enables_export_python_types(hooks_file: pathlib.Path) -> bool:
 	try:
 		tree = ast.parse(hooks_file.read_text(encoding="utf-8"))
-	except (OSError, SyntaxError):
+	except OSError, SyntaxError:
 		return False
 	for node in ast.walk(tree):
 		if not isinstance(node, ast.Assign):
@@ -127,7 +127,7 @@ def read_doctype_name(doctype_dir: pathlib.Path) -> str | None:
 		return None
 	try:
 		data = json.loads(json_path.read_text(encoding="utf-8"))
-	except (OSError, json.JSONDecodeError):
+	except OSError, json.JSONDecodeError:
 		return None
 	name = data.get("name")
 	return name if isinstance(name, str) else None
@@ -171,7 +171,7 @@ def resolve_site(bench_root: pathlib.Path, site_arg: str | None) -> str | None:
 			site = json.loads(cfg.read_text(encoding="utf-8")).get("default_site")
 			if isinstance(site, str) and site:
 				return site
-		except (OSError, json.JSONDecodeError):
+		except OSError, json.JSONDecodeError:
 			return None
 	cur = bench_root / "sites" / "currentsite.txt"
 	if cur.is_file():
@@ -181,9 +181,7 @@ def resolve_site(bench_root: pathlib.Path, site_arg: str | None) -> str | None:
 	return None
 
 
-def bench_export_types(
-	bench_root: pathlib.Path, site: str, doctype_record_name: str
-) -> tuple[bool, str]:
+def bench_export_types(bench_root: pathlib.Path, site: str, doctype_record_name: str) -> tuple[bool, str]:
 	py_bin = bench_root / "env" / "bin" / "python"
 	if not py_bin.is_file():
 		return False, f"no interpreter at {py_bin}"

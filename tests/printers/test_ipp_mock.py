@@ -55,7 +55,7 @@ async def test_ipp_mock_print_job_and_get_attributes(tmp_path: Path):
 			assert response.status_code == 200
 
 			decoder = IppDecoder(response.content)
-			version, status, req_id = decoder.read_header()
+			_version, status, _req_id = decoder.read_header()
 			assert status == IppStatus.OK
 			attrs = decoder.read_attributes()
 			assert decoder.get_integer(attrs, "job-id") == 1

@@ -14,9 +14,7 @@ def main():
 
 	scan_parser = subparsers.add_parser("scan", help="Scan directory for SQL operations")
 	scan_parser.add_argument("--directory", default=".", help="Directory to scan")
-	scan_parser.add_argument(
-		"--registry", default=".sql_registry.json", help="Registry file path"
-	)
+	scan_parser.add_argument("--registry", default=".sql_registry.json", help="Registry file path")
 	scan_parser.add_argument(
 		"--include-patches",
 		action="store_true",
@@ -32,33 +30,21 @@ def main():
 	)
 
 	report_parser = subparsers.add_parser("report", help="Generate usage report")
-	report_parser.add_argument(
-		"--registry", default=".sql_registry.json", help="Registry file path"
-	)
+	report_parser.add_argument("--registry", default=".sql_registry.json", help="Registry file path")
 	report_parser.add_argument("--output", help="Output file for report")
 
 	list_parser = subparsers.add_parser("list", help="List SQL calls")
-	list_parser.add_argument(
-		"--registry", default=".sql_registry.json", help="Registry file path"
-	)
+	list_parser.add_argument("--registry", default=".sql_registry.json", help="Registry file path")
 	list_parser.add_argument("--file-filter", help="Filter by file path")
 
 	show_parser = subparsers.add_parser("show", help="Show details for specific call")
 	show_parser.add_argument("call_id", help="Call ID to show details")
-	show_parser.add_argument(
-		"--registry", default=".sql_registry.json", help="Registry file path"
-	)
+	show_parser.add_argument("--registry", default=".sql_registry.json", help="Registry file path")
 
-	rewrite_parser = subparsers.add_parser(
-		"rewrite", help="Rewrite SQL call to Query Builder"
-	)
+	rewrite_parser = subparsers.add_parser("rewrite", help="Rewrite SQL call to Query Builder")
 	rewrite_parser.add_argument("call_id", help="Call ID to rewrite")
-	rewrite_parser.add_argument(
-		"--registry", default=".sql_registry.json", help="Registry file path"
-	)
-	rewrite_parser.add_argument(
-		"--apply", action="store_true", help="Apply changes to file"
-	)
+	rewrite_parser.add_argument("--registry", default=".sql_registry.json", help="Registry file path")
+	rewrite_parser.add_argument("--apply", action="store_true", help="Apply changes to file")
 	rewrite_parser.add_argument(
 		"--force",
 		action="store_true",
@@ -70,19 +56,11 @@ def main():
 		),
 	)
 
-	todos_parser = subparsers.add_parser(
-		"todos", help="List calls with TODO in conversion"
-	)
-	todos_parser.add_argument(
-		"--registry", default=".sql_registry.json", help="Registry file path"
-	)
+	todos_parser = subparsers.add_parser("todos", help="List calls with TODO in conversion")
+	todos_parser.add_argument("--registry", default=".sql_registry.json", help="Registry file path")
 
-	orm_parser = subparsers.add_parser(
-		"orm", help="List calls converted to simple ORM (frappe.get_all)"
-	)
-	orm_parser.add_argument(
-		"--registry", default=".sql_registry.json", help="Registry file path"
-	)
+	orm_parser = subparsers.add_parser("orm", help="List calls converted to simple ORM (frappe.get_all)")
+	orm_parser.add_argument("--registry", default=".sql_registry.json", help="Registry file path")
 
 	args = parser.parse_args()
 
@@ -133,9 +111,7 @@ def main():
 
 	elif args.command == "show":
 		matching_calls = [
-			call
-			for call in registry.data["calls"].values()
-			if call.call_id.startswith(args.call_id)
+			call for call in registry.data["calls"].values() if call.call_id.startswith(args.call_id)
 		]
 
 		if not matching_calls:
@@ -239,9 +215,7 @@ def main():
 
 		orm_calls = []
 		for call in calls.values():
-			if (
-				call.query_builder_equivalent and "frappe.get_all(" in call.query_builder_equivalent
-			):
+			if call.query_builder_equivalent and "frappe.get_all(" in call.query_builder_equivalent:
 				orm_calls.append(call)
 
 		if not orm_calls:
@@ -250,9 +224,7 @@ def main():
 
 		print(f"\n🔄 Found {len(orm_calls)} calls that can use simple ORM (frappe.get_all):")
 		print("=" * 80)
-		print(
-			"These are simple queries that could be refactored to use frappe.get_all/get_value"
-		)
+		print("These are simple queries that could be refactored to use frappe.get_all/get_value")
 		print("instead of frappe.db.sql - often quick wins!\n")
 
 		for call in sorted(orm_calls, key=lambda x: (x.file_path, x.line_number)):

@@ -20,13 +20,13 @@ Example::
 from __future__ import annotations
 
 __all__ = [
+	"JsCallSite",
 	"build_graph",
 	"complexity_leaderboard",
-	"graph_meta",
-	"js_callsites_in_loops",
-	"JsCallSite",
 	"extract_callsites_from_source",
+	"graph_meta",
 	"iter_js_callsites_in_app",
+	"js_callsites_in_loops",
 ]
 
 from .builder import build_graph

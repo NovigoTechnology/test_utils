@@ -6,12 +6,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from tree_sitter import Language, Node, Parser
 import tree_sitter_javascript as _tsjs
 import tree_sitter_typescript as _tsts
+from tree_sitter import Language, Node, Parser
 
 from ..static_analysis.path_resolver import is_dynamic_path, is_potential_dotted_path
-
 from .path_excludes import is_excluded_relative_path
 
 # Array / collection iteration methods that imply per-item work when the body contains a call.
@@ -171,9 +170,7 @@ def _outer_loop_method_name(call: Node, source: bytes) -> str | None:
 	return None
 
 
-def _loop_context_and_type_with_source(
-	call: Node, source: bytes
-) -> tuple[bool, str | None]:
+def _loop_context_and_type_with_source(call: Node, source: bytes) -> tuple[bool, str | None]:
 	cur: Node | None = call.parent
 	while cur is not None:
 		t = cur.type
@@ -237,9 +234,7 @@ def extract_callsites_for_file(app_root: Path, file_path: Path) -> list[JsCallSi
 			opening = raw[m.start() : m.start(1)]
 			lang_key = "ts" if 'lang="ts"' in opening or "lang='ts'" in opening else "js"
 			lang_obj = (
-				Language(_tsts.language_typescript())
-				if lang_key == "ts"
-				else Language(_tsjs.language())
+				Language(_tsts.language_typescript()) if lang_key == "ts" else Language(_tsjs.language())
 			)
 			line_base = raw.count("\n", 0, m.start(1))
 			for site in extract_callsites_from_source(relpath, body, language=lang_obj):
@@ -257,12 +252,9 @@ def extract_callsites_for_file(app_root: Path, file_path: Path) -> list[JsCallSi
 	return extract_callsites_from_source(relpath, raw)
 
 
-def iter_js_callsites_in_app(
-	app_root: Path, exclude_globs: list[str] | None = None
-) -> list[JsCallSite]:
+def iter_js_callsites_in_app(app_root: Path, exclude_globs: list[str] | None = None) -> list[JsCallSite]:
 	"""Scan *app_root* for frontend extensions and yield all call sites."""
 	from ..static_analysis.frontend_validator import FRONTEND_EXTENSIONS
-
 	from .constants import SKIP_DIR_PARTS
 
 	globs = exclude_globs or []

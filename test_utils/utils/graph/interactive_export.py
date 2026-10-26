@@ -93,8 +93,7 @@ def build_vis_dataset(db_path: Path) -> dict[str, Any]:
 
 		try:
 			py_call_rows = con.execute(
-				"SELECT caller_dotted_path, callee_dotted_path, file_path, line "
-				"FROM python_call_edges"
+				"SELECT caller_dotted_path, callee_dotted_path, file_path, line FROM python_call_edges"
 			).fetchall()
 		except Exception:
 			py_call_rows = []
@@ -146,9 +145,7 @@ def build_vis_dataset(db_path: Path) -> dict[str, Any]:
 			fid = f"file:{fp}"
 			add_node(fid, fp.split("/")[-1][:40], "file", fp)
 			entries_sorted = sorted(entries, key=lambda t: t[0])
-			parts_t = [
-				f"L{ln} {k}" + (f" ({nm})" if nm else "") for ln, k, nm in entries_sorted[:10]
-			]
+			parts_t = [f"L{ln} {k}" + (f" ({nm})" if nm else "") for ln, k, nm in entries_sorted[:10]]
 			tooltip = "; ".join(parts_t)
 			if len(entries_sorted) > 10:
 				tooltip += f" … (+{len(entries_sorted) - 10})"
@@ -165,9 +162,7 @@ def build_vis_dataset(db_path: Path) -> dict[str, Any]:
 			)
 			edge_id += 1
 
-		hook_rows = con.execute(
-			"SELECT DISTINCT hook_variable FROM hook_registrations"
-		).fetchall()
+		hook_rows = con.execute("SELECT DISTINCT hook_variable FROM hook_registrations").fetchall()
 		for (hv,) in hook_rows:
 			hid = f"hook:{hv}"
 			add_node(hid, hv[:40], "hook", f"hooks.py key: {hv}")
@@ -213,11 +208,7 @@ def build_vis_dataset(db_path: Path) -> dict[str, Any]:
 			if not target_path:
 				continue
 			jid = f"js:{file_path}:{line}"
-			lt = (
-				f" (loop: {loop_type})"
-				if loop_ctx and loop_type
-				else (" (in loop)" if loop_ctx else "")
-			)
+			lt = f" (loop: {loop_type})" if loop_ctx and loop_type else (" (in loop)" if loop_ctx else "")
 			add_node(jid, f"JS L{line}", "js_call", f"{file_path}:{line}{lt}\n→ {target_path}")
 			tid = f"fn:{target_path}"
 			if target_path not in fn_paths:
@@ -362,7 +353,5 @@ def write_graph_json(db_path: Path, output_path: Path) -> Path:
 	data = build_vis_dataset(db_path)
 	output_path = Path(output_path).resolve()
 	output_path.parent.mkdir(parents=True, exist_ok=True)
-	output_path.write_text(
-		json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
-	)
+	output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 	return output_path

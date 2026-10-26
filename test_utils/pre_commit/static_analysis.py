@@ -57,14 +57,14 @@ def _run(args: argparse.Namespace) -> int:
 	print(f"\nFrappe Static Analysis: {app_name}")
 	print("=" * (24 + len(app_name)))
 
-	any_output = False
+	_any_output = False
 
 	# Hooks
 	if result.hooks_result is not None:
 		hr = result.hooks_result
 		label = f"Hooks ({hr.paths_checked} paths checked)"
 		if hr.errors or hr.warnings:
-			any_output = True
+			_any_output = True
 			_print_section(f"[hooks] {label}", hr.errors, prefix="  ERROR: ")
 			_print_section("", hr.warnings, prefix="  WARN:  ")
 		else:
@@ -75,7 +75,7 @@ def _run(args: argparse.Namespace) -> int:
 		pr = result.patches_result
 		label = f"Patches ({pr.paths_checked} paths checked)"
 		if pr.errors or pr.warnings:
-			any_output = True
+			_any_output = True
 			_print_section(f"[patches] {label}", pr.errors, prefix="  ERROR: ")
 			_print_section("", pr.warnings, prefix="  WARN:  ")
 		else:
@@ -86,7 +86,7 @@ def _run(args: argparse.Namespace) -> int:
 		fr = result.frontend_result
 		label = f"Frontend ({fr.calls_checked} calls checked)"
 		if fr.errors or fr.warnings:
-			any_output = True
+			_any_output = True
 			_print_section(f"[frontend] {label}", fr.errors, prefix="  ERROR: ")
 			_print_section("", fr.warnings, prefix="  WARN:  ")
 		else:
@@ -97,7 +97,7 @@ def _run(args: argparse.Namespace) -> int:
 		pcr = result.python_call_result
 		label = f"Python frappe.call ({pcr.calls_checked} calls checked)"
 		if pcr.errors or pcr.warnings:
-			any_output = True
+			_any_output = True
 			_print_section(f"[python_calls] {label}", pcr.errors, prefix="  ERROR: ")
 			_print_section("", pcr.warnings, prefix="  WARN:  ")
 		else:
@@ -108,7 +108,7 @@ def _run(args: argparse.Namespace) -> int:
 		jr = result.jinja_result
 		label = f"Jinja templates ({jr.calls_checked} references checked)"
 		if jr.errors or jr.warnings:
-			any_output = True
+			_any_output = True
 			_print_section(f"[jinja] {label}", jr.errors, prefix="  ERROR: ")
 			_print_section("", jr.warnings, prefix="  WARN:  ")
 		else:
@@ -119,7 +119,7 @@ def _run(args: argparse.Namespace) -> int:
 		rr = result.report_result
 		label = f"Reports ({rr.files_checked} files checked)"
 		if rr.warnings:
-			any_output = True
+			_any_output = True
 			_print_section(f"[reports] {label}", rr.warnings, prefix="  WARN:  ")
 		else:
 			print(f"\n[reports] {label} — OK")
@@ -129,11 +129,11 @@ def _run(args: argparse.Namespace) -> int:
 		orph = result.orphan_result
 		label = f"Orphan detection ({orph.entry_points_found} entry points)"
 		if orph.error:
-			any_output = True
+			_any_output = True
 			print(f"\n[orphans] {label}")
 			print(f"  ERROR: {orph.error}")
 		elif orph.unreachable:
-			any_output = True
+			_any_output = True
 			_print_section(
 				f"[orphans] {label} — {len(orph.unreachable)} unused item(s)",
 				[str(item) for item in orph.unreachable],

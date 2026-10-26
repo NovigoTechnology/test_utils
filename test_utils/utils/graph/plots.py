@@ -56,7 +56,7 @@ def render_plots(db_path: Path, output_dir: Path, *, top_n: int = 25) -> list[Pa
 			ax.set_yticks(list(y))
 			ax.set_yticklabels(short_labels, fontsize=7)
 			ax.invert_yaxis()
-			ax.set_xlabel("Score = 2 × cyclomatic + max_ast_depth")
+			ax.set_xlabel("Score = 2 \N{MULTIPLICATION SIGN} cyclomatic + max_ast_depth")
 			ax.set_title(f"Top {len(rows)} functions by composite complexity")
 			plt.tight_layout()
 			p = output_dir / "top_complexity.png"
@@ -65,9 +65,7 @@ def render_plots(db_path: Path, output_dir: Path, *, top_n: int = 25) -> list[Pa
 			written.append(p)
 
 		# --- Cyclomatic histogram ---
-		cycl_rows = con.execute(
-			"SELECT cyclomatic FROM functions WHERE cyclomatic IS NOT NULL"
-		).fetchall()
+		cycl_rows = con.execute("SELECT cyclomatic FROM functions WHERE cyclomatic IS NOT NULL").fetchall()
 		vals = [c[0] for c in cycl_rows]
 		if vals:
 			fig, ax = plt.subplots(figsize=(9, 5))

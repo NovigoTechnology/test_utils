@@ -17,7 +17,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 # Pin below 4.2.5: that release pulls commander@15 (ESM-only), which breaks on Node < 20.19.
 JSCPD_VERSION = "jscpd@4.2.4"
 
@@ -98,10 +97,8 @@ def main() -> int:
 			with open(json_report) as f:
 				data = json.load(f)
 			clones = data.get("statistics", {}).get("total", {}).get("clones", 0)
-			percentage = float(
-				data.get("statistics", {}).get("total", {}).get("percentage") or 0
-			)
-		except (OSError, json.JSONDecodeError, KeyError):
+			percentage = float(data.get("statistics", {}).get("total", {}).get("percentage") or 0)
+		except OSError, json.JSONDecodeError, KeyError:
 			print(
 				"check_code_duplication: failed to read jscpd report",
 				file=sys.stderr,
@@ -110,9 +107,7 @@ def main() -> int:
 
 		failed = False
 		if clones > args.max_clones:
-			print(
-				f"Clone count {clones} exceeds threshold of {args.max_clones}", file=sys.stderr
-			)
+			print(f"Clone count {clones} exceeds threshold of {args.max_clones}", file=sys.stderr)
 			failed = True
 		if percentage > args.max_percentage:
 			print(

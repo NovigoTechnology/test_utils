@@ -8,18 +8,18 @@ The `partition_doctypes` hook defines the tables (DocTypes) that will be partiti
 
 ```python
 partition_doctypes = {
-    "Sales Order": {
-        "field": "transaction_date",
-        "partition_by": "fiscal_year",  # Options: "fiscal_year", "quarter", "month", "field"
-    },
-    "Sales Invoice": {
-        "field": "posting_date",
-        "partition_by": "fiscal_year",  # Options: "fiscal_year", "quarter", "month", "field"
-    },
-    "Item": {
-        "field": "disabled",
-        "partition_by": "field",  # Options: "fiscal_year", "quarter", "month", "field"
-    },
+	"Sales Order": {
+		"field": "transaction_date",
+		"partition_by": "fiscal_year",  # Options: "fiscal_year", "quarter", "month", "field"
+	},
+	"Sales Invoice": {
+		"field": "posting_date",
+		"partition_by": "fiscal_year",  # Options: "fiscal_year", "quarter", "month", "field"
+	},
+	"Item": {
+		"field": "disabled",
+		"partition_by": "field",  # Options: "fiscal_year", "quarter", "month", "field"
+	},
 }
 ```
 
@@ -43,6 +43,7 @@ before_migrate = "your_app.utils.before_migrate"
 import frappe
 from test_utils.utils.create_partition import create_partition
 
+
 def before_migrate():
 	create_partition(years_ahead=10)
 ```
@@ -53,10 +54,10 @@ def before_migrate():
 #### hooks.py
 ```python
 doc_events = {
-    "*": {
-        "before_insert": "your_app.utils.populate_partition_fields",
-        "before_save": "your_app.utils.populate_partition_fields",
-    }
+	"*": {
+		"before_insert": "your_app.utils.populate_partition_fields",
+		"before_save": "your_app.utils.populate_partition_fields",
+	}
 }
 ```
 
@@ -65,6 +66,7 @@ doc_events = {
 ```python
 import frappe
 from test_utils.utils.create_partition import populate_partition_fields as _populate_partition_fields
+
 
 def populate_partition_fields(doc, event):
 	_populate_partition_fields(doc, event)
@@ -92,6 +94,7 @@ bench --site your_site_name console
 
 ```python
 from test_utils.utils.create_partition import create_partition
+
 create_partition(years_ahead=10)
 ```
 
@@ -123,15 +126,15 @@ bench --site your_source_site console
 from test_utils.utils.restore_partitions import restore
 
 restore(
-    mariadb_user="root",                  # MariaDB root username
-    mariadb_password="123",               # MariaDB root password
-    to_site="demo2.agritheory.com",       # Target site URL
-    to_database=None,                     # Optional: specify a target database name (instead a to_site)
-    backup_dir="/tmp",                    # Directory where the backup file will be stored
-    partitioned_doctypes_to_restore=None, # Restore all partitioned doctypes if None, or specify a list (e.g., ["Sales Order", "Sales Invoice"])
-    last_n_partitions=3,                  # Number of partitions to restore per DocType
-    compress=False,                       # Set to True to compress the temporary and backup file
-    delete_files=True,                    # Delete temporary files after the operation
+	mariadb_user="root",  # MariaDB root username
+	mariadb_password="123",  # MariaDB root password
+	to_site="demo2.agritheory.com",  # Target site URL
+	to_database=None,  # Optional: specify a target database name (instead a to_site)
+	backup_dir="/tmp",  # Directory where the backup file will be stored
+	partitioned_doctypes_to_restore=None,  # Restore all partitioned doctypes if None, or specify a list (e.g., ["Sales Order", "Sales Invoice"])
+	last_n_partitions=3,  # Number of partitions to restore per DocType
+	compress=False,  # Set to True to compress the temporary and backup file
+	delete_files=True,  # Delete temporary files after the operation
 )
 ```
 
@@ -175,10 +178,10 @@ bench --site your_site_name console
 from test_utils.utils.restore_partitions import bubble_backup
 
 bubble_backup(
-    backup_dir="/tmp",                      # Directory where the backup file will be stored
-    partitioned_doctypes_to_restore=None,   # Process all partitioned doctypes if None, or specify a list
-    last_n_partitions=1,                    # Number of most recent partitions to include
-    delete_files=True,                      # Delete temporary files after the backup process
-    keep_temp_db=False,                     # Do not retain the temporary database after the backup
+	backup_dir="/tmp",  # Directory where the backup file will be stored
+	partitioned_doctypes_to_restore=None,  # Process all partitioned doctypes if None, or specify a list
+	last_n_partitions=1,  # Number of most recent partitions to include
+	delete_files=True,  # Delete temporary files after the backup process
+	keep_temp_db=False,  # Do not retain the temporary database after the backup
 )
 ```

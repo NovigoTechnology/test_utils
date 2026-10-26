@@ -105,8 +105,7 @@ class SQLCall:
 				d[key] = datetime.fromisoformat(d[key])
 		if d.get("sql_params"):
 			d["sql_params"] = {
-				k: VarRef.from_json(v) if VarRef.is_json(v) else v
-				for k, v in d["sql_params"].items()
+				k: VarRef.from_json(v) if VarRef.is_json(v) else v for k, v in d["sql_params"].items()
 			}
 		# Tolerate registries written before these fields were added.
 		d.setdefault("occurrence_in_function", 0)

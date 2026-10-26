@@ -143,19 +143,19 @@ Simple queries are automatically converted to `frappe.get_all`:
 
 **Original:**
 ```python
-frappe.db.sql("""
+frappe.db.sql(
+	"""
     SELECT name, status FROM `tabSales Order`
     WHERE customer = %s AND docstatus = 1
-""", (customer,), as_dict=True)
+""",
+	(customer,),
+	as_dict=True,
+)
 ```
 
 **Converted:**
 ```python
-frappe.get_all(
-    "Sales Order",
-    filters={"customer": customer, "docstatus": 1},
-    fields=["name", "status"]
-)
+frappe.get_all("Sales Order", filters={"customer": customer, "docstatus": 1}, fields=["name", "status"])
 ```
 
 A query is ORM-eligible when:
@@ -184,30 +184,25 @@ frappe.db.sql("""
 from frappe.query_builder import Field
 from frappe.query_builder.functions import IfNull
 
-frappe.get_all(
-    "Department",
-    filters=[[IfNull(Field("company"), ""), "!=", ""]]
-)
+frappe.get_all("Department", filters=[[IfNull(Field("company"), ""), "!=", ""]])
 ```
 
 ### DISTINCT Queries
 
 **Original SQL:**
 ```python
-frappe.db.sql("""
+frappe.db.sql(
+	"""
     SELECT DISTINCT parent FROM `tabBOM Operation`
     WHERE workstation = %s
-""", (workstation,))
+""",
+	(workstation,),
+)
 ```
 
 **v16 ORM Output:**
 ```python
-frappe.get_all(
-    "BOM Operation",
-    filters={"workstation": workstation},
-    fields=["parent"],
-    distinct=True
-)
+frappe.get_all("BOM Operation", filters={"workstation": workstation}, fields=["parent"], distinct=True)
 ```
 
 ### v16 Breaking Changes

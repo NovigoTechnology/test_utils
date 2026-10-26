@@ -192,16 +192,16 @@ Options:
 from test_utils.utils.static_analysis import analyze_app, StaticAnalysisConfig
 
 result = analyze_app(
-    "/path/to/my_app",
-    config=StaticAnalysisConfig(detect_orphans=False),
+	"/path/to/my_app",
+	config=StaticAnalysisConfig(detect_orphans=False),
 )
 
 if result.has_errors:
-    for msg in result.all_errors:
-        print(msg)
+	for msg in result.all_errors:
+		print(msg)
 
 for msg in result.all_warnings:
-    print(msg)
+	print(msg)
 
 # Machine-readable
 print(result.to_json())

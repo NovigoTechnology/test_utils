@@ -10,11 +10,10 @@ For pre-commit (run from bench root):
     validate_patches --app inventory_tools --check
 """
 
+import argparse
 import os
 import sys
-import argparse
 from pathlib import Path
-from typing import List, Set, Dict, Tuple
 
 
 class PatchValidator:
@@ -93,8 +92,8 @@ class PatchValidator:
 			f.seek(0)
 			has_sections = "[pre-model]" in content or "[post-model]" in content
 
-			for line_num, line in enumerate(f, 1):
-				original_line = line
+			for _line_num, line in enumerate(f, 1):
+				_original_line = line
 				line = line.strip()
 
 				if not line:
@@ -241,18 +240,10 @@ class PatchValidator:
 
 
 def main():
-	parser = argparse.ArgumentParser(
-		description="Validate patch files for ERPNext/Frappe applications"
-	)
-	parser.add_argument(
-		"--app", required=True, help="Application name (e.g., inventory_tools)"
-	)
-	parser.add_argument(
-		"--check", action="store_true", help="Run validation checks (exit code 1 on failure)"
-	)
-	parser.add_argument(
-		"--list", action="store_true", help="List all patches with their status"
-	)
+	parser = argparse.ArgumentParser(description="Validate patch files for ERPNext/Frappe applications")
+	parser.add_argument("--app", required=True, help="Application name (e.g., inventory_tools)")
+	parser.add_argument("--check", action="store_true", help="Run validation checks (exit code 1 on failure)")
+	parser.add_argument("--list", action="store_true", help="List all patches with their status")
 
 	args = parser.parse_args()
 

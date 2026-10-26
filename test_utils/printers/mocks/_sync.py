@@ -1,8 +1,8 @@
 import asyncio
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
-from collections.abc import Iterator
 
 from test_utils.printers.mocks.ipp import IppPrinterMock, ipp_printer
 from test_utils.printers.mocks.raw import RawPrinterMock, raw_printer

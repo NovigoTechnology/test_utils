@@ -16,7 +16,7 @@ Integración preparada el 26 de octubre de 2026 en la rama `update-main`.
 | Interfaces del original | Admitir `--app`, diccionario con `app_publisher` y archivos SQL; conservar también el soporte local para HTML. Actualizar el filtro del manifiesto de hooks. |
 | Escritura de archivos | Actualizar encabezados después del shebang y la declaración de codificación de Python. Conservar contenido, codificación, BOM UTF-8, saltos de línea y permisos; cerrar el temporal antes de moverlo y evitar escrituras repetidas si el encabezado ya coincide. |
 | Python | Soportar exclusivamente Python 3.14 (`>=3.14,<3.15`), con herramientas, archivo `.python-version` y acciones que seleccionan Python 3.14. |
-| Formato | Conservar Ruff y su configuración local, con versión 0.15.4 en desarrollo; incorporar el hook de duplicación del original. |
+| Formato | Usar Ruff 0.17.2 en desarrollo y pre-commit, manteniendo la configuración local; incorporar el hook de duplicación del original. |
 | Actualizador de pre-commit | Actualizar el repositorio `https://github.com/NovigoTechnology/test_utils`, conservar stdout y stderr y propagar el código de salida de `pre-commit`. |
 | Metadatos | Conservar descripción y autor de Novigo, lectura de versión desde `importlib.metadata` y actualizaciones locales de GitHub Actions. Adoptar el formato PEP 621, los nuevos comandos y dependencias y la versión 1.30.1 del original. |
 | Distribución | Mantener `build/` y `dist/` ignorados y retirar los cuatro paquetes antiguos que el original incorpora al árbol. |
@@ -42,7 +42,7 @@ Había un secuenciador de cherry-pick antiguo, de marzo de 2026, cuyo estado ya 
 - Sintaxis Python, YAML, destinos de los 23 comandos y comandos usados por los hooks; ejecución de `--help` en 21 comandos instalados. Se excluyeron el comando de particiones que requiere Frappe y el actualizador de pre-commit, que modifica configuraciones.
 - Validación de configuración y manifiesto de pre-commit.
 - Ruff y formato aprobados para el hook modificado y sus pruebas.
-- Ruff global: 170 observaciones heredadas; comparación por archivo y regla con `Test/main` sin observaciones nuevas. Una ejecución completa de pre-commit requerirá resolver también ese trabajo de estilo.
+- Ruff 0.17.2: análisis y formato de todo el repositorio aprobados; se corrigieron las observaciones heredadas conservando las expresiones con efectos y el comportamiento de truncado de `zip`. Los hooks usan `ruff-check` y `ruff-format`.
 
 Las pruebas de impresoras abren sockets locales. La suite emite advertencias de obsolescencia de `pytest-asyncio` 0.24 con Python 3.14. No se ejecutaron operaciones de base de datos ni pruebas de integración en un bench de Frappe/ERPNext.
 

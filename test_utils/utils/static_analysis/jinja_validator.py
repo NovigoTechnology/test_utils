@@ -39,7 +39,7 @@ def resolve_template_path(
 	dependency_paths: list[Path] | None = None,
 ) -> Path | None:
 	"""Locate a Frappe template across the app and dependency apps."""
-	for root in [app_path] + list(dependency_paths or []):
+	for root in [app_path, *list(dependency_paths or [])]:
 		app_name = root.name
 		for candidate in (root / app_name / template_path, root / template_path):
 			if candidate.exists():

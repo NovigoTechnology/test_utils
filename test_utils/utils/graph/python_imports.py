@@ -72,7 +72,7 @@ def extract_python_import_edges(
 		try:
 			src = py_file.read_text(encoding="utf-8", errors="replace")
 			tree = ast.parse(src, filename=str(py_file))
-		except (OSError, SyntaxError):
+		except OSError, SyntaxError:
 			continue
 
 		for node in tree.body:

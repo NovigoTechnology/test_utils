@@ -10,9 +10,7 @@ def _require_duckdb():
 	try:
 		import duckdb
 	except ImportError as e:  # pragma: no cover
-		raise ImportError(
-			"duckdb is required. Install with: poetry install --with graph"
-		) from e
+		raise ImportError("duckdb is required. Install with: poetry install --with graph") from e
 	return duckdb
 
 
@@ -64,7 +62,7 @@ def complexity_leaderboard(
 			"max_ast_depth",
 			"complexity_score",
 		]
-		return [dict(zip(cols, r)) for r in rows]
+		return [dict(zip(cols, r, strict=False)) for r in rows]
 	finally:
 		con.close()
 
@@ -83,7 +81,7 @@ def js_callsites_in_loops(db_path: Path | str) -> list[dict[str, Any]]:
 			"""
 		).fetchall()
 		cols = ["file_path", "line", "target_path", "loop_type"]
-		return [dict(zip(cols, r)) for r in rows]
+		return [dict(zip(cols, r, strict=False)) for r in rows]
 	finally:
 		con.close()
 

@@ -57,7 +57,7 @@ class FrappeCallVisitor(ast.NodeVisitor):
 				self.add(kw.value.value, node.lineno)
 
 	def extract_from_dict(self, d: ast.Dict, lineno: int) -> None:
-		for key, val in zip(d.keys, d.values):
+		for key, val in zip(d.keys, d.values, strict=False):
 			if (
 				isinstance(key, ast.Constant)
 				and key.value == "method"
@@ -85,11 +85,7 @@ def collect_calls(source: str, filepath: Path) -> list[tuple[str, int]]:
 		return []
 	visitor = FrappeCallVisitor()
 	visitor.visit(tree)
-	return [
-		(path, lineno)
-		for path, lineno in visitor.found
-		if not has_ignore_comment(source, lineno)
-	]
+	return [(path, lineno) for path, lineno in visitor.found if not has_ignore_comment(source, lineno)]
 
 
 class PythonCallValidator:

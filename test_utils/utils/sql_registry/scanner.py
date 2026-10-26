@@ -2,6 +2,7 @@
 
 import ast
 import re
+
 from sqlglot import exp
 
 from test_utils.utils.sql_registry.models import VarRef
@@ -67,7 +68,7 @@ def extract_params_from_call(node: ast.Call) -> dict | None:
 
 			if isinstance(param_node, ast.Dict):
 				params = {}
-				for key, value in zip(param_node.keys, param_node.values):
+				for key, value in zip(param_node.keys, param_node.values, strict=False):
 					if isinstance(key, ast.Constant):
 						params[key.value] = _ast_node_to_param_value(value)
 				return params
@@ -99,7 +100,7 @@ def extract_params_from_call(node: ast.Call) -> dict | None:
 					placeholders = re.findall(r"(?<!%)%s", sql_query)
 					params = {}
 					elements = param_node.elts if hasattr(param_node, "elts") else []
-					for i, (_, elem) in enumerate(zip(placeholders, elements)):
+					for i, (_, elem) in enumerate(zip(placeholders, elements, strict=False)):
 						params[f"__pos_{i}__"] = _ast_node_to_param_value(elem)
 					return params if params else None
 
@@ -226,20 +227,12 @@ def can_use_frappe_orm(select: exp.Select) -> bool:
 			if from_part.count(",") > 0:
 				return False
 
-	if (
-		len(tables) > 1
-		or select.find(exp.Group)
-		or select.find(exp.Having)
-		or select.find(exp.Union)
-	):
+	if len(tables) > 1 or select.find(exp.Group) or select.find(exp.Having) or select.find(exp.Union):
 		return False
 
 	for expr in select.expressions:
 		expr_str = str(expr).upper()
-		if any(
-			agg in expr_str
-			for agg in ["COUNT(", "SUM(", "AVG(", "MIN(", "MAX(", "GROUP_CONCAT("]
-		):
+		if any(agg in expr_str for agg in ["COUNT(", "SUM(", "AVG(", "MIN(", "MAX(", "GROUP_CONCAT("]):
 			return False
 
 	for node in select.walk():
@@ -257,7 +250,7 @@ def extract_field_name(expr: exp.Expression) -> str:
 	return field_str
 
 
-def extract_value(expr: exp.Expression, replacements: list, sql_params: dict = None):
+def extract_value(expr: exp.Expression, replacements: list, sql_params: dict | None = None):
 	"""Resolve a sqlglot expression node to a Python value suitable for ORM filters.
 
 	Returns one of:
@@ -298,18 +291,16 @@ def extract_value(expr: exp.Expression, replacements: list, sql_params: dict = N
 			return str(expr.this)  # SQL string literal → plain str (caller quotes it)
 		try:
 			return int(expr.this)
-		except (ValueError, TypeError):
+		except ValueError, TypeError:
 			try:
 				return float(expr.this)
-			except (ValueError, TypeError):
+			except ValueError, TypeError:
 				return str(expr.this)
 	# Fallback for identifiers / columns that weren't in replacements
 	return value_str
 
 
-def convert_where_to_filters(
-	condition: exp.Expression, replacements: list, sql_params: dict = None
-):
+def convert_where_to_filters(condition: exp.Expression, replacements: list, sql_params: dict | None = None):
 	try:
 		if isinstance(condition, exp.EQ):
 			field = extract_field_name(condition.left)
@@ -426,7 +417,7 @@ def _format_filter_value(value) -> str:
 	return repr(value)
 
 
-def format_filters_for_orm(filters, needs_imports: set = None) -> str:
+def format_filters_for_orm(filters, needs_imports: set | None = None) -> str:
 	if needs_imports is None:
 		needs_imports = set()
 	if isinstance(filters, dict):
@@ -450,7 +441,7 @@ def format_filters_for_orm(filters, needs_imports: set = None) -> str:
 				)
 			elif isinstance(f, list) and len(f) == 3:
 				field, op, value = f
-				formatted.append(f"[{repr(field)}, {repr(op)}, {_format_filter_value(value)}]")
+				formatted.append(f"[{field!r}, {op!r}, {_format_filter_value(value)}]")
 			else:
 				formatted.append(repr(f))
 		return "[" + ", ".join(formatted) + "]"
@@ -467,8 +458,8 @@ def format_fields_for_orm(fields: list) -> str:
 def convert_select_to_orm(
 	select: exp.Select,
 	replacements: list,
-	sql_params: dict = None,
-	variable_name: str = None,
+	sql_params: dict | None = None,
+	variable_name: str | None = None,
 ) -> str:
 	lines = []
 	needs_imports = set()
@@ -514,9 +505,7 @@ def convert_select_to_orm(
 				inner_exprs = expr.expressions if hasattr(expr, "expressions") else [expr.this]
 				for inner in inner_exprs:
 					field_name = (
-						str(inner.this).strip("`\"'")
-						if hasattr(inner, "this")
-						else str(inner).strip("`\"'")
+						str(inner.this).strip("`\"'") if hasattr(inner, "this") else str(inner).strip("`\"'")
 					)
 					if "." in field_name:
 						_, field_name = field_name.rsplit(".", 1)
@@ -560,9 +549,7 @@ def convert_select_to_orm(
 			order_by = ", ".join(order_parts)
 
 	limit_clause = select.find(exp.Limit)
-	limit = (
-		str(limit_clause.expression) if limit_clause and limit_clause.expression else None
-	)
+	limit = str(limit_clause.expression) if limit_clause and limit_clause.expression else None
 
 	lines.append(f"{result_prefix}frappe.get_all(")
 	lines.append(f'\t"{doctype}",')

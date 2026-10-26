@@ -15,14 +15,12 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError
 
-from test_utils.utils.sql_registry.models import SQLCall
-from test_utils.utils.sql_registry.converter import SQLToQBConverter
 from test_utils.utils.sql_registry import scanner
+from test_utils.utils.sql_registry.converter import SQLToQBConverter
+from test_utils.utils.sql_registry.models import SQLCall
 
 
-def _extract_sql_from_file(
-	file_path_str: str, force: bool = False
-) -> list[dict] | None:
+def _extract_sql_from_file(file_path_str: str, force: bool = False) -> list[dict] | None:
 	"""Extract raw SQL call data from a single file.
 
 	Module-level so it's picklable for ProcessPoolExecutor.
@@ -61,8 +59,8 @@ def _extract_sql_from_file(
 	# Build the lxml XML representation so we can compute a stable XPath address
 	# for each frappe.db.sql call node.
 	try:
-		from lxml import etree as lxml_etree
 		from astpath.asts import convert_to_xml
+		from lxml import etree as lxml_etree
 
 		node_mappings: dict = {}  # xml_elem → ast_node
 		xml_tree = convert_to_xml(tree, node_mappings=node_mappings)
@@ -70,9 +68,7 @@ def _extract_sql_from_file(
 		# Reverse: id(ast_node) → xml_elem
 		ast_id_to_xml: dict[int, object] = {id(v): k for k, v in node_mappings.items()}
 	except Exception as e:
-		print(
-			f"Warning: astpath/lxml unavailable for {file_path}: {e}; ast_path will be None"
-		)
+		print(f"Warning: astpath/lxml unavailable for {file_path}: {e}; ast_path will be None")
 		lxml_et = None
 		ast_id_to_xml = {}
 
@@ -237,9 +233,7 @@ class SQLRegistry:
 
 	def get_commit_hash(self) -> str:
 		try:
-			result = subprocess.run(
-				["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
-			)
+			result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
 			return result.stdout.strip()[:7]
 		except Exception:
 			return "unknown"
@@ -254,8 +248,7 @@ class SQLRegistry:
 			path = path.with_suffix(".json")
 
 		calls_serializable = {
-			cid: c.to_dict() if hasattr(c, "to_dict") else c
-			for cid, c in self.data["calls"].items()
+			cid: c.to_dict() if hasattr(c, "to_dict") else c for cid, c in self.data["calls"].items()
 		}
 		metadata = self.data["metadata"].copy()
 		if isinstance(metadata.get("last_scan"), datetime):
@@ -312,7 +305,7 @@ class SQLRegistry:
 		named_params_needed = []
 		positional_params_count = 0
 
-		for placeholder, original in replacements:
+		for _placeholder, original in replacements:
 			if original.startswith("{") and original.endswith("}"):
 				inner = original[1:-1]
 				if re.search(r"[\[\]()+=\-*/.]", inner):
@@ -376,7 +369,7 @@ class SQLRegistry:
 		return sqlglot.parse(sql_for_parse, dialect="mysql")
 
 	def analyze_sql(
-		self, sql_query: str, sql_params: dict = None, variable_name: str = None
+		self, sql_query: str, sql_params: dict | None = None, variable_name: str | None = None
 	) -> tuple[str, str, str]:
 		try:
 			sql_cleaned, replacements = self.replace_sql_patterns(sql_query)
@@ -393,7 +386,7 @@ class SQLRegistry:
 			msg = re.sub(r"\x1b\[[0-9;]*m", "", str(e)).split("\n", 1)[0].strip()
 			return "", "UNPARSABLE", f"# MANUAL: Could not parse SQL: {msg}"
 		except Exception as e:
-			return "", f"ERROR: {str(e)}", f"# Error analyzing SQL: {str(e)}"
+			return "", f"ERROR: {e!s}", f"# Error analyzing SQL: {e!s}"
 
 	def validate_conversion(self, original_ast, qb_code: str) -> tuple[bool, str | None]:
 		return self.converter.validate_conversion(original_ast, qb_code)
@@ -404,15 +397,13 @@ class SQLRegistry:
 		line_num: int,
 		sql_query: str,
 		function_context: str = "",
-		sql_params: dict = None,
-		sql_kwargs: dict = None,
-		variable_name: str = None,
+		sql_params: dict | None = None,
+		sql_kwargs: dict | None = None,
+		variable_name: str | None = None,
 		occurrence: int = 0,
 		ast_path: str | None = None,
 	) -> str:
-		call_id = self.generate_call_id(
-			file_path, function_context, sql_query, occurrence, ast_path=ast_path
-		)
+		call_id = self.generate_call_id(file_path, function_context, sql_query, occurrence, ast_path=ast_path)
 
 		if call_id in self.data["calls"]:
 			existing = self.data["calls"][call_id]
@@ -455,9 +446,7 @@ class SQLRegistry:
 			self.data["calls"][call_id] = sql_call
 			return call_id
 
-		ast_str, semantic_sig, qb_equivalent = self.analyze_sql(
-			sql_query, sql_params, variable_name
-		)
+		ast_str, semantic_sig, qb_equivalent = self.analyze_sql(sql_query, sql_params, variable_name)
 
 		conversion_validated = False
 		validation_notes = None
@@ -471,7 +460,7 @@ class SQLRegistry:
 						validation_notes = f"Validation failed: {validation_error}"
 						qb_equivalent = f"# MANUAL: Validation failed - {validation_error}\n# Generated (unvalidated):\n# {qb_equivalent.replace(chr(10), chr(10) + '# ')}"
 			except Exception as e:
-				validation_notes = f"Validation error: {str(e)}"
+				validation_notes = f"Validation error: {e!s}"
 
 		sql_call = SQLCall(
 			call_id=call_id,
@@ -630,10 +619,7 @@ class SQLRegistry:
 		for call in calls.values():
 			by_type[call.implementation_type] = by_type.get(call.implementation_type, 0) + 1
 			if call.query_builder_equivalent:
-				if (
-					"# MANUAL:" in call.query_builder_equivalent
-					or "# Error" in call.query_builder_equivalent
-				):
+				if "# MANUAL:" in call.query_builder_equivalent or "# Error" in call.query_builder_equivalent:
 					manual_count += 1
 				elif "frappe.get_all(" in call.query_builder_equivalent:
 					orm_count += 1
@@ -648,9 +634,9 @@ class SQLRegistry:
 
 		report = f"""# SQL Operations Registry Report
 
-**Repository**: {metadata.get('repository', 'N/A')}
-**Last Updated**: {last_scan or 'Never'}
-**Commit**: {metadata.get('commit_hash', 'N/A')}
+**Repository**: {metadata.get("repository", "N/A")}
+**Last Updated**: {last_scan or "Never"}
+**Commit**: {metadata.get("commit_hash", "N/A")}
 **Total SQL Operations**: {total}
 
 ## Conversion Status
@@ -670,9 +656,9 @@ class SQLRegistry:
 ## Implementation Distribution
 | Type | Count | Percentage |
 |------|-------|------------|
-| frappe_db_sql | {by_type.get('frappe_db_sql', 0)} | {(by_type.get('frappe_db_sql', 0) / max(total, 1) * 100):.1f}% |
-| query_builder | {by_type.get('query_builder', 0)} | {(by_type.get('query_builder', 0) / max(total, 1) * 100):.1f}% |
-| mixed | {by_type.get('mixed', 0)} | {(by_type.get('mixed', 0) / max(total, 1) * 100):.1f}% |
+| frappe_db_sql | {by_type.get("frappe_db_sql", 0)} | {(by_type.get("frappe_db_sql", 0) / max(total, 1) * 100):.1f}% |
+| query_builder | {by_type.get("query_builder", 0)} | {(by_type.get("query_builder", 0) / max(total, 1) * 100):.1f}% |
+| mixed | {by_type.get("mixed", 0)} | {(by_type.get("mixed", 0) / max(total, 1) * 100):.1f}% |
 
 ## Operations by File
 """

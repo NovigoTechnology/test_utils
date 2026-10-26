@@ -12,7 +12,7 @@ UPPER_BOUND_PATTERN = re.compile(r"<=?\s*\S+|!=\s*\S+")
 
 def find_pyproject_toml():
 	current = pathlib.Path().resolve()
-	for path in [current] + list(current.parents):
+	for path in [current, *list(current.parents)]:
 		candidate = path / "pyproject.toml"
 		if candidate.exists():
 			return candidate

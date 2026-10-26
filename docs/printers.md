@@ -33,10 +33,10 @@ Async (pytest-asyncio, Kenaf):
 from test_utils.printers import raw_printer, ipp_printer
 
 async with raw_printer(save_dir="/tmp/prints") as printer:
-    print(printer.device_uri)
+	print(printer.device_uri)
 
 async with ipp_printer(name="PDF", save_dir="/tmp/prints") as printer:
-    print(printer.uri)
+	print(printer.uri)
 ```
 
 Sync (Frappe / BEAM pytest):
@@ -45,7 +45,7 @@ Sync (Frappe / BEAM pytest):
 from test_utils.printers import raw_printer_sync, ipp_printer_sync
 
 with raw_printer_sync(save_dir="/tmp/prints") as printer:
-    payload = printer.wait_for_payload()
+	payload = printer.wait_for_payload()
 ```
 
 ## CUPS registration

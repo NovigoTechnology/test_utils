@@ -91,6 +91,6 @@ class TestHelperFunctions:
 		enc = build_success_response((1, 1), 456)
 		enc.write_tag(IppTag.END)
 		decoder = IppDecoder(enc.get_bytes())
-		version, status, req_id = decoder.read_header()
+		_version, status, req_id = decoder.read_header()
 		assert status == IppStatus.OK
 		assert req_id == 456

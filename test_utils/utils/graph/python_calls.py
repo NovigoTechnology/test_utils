@@ -58,7 +58,7 @@ def collect_all_function_qualnames(
 		try:
 			src = py_file.read_text(encoding="utf-8", errors="replace")
 			tree = ast.parse(src, filename=str(py_file))
-		except (OSError, SyntaxError):
+		except OSError, SyntaxError:
 			continue
 		for q, _, _ in _collect_qualnames_in_module(tree, mod):
 			quals.add(q)
@@ -73,7 +73,7 @@ def _load_attr_chain(expr: ast.expr) -> list[str] | None:
 		left = _load_attr_chain(expr.value)
 		if left is None:
 			return None
-		return left + [expr.attr]
+		return [*left, expr.attr]
 	return None
 
 
@@ -101,7 +101,7 @@ def _resolve_name_call(
 			return len(callee_parent) + 500
 		common = 0
 		a, b = caller_qual.split("."), callee.split(".")
-		for x, y in zip(a, b):
+		for x, y in zip(a, b, strict=False):
 			if x == y:
 				common += 1
 			else:
@@ -221,7 +221,7 @@ def extract_python_call_edges(
 		try:
 			src = py_file.read_text(encoding="utf-8", errors="replace")
 			tree = ast.parse(src, filename=str(py_file))
-		except (OSError, SyntaxError):
+		except OSError, SyntaxError:
 			continue
 
 		imp_map = build_import_map(mod, tree)

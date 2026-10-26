@@ -121,9 +121,9 @@ const dialogFields = [
 ```python
 # jscpd:ignore-start
 columns = [
-    {"fieldname": "item_code", "label": "Item", "fieldtype": "Link"},
-    {"fieldname": "qty", "label": "Quantity", "fieldtype": "Float"},
-    {"fieldname": "rate", "label": "Rate", "fieldtype": "Currency"},
+	{"fieldname": "item_code", "label": "Item", "fieldtype": "Link"},
+	{"fieldname": "qty", "label": "Quantity", "fieldtype": "Float"},
+	{"fieldname": "rate", "label": "Rate", "fieldtype": "Currency"},
 ]
 # jscpd:ignore-end
 ```
@@ -265,18 +265,20 @@ Start with default values and adjust based on your codebase:
 ```python
 # Before
 def report_a():
-    data = frappe.db.get_all("Item", filters={...}, fields=["name", "item_code"])
-    # ... 20 lines of processing
+	data = frappe.db.get_all("Item", filters={...}, fields=["name", "item_code"])
+	# ... 20 lines of processing
+
 
 def report_b():
-    data = frappe.db.get_all("Customer", filters={...}, fields=["name", "customer_code"])
-    # ... 20 lines of similar processing
+	data = frappe.db.get_all("Customer", filters={...}, fields=["name", "customer_code"])
+	# ... 20 lines of similar processing
+
 
 # After
 def get_and_process_data(doctype, code_field):
-    data = frappe.db.get_all(doctype, filters={...}, fields=["name", code_field])
-    # ... shared processing logic
-    return data
+	data = frappe.db.get_all(doctype, filters={...}, fields=["name", code_field])
+	# ... shared processing logic
+	return data
 ```
 
 **Use inheritance:**

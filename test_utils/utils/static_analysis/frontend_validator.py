@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .path_resolver import PathResolver, is_potential_dotted_path, is_dynamic_path
+from .path_resolver import PathResolver, is_dynamic_path, is_potential_dotted_path
 
 FRONTEND_EXTENSIONS = {".js", ".ts", ".vue", ".jsx", ".tsx"}
 

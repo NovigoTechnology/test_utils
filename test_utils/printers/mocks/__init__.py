@@ -1,3 +1,4 @@
+from test_utils.printers.mocks._sync import ipp_printer_sync, raw_printer_sync
 from test_utils.printers.mocks.ipp import (
 	IppJob,
 	IppPrinterMock,
@@ -11,7 +12,6 @@ from test_utils.printers.mocks.raw import (
 	ReceivedJob,
 	raw_printer,
 )
-from test_utils.printers.mocks._sync import ipp_printer_sync, raw_printer_sync
 
 __all__ = [
 	"IppJob",

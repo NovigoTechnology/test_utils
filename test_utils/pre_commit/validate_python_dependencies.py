@@ -20,13 +20,8 @@ def get_versions(app):
 
 	if pyproject_toml.get("build-system", {}).get("build-backend") == "flit_core.buildapi":
 		dependencies = pyproject_toml.get("project", {}).get("dependencies", [])
-	elif (
-		pyproject_toml.get("build-system", {}).get("build-backend")
-		== "poetry.core.masonry.api"
-	):
-		dependencies = (
-			pyproject_toml.get("tool", {}).get("poetry", {}).get("dependencies", [])
-		)
+	elif pyproject_toml.get("build-system", {}).get("build-backend") == "poetry.core.masonry.api":
+		dependencies = pyproject_toml.get("tool", {}).get("poetry", {}).get("dependencies", [])
 
 	dependency_objects = {}
 	for dep in dependencies:
@@ -73,10 +68,10 @@ def get_mismatched_versions():
 	return exceptions
 
 
-def main(argv: Sequence[str] = None):
+def main(argv: Sequence[str] | None = None):
 	parser = argparse.ArgumentParser()
 	parser.add_argument("filenames", nargs="*")
-	args = parser.parse_args(argv)
+	_args = parser.parse_args(argv)
 
 	exceptions = get_mismatched_versions()
 	if exceptions:

@@ -70,9 +70,7 @@ def create_customers(settings, only_create=None):
 		cust.save()
 
 		for address in addresses:
-			existing_address = frappe.get_value(
-				"Address", {"address_line1": address.get("address_line1")}
-			)
+			existing_address = frappe.get_value("Address", {"address_line1": address.get("address_line1")})
 			if existing_address:
 				continue
 
@@ -95,9 +93,7 @@ def create_customers(settings, only_create=None):
 					user_doc.save()
 
 		for contact in contacts:
-			existing_contact = frappe.db.get_value(
-				"Contact", {"email_id": customer.get("email")}
-			)
+			existing_contact = frappe.db.get_value("Contact", {"email_id": customer.get("email")})
 			if existing_contact:
 				continue
 			for contact_link in contact.get("links"):
@@ -129,17 +125,12 @@ def create_suppliers(settings, only_create=None):
 		biz.save()
 
 		for address in addresses:
-			existing_address = frappe.get_value(
-				"Address", {"address_line1": address.get("address_line1")}
-			)
+			existing_address = frappe.get_value("Address", {"address_line1": address.get("address_line1")})
 			if existing_address:
 				continue
 
 			for link in address.get("links"):
-				if (
-					link.get("link_doctype") == "Supplier"
-					and link.get("link_name") == biz.supplier_name
-				):
+				if link.get("link_doctype") == "Supplier" and link.get("link_name") == biz.supplier_name:
 					addr = frappe.new_doc("Address")
 					addr.update(address)
 					addr.save()
@@ -152,9 +143,7 @@ def create_payment_terms_template(settings, only_create=None):
 		if only_create and payment_terms_template.get("template_name") not in only_create:
 			continue
 
-		if frappe.db.exists(
-			"Payment Terms Template", payment_terms_template.get("template_name")
-		):
+		if frappe.db.exists("Payment Terms Template", payment_terms_template.get("template_name")):
 			continue
 
 		for payment_term in payment_terms_template.get("terms"):
@@ -171,7 +160,6 @@ def create_payment_terms_template(settings, only_create=None):
 def create_supplier_groups(settings, only_create=None):
 	supplier_groups = get_fixtures_data_from_file("supplier_groups.json")
 	for supplier_group in supplier_groups:
-
 		if only_create and supplier_group.get("supplier_group_name") not in only_create:
 			continue
 
@@ -197,9 +185,7 @@ def create_warehouses(settings):
 	company_abbr = frappe.db.get_value("Company", settings.company, "abbr")
 	root_wh = frappe.get_value("Warehouse", {"company": settings.company, "is_group": 1})
 	if frappe.db.exists("Warehouse", f"Stores - {company_abbr}"):
-		frappe.rename_doc(
-			"Warehouse", f"Stores - {company_abbr}", f"Storeroom - {company_abbr}", force=True
-		)
+		frappe.rename_doc("Warehouse", f"Stores - {company_abbr}", f"Storeroom - {company_abbr}", force=True)
 	if frappe.db.exists("Warehouse", f"Finished Goods - {company_abbr}"):
 		frappe.rename_doc(
 			"Warehouse",
@@ -209,9 +195,7 @@ def create_warehouses(settings):
 		)
 		frappe.set_value("Warehouse", f"Baked Goods - {company_abbr}", "is_group", 1)
 
-	for wh in frappe.get_all(
-		"Warehouse", {"company": settings.company}, ["name", "is_group"]
-	):
+	for wh in frappe.get_all("Warehouse", {"company": settings.company}, ["name", "is_group"]):
 		if wh.name not in warehouses and not wh.is_group:
 			frappe.delete_doc("Warehouse", wh.name)
 
@@ -240,7 +224,6 @@ def create_warehouses(settings):
 def create_items(settings, only_create=None):
 	items = get_fixtures_data_from_file(filename="items.json")
 	for item in items:
-
 		if only_create and item.get("item_code") not in only_create:
 			continue
 
@@ -259,7 +242,6 @@ def create_item_groups(settings, only_create=None):
 	item_groups = get_fixtures_data_from_file(filename="item_groups.json")
 
 	for item_group in item_groups:
-
 		if only_create and item_group.get("item_group_name") not in only_create:
 			continue
 
@@ -305,7 +287,6 @@ def create_boms(settings, only_create=None):
 	boms = get_fixtures_data_from_file(filename="boms.json")
 
 	for bom in boms:
-
 		if only_create and bom.get("item") not in only_create:
 			continue
 
@@ -352,9 +333,7 @@ def create_bank_and_bank_account(settings=None):
 		bank_doc.save()
 
 	for bank_account in bank_accounts:
-		if frappe.db.exists(
-			"Bank Account", {"account_name": bank_account.get("account_name")}
-		):
+		if frappe.db.exists("Bank Account", {"account_name": bank_account.get("account_name")}):
 			continue
 
 		bank_account_doc = frappe.new_doc("Bank Account")
@@ -406,17 +385,12 @@ def create_employees(settings, only_create=None):
 		empl.save()
 
 		for address in addresses:
-			existing_address = frappe.get_value(
-				"Address", {"address_line1": address.get("address_line1")}
-			)
+			existing_address = frappe.get_value("Address", {"address_line1": address.get("address_line1")})
 			if existing_address:
 				continue
 
 			for link in address.get("links"):
-				if (
-					link.get("link_doctype") == "Employee"
-					and link.get("link_title") == empl.employee_name
-				):
+				if link.get("link_doctype") == "Employee" and link.get("link_title") == empl.employee_name:
 					for addr_link in address.get("links"):
 						if addr_link.get("link_title") == empl.employee_name:
 							addr_link.update({"link_name": empl.name})
@@ -430,9 +404,7 @@ def create_employees(settings, only_create=None):
 
 
 def create_holiday_lists(settings):
-	holiday_lists = get_fixtures_data_from_file(
-		filename="holiday_lists.json", country=settings.country
-	)
+	holiday_lists = get_fixtures_data_from_file(filename="holiday_lists.json", country=settings.country)
 
 	for hl in holiday_lists:
 		if frappe.db.exists("Holiday List", hl.get("holiday_list_name")):
@@ -501,18 +473,14 @@ def create_quarantine_warehouse(
 			a.company = settings.company
 			a.root_type = "Asset"
 			a.report_type = "Balance Sheet"
-			a.account_currency = frappe.get_value(
-				"Company", settings.company, "default_currency"
-			)
+			a.account_currency = frappe.get_value("Company", settings.company, "default_currency")
 			a.parent_account = parent_account
 			a.account_type = "Stock"
 			a.save()
 			account_name = a.name
 
 	if not parent_wh:
-		parent_wh = frappe.get_value(
-			"Warehouse", {"company": settings.company, "is_group": 1}
-		)
+		parent_wh = frappe.get_value("Warehouse", {"company": settings.company, "is_group": 1})
 
 	wh_type = "Quarantine"
 	if not frappe.db.exists("Warehouse Type", wh_type):

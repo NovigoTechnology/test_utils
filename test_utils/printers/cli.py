@@ -42,9 +42,7 @@ async def serve(args: argparse.Namespace) -> None:
 	mocks: list[RawPrinterMock | IppPrinterMock] = []
 
 	if args.command in ("raw", "both"):
-		mocks.append(
-			await run_raw(args.host, args.port if args.command == "raw" else 0, save_dir)
-		)
+		mocks.append(await run_raw(args.host, args.port if args.command == "raw" else 0, save_dir))
 	if args.command in ("ipp", "both"):
 		ipp_port = args.port if args.command == "ipp" else 0
 		printer_path = args.printer_path
@@ -76,16 +74,12 @@ async def serve(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-	parser = argparse.ArgumentParser(
-		description="Run mock raw and/or IPP printers for manual testing."
-	)
+	parser = argparse.ArgumentParser(description="Run mock raw and/or IPP printers for manual testing.")
 	subparsers = parser.add_subparsers(dest="command", required=True)
 
 	def add_common(subparser: argparse.ArgumentParser) -> None:
 		subparser.add_argument("--host", default="127.0.0.1")
-		subparser.add_argument(
-			"--port", type=int, default=0, help="Listen port (0 = OS-assigned)."
-		)
+		subparser.add_argument("--port", type=int, default=0, help="Listen port (0 = OS-assigned).")
 		subparser.add_argument(
 			"--save-dir",
 			help="Directory where received print jobs are written.",
@@ -101,9 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
 	ipp_parser.add_argument("--printer-path", default="/ipp/print")
 	ipp_parser.set_defaults(port=8631)
 
-	both_parser = subparsers.add_parser(
-		"both", help="Run raw and IPP printer mocks together."
-	)
+	both_parser = subparsers.add_parser("both", help="Run raw and IPP printer mocks together.")
 	add_common(both_parser)
 	both_parser.add_argument("--name", default="Mock IPP")
 	both_parser.add_argument("--printer-path", default="/ipp/print")

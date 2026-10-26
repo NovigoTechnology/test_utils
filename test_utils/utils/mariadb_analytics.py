@@ -106,9 +106,7 @@ SNAPSHOT_DETAIL_SQL = (
 )
 
 SCHEDULER_HOOK = (
-	"scheduler_events = {\n"
-	'    "cron": {"*/15 * * * *": ["test_utils.utils.mariadb_analytics.snapshot"]}\n'
-	"}"
+	'scheduler_events = {\n    "cron": {"*/15 * * * *": ["test_utils.utils.mariadb_analytics.snapshot"]}\n}'
 )
 
 
@@ -136,17 +134,13 @@ def enable(
 		root_conn.close()
 
 	print("MariaDB performance analytics enabled.")
-	print(
-		"  Snapshot tables: ps_snapshot, ps_snapshot_digest, ps_snapshot_wait, ps_snapshot_table_io"
-	)
+	print("  Snapshot tables: ps_snapshot, ps_snapshot_digest, ps_snapshot_wait, ps_snapshot_table_io")
 	if schedule_minutes and event_created:
 		print(f"  Scheduled event: {EVENT_NAME} every {schedule_minutes} minute(s)")
 	elif schedule_minutes:
 		print("  MariaDB EVENT not created; call snapshot() manually or use hooks.py")
 	else:
-		print(
-			"  No MariaDB EVENT (schedule_minutes=0). Call snapshot() manually or use hooks.py."
-		)
+		print("  No MariaDB EVENT (schedule_minutes=0). Call snapshot() manually or use hooks.py.")
 	print(f"  Retention: {retain_days} day(s)")
 
 
@@ -454,9 +448,7 @@ def grant_performance_schema_read(root_conn):
 		quoted_user = quote_ident(db_user)
 		quoted_host = quote_ident(host)
 		for table in PERFORMANCE_SCHEMA_READ_TABLES:
-			root_conn.sql(
-				f"GRANT SELECT ON performance_schema.`{table}` TO {quoted_user}@{quoted_host}"
-			)
+			root_conn.sql(f"GRANT SELECT ON performance_schema.`{table}` TO {quoted_user}@{quoted_host}")
 
 	root_conn.sql("FLUSH PRIVILEGES")
 	print(f"Granted site user {db_user!r} SELECT on Performance Schema summary tables.")
@@ -604,9 +596,7 @@ def digest_table_is_full():
 
 def truncate_digest_table():
 	try:
-		frappe.db.sql_ddl(
-			"TRUNCATE TABLE performance_schema.events_statements_summary_by_digest"
-		)
+		frappe.db.sql_ddl("TRUNCATE TABLE performance_schema.events_statements_summary_by_digest")
 		print("Truncated performance_schema.events_statements_summary_by_digest.")
 	except Exception as exc:
 		print(f"Could not truncate digest table (needs elevated privileges): {exc}")
@@ -728,13 +718,9 @@ def get_superuser_connection(root_login=None, root_password=None):
 
 	from frappe.database.mariadb.setup_db import get_root_connection
 
-	root_login = (
-		root_login or frappe.conf.get("mariadb_root_login") or frappe.conf.get("root_login")
-	)
+	root_login = root_login or frappe.conf.get("mariadb_root_login") or frappe.conf.get("root_login")
 	root_password = (
-		root_password
-		or frappe.conf.get("mariadb_root_password")
-		or frappe.conf.get("root_password")
+		root_password or frappe.conf.get("mariadb_root_password") or frappe.conf.get("root_password")
 	)
 
 	if len(signature(get_root_connection).parameters) == 0:
@@ -764,17 +750,15 @@ def seconds_from_timer(timer_delta):
 def row_deltas(row):
 	count_delta = counter_delta(row["newer_count"], row["older_count"])
 	timer_delta = counter_delta(row["newer_timer"], row["older_timer"])
-	reset = (
-		row["older_count"] is not None and row["newer_count"] < row["older_count"]
-	) or (row["older_timer"] is not None and row["newer_timer"] < row["older_timer"])
+	reset = (row["older_count"] is not None and row["newer_count"] < row["older_count"]) or (
+		row["older_timer"] is not None and row["newer_timer"] < row["older_timer"]
+	)
 	return count_delta, timer_delta, reset
 
 
 def print_reset_note(reset_note):
 	if reset_note:
-		print(
-			"(Counters reset during interval; newer absolute values used where deltas went backwards.)"
-		)
+		print("(Counters reset during interval; newer absolute values used where deltas went backwards.)")
 
 
 def print_top_table(title, rows, columns):

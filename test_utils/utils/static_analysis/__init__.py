@@ -131,7 +131,7 @@ class StaticAnalysisResult:
 
 def collect_whitelisted_functions(app_path: Path) -> list[str]:
 	"""Return dotted paths for every ``@frappe.whitelist()`` function in the app."""
-	app_name = app_path.name
+	_app_name = app_path.name
 	results: list[str] = []
 
 	for py_file in app_path.rglob("*.py"):
@@ -336,6 +336,4 @@ def analyze_app(
 ) -> StaticAnalysisResult:
 	"""Convenience wrapper around :class:`StaticAnalyzer`."""
 	config = StaticAnalysisConfig(**config_kwargs)
-	return StaticAnalyzer(
-		Path(app_path), dependency_paths=dependency_paths, config=config
-	).analyze()
+	return StaticAnalyzer(Path(app_path), dependency_paths=dependency_paths, config=config).analyze()

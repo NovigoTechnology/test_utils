@@ -95,12 +95,8 @@ def check_tracked_methods(repo_directory, base_branch, apps_filter=None):
 				if not latest_commit_hash or latest_commit_hash == commit_hash:
 					continue
 
-				old_file_content = download_file_from_commit(
-					repo_url, commit_hash, original_file_path
-				)
-				new_file_content = download_file_from_commit(
-					repo_url, latest_commit_hash, original_file_path
-				)
+				old_file_content = download_file_from_commit(repo_url, commit_hash, original_file_path)
+				new_file_content = download_file_from_commit(repo_url, latest_commit_hash, original_file_path)
 			except UpstreamFetchError as e:
 				if apps_filter is None or app_name in apps_filter:
 					unverified.append(str(e))
@@ -122,18 +118,14 @@ def check_tracked_methods(repo_directory, base_branch, apps_filter=None):
 	return changed_methods, unverified
 
 
-def main(argv: Sequence[str] = None):
+def main(argv: Sequence[str] | None = None):
 	parser = argparse.ArgumentParser()
-	parser.add_argument(
-		"--app", action="append", help="App name(s) to scan (resolves to app directory)"
-	)
+	parser.add_argument("--app", action="append", help="App name(s) to scan (resolves to app directory)")
 	parser.add_argument(
 		"--directory",
 		help="Directory to scan (e.g. workspace root); overrides --app when set. Use for monorepos to match GHA behavior.",
 	)
-	parser.add_argument(
-		"--base-branch", action="append", help="Base branch to compare against"
-	)
+	parser.add_argument("--base-branch", action="append", help="Base branch to compare against")
 	parser.add_argument(
 		"--no-color",
 		action="store_true",
@@ -166,9 +158,7 @@ def main(argv: Sequence[str] = None):
 			unverified.extend(could_not_check)
 
 		if changed_methods:
-			print(
-				"\n[PRE-COMMIT HOOK] Method changes detected! Please review before committing."
-			)
+			print("\n[PRE-COMMIT HOOK] Method changes detected! Please review before committing.")
 			for change in changed_methods:
 				print(change["title"])
 				print_diff(change["diff"], color=not args.no_color)

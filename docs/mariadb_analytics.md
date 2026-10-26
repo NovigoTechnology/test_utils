@@ -64,10 +64,15 @@ Prompted passwords are not written back to site config.
 ```python
 # bench --site your_site console
 from test_utils.utils.mariadb_analytics import (
-    enable, status, snapshot, top_statements, top_waits, top_table_io
+	enable,
+	status,
+	snapshot,
+	top_statements,
+	top_waits,
+	top_table_io,
 )
 
-enable()                    # default: EVENT every 15 min, retain 7 days
+enable()  # default: EVENT every 15 min, retain 7 days
 enable(schedule_minutes=0)  # skip MariaDB EVENT; use manual snapshot or hooks
 status()
 ```
@@ -81,8 +86,8 @@ bench --site your_site execute test_utils.utils.mariadb_analytics.enable
 ## Ongoing use
 
 ```python
-snapshot()           # collect now (also runs on EVENT schedule if enabled)
-top_statements(20)   # delta between last two snapshots (includes first-seen SQL)
+snapshot()  # collect now (also runs on EVENT schedule if enabled)
+top_statements(20)  # delta between last two snapshots (includes first-seen SQL)
 top_waits(20)
 top_table_io(20)
 status()
@@ -107,9 +112,7 @@ If MariaDB `EVENT` creation fails or you prefer Frappe's scheduler:
 
 ```python
 # hooks.py — in a consuming app, not part of test_utils
-scheduler_events = {
-    "cron": {"*/15 * * * *": ["test_utils.utils.mariadb_analytics.snapshot"]}
-}
+scheduler_events = {"cron": {"*/15 * * * *": ["test_utils.utils.mariadb_analytics.snapshot"]}}
 ```
 
 ## Instrumentation scope

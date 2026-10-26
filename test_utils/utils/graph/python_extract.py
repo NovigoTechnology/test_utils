@@ -134,9 +134,7 @@ class _FunctionCollector(ast.NodeVisitor):
 	def _function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
 		parts = [self.module, *self.class_stack, *self.function_stack, node.name]
 		dotted = ".".join(parts)
-		is_wl = self.resolver.has_whitelist_decorator(node) or self.resolver.is_whitelisted(
-			dotted
-		)
+		is_wl = self.resolver.has_whitelist_decorator(node) or self.resolver.is_whitelisted(dotted)
 		self.rows.append(
 			PythonFunctionRow(
 				dotted_path=dotted,
@@ -209,7 +207,7 @@ def extract_python_classes(
 		try:
 			src = py_file.read_text(encoding="utf-8", errors="replace")
 			tree = ast.parse(src, filename=str(py_file))
-		except (OSError, SyntaxError):
+		except OSError, SyntaxError:
 			continue
 		relpath = py_file.relative_to(app_root).as_posix()
 		collector = _ClassCollector(mod, relpath)
@@ -233,7 +231,7 @@ def extract_python_functions(
 		try:
 			src = py_file.read_text(encoding="utf-8", errors="replace")
 			tree = ast.parse(src, filename=str(py_file))
-		except (OSError, SyntaxError):
+		except OSError, SyntaxError:
 			continue
 		relpath = py_file.relative_to(app_root).as_posix()
 		collector = _FunctionCollector(mod, relpath, resolver)

@@ -25,16 +25,11 @@ def get_default_site_apps(bench_root: pathlib.Path) -> list[str]:
 	"""
 	common_config = bench_root / "sites" / "common_site_config.json"
 	if not common_config.exists():
-		sys.exit(
-			"validate_customizations: --current-site-apps requires "
-			"sites/common_site_config.json"
-		)
+		sys.exit("validate_customizations: --current-site-apps requires sites/common_site_config.json")
 	try:
 		default_site = json.loads(common_config.read_text()).get("default_site")
 	except (ValueError, OSError) as e:
-		sys.exit(
-			f"validate_customizations: could not read sites/common_site_config.json: {e}"
-		)
+		sys.exit(f"validate_customizations: could not read sites/common_site_config.json: {e}")
 	if not default_site:
 		sys.exit(
 			"validate_customizations: --current-site-apps requires `default_site` "
@@ -52,8 +47,7 @@ def get_default_site_apps(bench_root: pathlib.Path) -> list[str]:
 	)
 	if result.returncode != 0:
 		sys.exit(
-			"validate_customizations: `bench --site "
-			f"{default_site} list-apps` failed:\n" + result.stderr
+			f"validate_customizations: `bench --site {default_site} list-apps` failed:\n" + result.stderr
 		)
 	apps = []
 	for line in result.stdout.split("\n"):
@@ -75,7 +69,7 @@ def is_frappe_bench_environment():
 	current_dir = pathlib.Path.cwd()
 
 	# Look for bench structure - check current dir and parent dirs
-	for path in [current_dir] + list(current_dir.parents):
+	for path in [current_dir, *list(current_dir.parents)]:
 		required_dirs = ["sites", "env", "apps"]
 		if all((path / dirname).is_dir() for dirname in required_dirs):
 			# Found the directory structure, now check for additional bench indicators
@@ -87,9 +81,9 @@ def is_frappe_bench_environment():
 
 			# Check for bench files in the bench root or sites directory
 			sites_dir = path / "sites"
-			has_bench_files = any(
-				(path / indicator).exists() for indicator in bench_indicators
-			) or any((sites_dir / indicator).exists() for indicator in bench_indicators)
+			has_bench_files = any((path / indicator).exists() for indicator in bench_indicators) or any(
+				(sites_dir / indicator).exists() for indicator in bench_indicators
+			)
 
 			if has_bench_files:
 				return True
@@ -130,9 +124,7 @@ def _resolve_app_dir(app_name: str | None) -> pathlib.Path:
 	return cwd
 
 
-def customization_file_is_in_app(
-	customize_file: pathlib.Path, app_dir: pathlib.Path
-) -> bool:
+def customization_file_is_in_app(customize_file: pathlib.Path, app_dir: pathlib.Path) -> bool:
 	"""True if ``customize_file`` is under this app's directory (``apps/<app>/``).
 
 	Using ``app_dir in path`` as a string would match ``upro_erp`` inside
@@ -152,9 +144,7 @@ def get_customized_doctypes(app_dir: pathlib.Path, current_site_apps: bool = Fal
 		# `sites/apps.json` is the modern app manifest (Frappe v15+). Sort by
 		# `idx` to preserve install order, the same ordering `apps.txt` had.
 		apps_data = json.loads((bench_root / "sites" / "apps.json").read_text())
-		apps_order = [
-			app for app, _ in sorted(apps_data.items(), key=lambda kv: kv[1].get("idx", 0))
-		]
+		apps_order = [app for app, _ in sorted(apps_data.items(), key=lambda kv: kv[1].get("idx", 0))]
 	customized_doctypes = {}
 	for _app_dir in apps_order:
 		app_dir = (apps_dir / _app_dir).resolve()
@@ -164,9 +154,7 @@ def get_customized_doctypes(app_dir: pathlib.Path, current_site_apps: bool = Fal
 		for module in modules:
 			if not (app_dir / _app_dir / scrub(module) / "custom").exists():
 				continue
-			for custom_file in list(
-				(app_dir / _app_dir / scrub(module) / "custom").glob("**/*.json")
-			):
+			for custom_file in list((app_dir / _app_dir / scrub(module) / "custom").glob("**/*.json")):
 				if custom_file.stem in customized_doctypes:
 					customized_doctypes[custom_file.stem].append(custom_file.resolve())
 				else:
@@ -206,7 +194,7 @@ def validate_module(customized_doctypes, app_dir: pathlib.Path):
 		modules = []
 	else:
 		modules = (app_dir / this_app / "modules.txt").read_text().split("\n")
-	for doctype, customize_files in customized_doctypes.items():
+	for _doctype, customize_files in customized_doctypes.items():
 		for customize_file in customize_files:
 			if not customization_file_is_in_app(customize_file, app_dir):
 				continue
@@ -248,9 +236,7 @@ def validate_no_custom_perms(customized_doctypes, app_dir: pathlib.Path):
 				continue
 			file_contents = json.loads(customize_file.read_text())
 			if file_contents.get("custom_perms"):
-				exceptions.append(
-					f"Customization for {doctype} in {this_app} contains custom permissions"
-				)
+				exceptions.append(f"Customization for {doctype} in {this_app} contains custom permissions")
 	return exceptions
 
 
@@ -267,18 +253,14 @@ def load_customization_allowlist(app_dir: pathlib.Path) -> dict:
 		try:
 			with open(pyproject, "rb") as f:
 				data = tomllib.load(f)
-			config = (
-				data.get("tool", {}).get("test_utils", {}).get("validate_customizations", {})
-			)
+			config = data.get("tool", {}).get("test_utils", {}).get("validate_customizations", {})
 			if config:
 				allowlist["allow_duplicate_property_setters"] = config.get(
 					"allow_duplicate_property_setters", []
 				)
-				allowlist["allow_duplicate_custom_fields"] = config.get(
-					"allow_duplicate_custom_fields", []
-				)
+				allowlist["allow_duplicate_custom_fields"] = config.get("allow_duplicate_custom_fields", [])
 				break
-		except (ValueError, OSError):
+		except ValueError, OSError:
 			pass
 	return allowlist
 
@@ -297,11 +279,11 @@ def validate_duplicate_customizations(customized_doctypes, app_dir: pathlib.Path
 		for customize_file in customize_files:
 			if isinstance(customize_file, dict):
 				module = "hrms"
-				app = "hrms"
+				_app = "hrms"
 				file_contents = customize_file
 			else:
 				module = customize_file.parent.parent.stem
-				app = customize_file.parent.parent.parent.parent.stem
+				_app = customize_file.parent.parent.parent.parent.stem
 				file_contents = json.loads(customize_file.read_text())
 			if file_contents.get("custom_fields"):
 				fields = [cf.get("fieldname") for cf in file_contents.get("custom_fields")]
@@ -340,8 +322,8 @@ def validate_duplicate_customizations(customized_doctypes, app_dir: pathlib.Path
 
 def validate_system_generated(customized_doctypes, app_dir: pathlib.Path):
 	exceptions = []
-	this_app = app_dir.name
-	for doctype, customize_files in customized_doctypes.items():
+	_this_app = app_dir.name
+	for _doctype, customize_files in customized_doctypes.items():
 		for customize_file in customize_files:
 			# checking if customize_file is a dict, as for hrms it returns a dict of custom_fields
 			if isinstance(customize_file, dict):
@@ -378,15 +360,15 @@ def validate_customizations_on_own_doctypes(customized_doctypes, app_dir: pathli
 			continue
 		if not (app_modules_dir / scrub(module) / "doctype").is_dir():
 			continue
-		for doctype in (app_modules_dir / scrub(module) / "doctype").iterdir():
-			doctype_definition = doctype / f"{doctype.stem}.json"
+		for _doctype in (app_modules_dir / scrub(module) / "doctype").iterdir():
+			doctype_definition = _doctype / f"{_doctype.stem}.json"
 			if doctype_definition.exists():
 				file_contents = json.loads(doctype_definition.read_text())
 				name = file_contents.get("name")
 				if name:
 					own_doctypes[name] = (module, doctype_definition)
 
-	for doctype, customize_files in customized_doctypes.items():
+	for _doctype, customize_files in customized_doctypes.items():
 		for customize_file in customize_files:
 			# checking if customize_file is a dict, as for hrms it returns a dict of custom_fields
 			if isinstance(customize_file, dict):
@@ -396,14 +378,14 @@ def validate_customizations_on_own_doctypes(customized_doctypes, app_dir: pathli
 			file_contents = json.loads(customize_file.read_text())
 			if file_contents.get("doctype") in own_doctypes.keys():
 				exceptions.append(
-					f"Customizations for doctype defined in {own_doctypes[ file_contents.get('doctype')][0]} for {file_contents.get('doctype')} exist"
+					f"Customizations for doctype defined in {own_doctypes[file_contents.get('doctype')][0]} for {file_contents.get('doctype')} exist"
 				)
 	return exceptions
 
 
 def validate_email_literals(customized_doctypes, app_dir: pathlib.Path):
-	this_app = app_dir.name
-	for doctype, customize_files in customized_doctypes.items():
+	_this_app = app_dir.name
+	for _doctype, customize_files in customized_doctypes.items():
 		for customize_file in customize_files:
 			if isinstance(customize_file, dict):
 				continue
@@ -438,9 +420,7 @@ def validate_email_literals(customized_doctypes, app_dir: pathlib.Path):
 
 
 def validate_customizations(app_dir: pathlib.Path, current_site_apps: bool = False):
-	customized_doctypes = get_customized_doctypes(
-		app_dir, current_site_apps=current_site_apps
-	)
+	customized_doctypes = get_customized_doctypes(app_dir, current_site_apps=current_site_apps)
 	exceptions = validate_no_custom_perms(customized_doctypes, app_dir)
 	exceptions += validate_module(customized_doctypes, app_dir)
 	exceptions += validate_system_generated(customized_doctypes, app_dir)
@@ -450,12 +430,10 @@ def validate_customizations(app_dir: pathlib.Path, current_site_apps: bool = Fal
 	return exceptions
 
 
-def main(argv: Sequence[str] = None):
+def main(argv: Sequence[str] | None = None):
 	parser = argparse.ArgumentParser()
 	parser.add_argument("filenames", nargs="*")
-	parser.add_argument(
-		"--app", help="App name (e.g. cad); used to locate app dir and pyproject.toml"
-	)
+	parser.add_argument("--app", help="App name (e.g. cad); used to locate app dir and pyproject.toml")
 	parser.add_argument(
 		"--current-site-apps",
 		action="store_true",
@@ -469,9 +447,7 @@ def main(argv: Sequence[str] = None):
 
 	if is_frappe_bench_environment():
 		app_dir = _resolve_app_dir(args.app)
-		exceptions = validate_customizations(
-			app_dir, current_site_apps=args.current_site_apps
-		)
+		exceptions = validate_customizations(app_dir, current_site_apps=args.current_site_apps)
 		if exceptions:
 			for exception in list(set(exceptions)):
 				print(exception)

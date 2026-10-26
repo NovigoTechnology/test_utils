@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import ast
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
+
 from ..static_analysis import discover_dependency_paths
 from ..static_analysis.hooks_validator import PathExtractor, find_hooks_file
 from ..static_analysis.path_resolver import PathResolver
 from .js_callsites import iter_js_callsites_in_app
 from .path_excludes import merge_exclude_globs
 from .python_calls import extract_python_call_edges
-from .python_imports import extract_python_import_edges
 from .python_extract import extract_python_classes, extract_python_functions
+from .python_imports import extract_python_import_edges
 from .schema import apply_schema, clear_data_tables
 
 
@@ -21,8 +22,7 @@ def _require_duckdb():
 		import duckdb
 	except ImportError as e:  # pragma: no cover - optional dependency
 		raise ImportError(
-			"duckdb is required to build the code graph. Install with: "
-			"poetry install --with graph"
+			"duckdb is required to build the code graph. Install with: poetry install --with graph"
 		) from e
 	return duckdb
 
@@ -52,9 +52,7 @@ def build_graph(
 	output_path = output_path.resolve()
 	output_path.parent.mkdir(parents=True, exist_ok=True)
 
-	deps = discover_dependency_paths(
-		app_path, [Path(p).resolve() for p in (dependency_paths or [])]
-	)
+	deps = discover_dependency_paths(app_path, [Path(p).resolve() for p in (dependency_paths or [])])
 	resolver = PathResolver.from_app(app_path, deps)
 	scan_excludes = merge_exclude_globs(exclude_globs, exclude_tests=exclude_tests)
 
@@ -63,7 +61,7 @@ def build_graph(
 		apply_schema(con)
 		clear_data_tables(con)
 
-		now = datetime.now(timezone.utc).isoformat()
+		now = datetime.now(UTC).isoformat()
 		con.execute("INSERT INTO meta VALUES ('app_name', ?)", [app_path.name])
 		con.execute("INSERT INTO meta VALUES ('built_at', ?)", [now])
 		con.execute("INSERT INTO meta VALUES ('app_root', ?)", [str(app_path)])
@@ -108,7 +106,7 @@ def build_graph(
 			try:
 				src = hooks_file.read_text(encoding="utf-8", errors="replace")
 				tree = ast.parse(src, filename=str(hooks_file))
-			except (OSError, SyntaxError):
+			except OSError, SyntaxError:
 				tree = None
 			if tree is not None:
 				ex = PathExtractor()

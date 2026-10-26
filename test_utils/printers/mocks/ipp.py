@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
 from test_utils.printers.ipp.codec import (
 	IppDecoder,
@@ -38,7 +38,7 @@ MockIppJob = IppJob
 class IppPrinterMock:
 	"""Mock IPP printer server using asyncio HTTP handling."""
 
-	DEFAULT_FORMATS = [
+	DEFAULT_FORMATS: ClassVar[list[str]] = [
 		"application/pdf",
 		"image/pwg-raster",
 		"image/urf",
@@ -59,9 +59,7 @@ class IppPrinterMock:
 		self.host = host
 		self.port = port
 		self.name = name
-		self.printer_path = (
-			printer_path if printer_path.startswith("/") else f"/{printer_path}"
-		)
+		self.printer_path = printer_path if printer_path.startswith("/") else f"/{printer_path}"
 		self.save_dir = save_dir
 		self.supported_formats = supported_formats or self.DEFAULT_FORMATS
 		self.fail_rate = fail_rate
@@ -178,9 +176,7 @@ class IppPrinterMock:
 			attrs = decoder.read_attributes()
 
 			if operation == IppOperation.PRINT_JOB:
-				return await self.handle_print_job(
-					version, request_id, attrs, decoder.get_document_data()
-				)
+				return await self.handle_print_job(version, request_id, attrs, decoder.get_document_data())
 			if operation == IppOperation.GET_PRINTER_ATTRIBUTES:
 				return self.handle_get_printer_attributes(version, request_id)
 			if operation == IppOperation.GET_JOBS:

@@ -11,7 +11,7 @@ async def test_raw_mock_receives_payload_and_saves_file(tmp_path: Path):
 	mock = RawPrinterMock(port=0, save_dir=tmp_path)
 	await mock.start()
 	try:
-		reader, writer = await asyncio.open_connection(mock.host, mock.actual_port)
+		_reader, writer = await asyncio.open_connection(mock.host, mock.actual_port)
 		writer.write(b"^XA^FDTest^FS^XZ")
 		await writer.drain()
 		writer.close()

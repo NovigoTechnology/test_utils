@@ -1,18 +1,15 @@
-import ast
 import argparse
-import tokenize
+import ast
 import os
 import re
 import sys
+import tokenize
 import traceback
-
-from io import StringIO
-from typing import List, Tuple, Optional
-
 from collections.abc import Sequence
+from io import StringIO
 from pathlib import Path
-from sqlglot import parse, transpile, ErrorLevel, exp
 
+from sqlglot import ErrorLevel, exp, parse, transpile
 
 RED = "\033[91m"
 BLUE = "\033[94m"
@@ -175,10 +172,10 @@ def get_table_mapping(node):
 					elif hasattr(from_tables[0].this, "this"):
 						default_table = from_tables[0]
 					else:
-						default_table = exp.Table(this=list(tables.values())[0], quoted=True)
+						default_table = exp.Table(this=next(iter(tables.values())), quoted=True)
 
 	if not default_table and tables:
-		default_table = exp.Table(this=list(tables.values())[0], quoted=True)
+		default_table = exp.Table(this=next(iter(tables.values())), quoted=True)
 
 	# Use the mapping to resolve aliases in column references
 	for column in node.find_all(exp.Column):
@@ -204,7 +201,7 @@ def get_table_mapping(node):
 
 def qualify_outputs(node):
 	"""Ensure all columns are qualified with a table name based on query context"""
-	tables, default_table = get_table_mapping(node)
+	_tables, default_table = get_table_mapping(node)
 
 	# For SELECT expressions, unqualified columns belong to first FROM table
 	if hasattr(node, "expressions"):
@@ -258,7 +255,7 @@ def format_sql_content(
 		print(f"\nProcessing {file_path}:{line_num}")
 
 		parsed = parse(sql_for_format, dialect=dialect)[0]
-		resolved = resolve_columns(parsed)
+		_resolved = resolve_columns(parsed)
 		qualified = qualify_outputs(parsed)
 		quoted = ensure_quoting(qualified)
 
@@ -283,9 +280,9 @@ def format_sql_content(
 		print(f"\nError at {file_path}:{line_num}")
 		print(f"Exception type: {type(e)}")
 		print(f"Exception args: {e.args}")
-		print(f"Exception: {str(e)}")
+		print(f"Exception: {e!s}")
 		print("Traceback:", traceback.format_exc())
-		warnings.append(f"{RED}Could not format SQL: {str(e)}{RESET}")
+		warnings.append(f"{RED}Could not format SQL: {e!s}{RESET}")
 		return sql, True, warnings
 
 
@@ -295,15 +292,16 @@ def resolve_columns(node):
 	for table in node.find_all(exp.Table):
 		tables[str(table.alias or table.name)] = str(table.name)
 
-	fallback_table = list(tables.values())[0]
+	if not tables:
+		raise IndexError("list index out of range")
 
 	for column in node.find_all(exp.Column):
 		if not column.table:
 			if len(tables) == 1:
-				column.set("table", exp.Table(this=list(tables.values())[0]))
+				column.set("table", exp.Table(this=next(iter(tables.values()))))
 			elif len(tables) > 1:
 				# Try to infer table ownership
-				for alias, table_name in tables.items():
+				for _alias, table_name in tables.items():
 					if column.name in ["name", "parent", "doctype", "parenttype"]:
 						column.set("table", exp.Table(this=table_name))
 						break
@@ -329,9 +327,7 @@ def replace_sql_patterns(sql: str) -> tuple[str, list[tuple[str, str]]]:
 	return sql, list(set(replacements))
 
 
-def update_file_content(
-	file_path: str, replacements: list[tuple[int, str, str]]
-) -> bool:
+def update_file_content(file_path: str, replacements: list[tuple[int, str, str]]) -> bool:
 	try:
 		with open(file_path, encoding="utf-8") as f:
 			source = f.read()
@@ -343,7 +339,7 @@ def update_file_content(
 		for line in lines:
 			offsets.append(offsets[-1] + len(line) + 1)
 
-		for line_num, original, formatted in sorted(replacements, reverse=True):
+		for _line_num, original, formatted in sorted(replacements, reverse=True):
 			for node in ast.walk(tree):
 				if isinstance(node, ast.Constant) and isinstance(node.value, str):
 					if node.value == original:
@@ -367,35 +363,29 @@ def update_file_content(
 
 		return True
 	except Exception as e:
-		print(f"{RED}Error updating file {file_path}: {str(e)}{RESET}", file=sys.stderr)
+		print(f"{RED}Error updating file {file_path}: {e!s}{RESET}", file=sys.stderr)
 		return False
 
 
-def process_file(
-	file_path: str, dialect: str
-) -> list[tuple[int, str, str, bool, list[str]]]:
+def process_file(file_path: str, dialect: str) -> list[tuple[int, str, str, bool, list[str]]]:
 	try:
 		content = Path(file_path).read_text()
 		sql_docstrings = find_sql_docstrings(content)
 		results = []
 
 		for line_num, sql in sql_docstrings:
-			formatted_sql, is_valid, warnings = format_sql_content(
-				sql, file_path, line_num, dialect
-			)
+			formatted_sql, is_valid, warnings = format_sql_content(sql, file_path, line_num, dialect)
 			results.append((line_num, sql, formatted_sql, is_valid, warnings))
 
 		return results
 	except Exception as e:
-		print(f"{RED}Error processing {file_path}: {str(e)}{RESET}", file=sys.stderr)
+		print(f"{RED}Error processing {file_path}: {e!s}{RESET}", file=sys.stderr)
 		return []
 
 
-def format_files(
-	filenames: list[str], write: bool = False, dialect: str = "mysql"
-) -> bool:
+def format_files(filenames: list[str], write: bool = False, dialect: str = "mysql") -> bool:
 	total_formatted = 0
-	has_warnings = False
+	_has_warnings = False
 	shown_recommendation = False
 
 	for file_path in filenames:
@@ -433,9 +423,7 @@ def format_files(
 			if write and valid_replacements:
 				update_file_content(file_path, valid_replacements)
 
-	print(
-		f"\n{BLUE}Formatted {total_formatted} SQL statement{'s' if total_formatted != 1 else ''}{RESET}"
-	)
+	print(f"\n{BLUE}Formatted {total_formatted} SQL statement{'s' if total_formatted != 1 else ''}{RESET}")
 	return True
 
 

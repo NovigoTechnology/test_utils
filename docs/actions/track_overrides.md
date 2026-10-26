@@ -31,15 +31,15 @@ METHOD: <method_name>
 ### Example
 ```python
 def is_system_manager_disabled(user):
-    """
-    APP: frappe
-    HASH: 171e1d0159cda3b8d9415527590c9c3ca0c827be
-    REPO: https://github.com/frappe/frappe/
-    PATH: frappe/core/doctype/user/user.py
-    METHOD: is_system_manager_disabled
-    """
-    # Method implementation here
-    pass
+	"""
+	APP: frappe
+	HASH: 171e1d0159cda3b8d9415527590c9c3ca0c827be
+	REPO: https://github.com/frappe/frappe/
+	PATH: frappe/core/doctype/user/user.py
+	METHOD: is_system_manager_disabled
+	"""
+	# Method implementation here
+	pass
 ```
 
 ## Pre-commit Usage

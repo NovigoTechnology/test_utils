@@ -3,6 +3,8 @@ import subprocess
 import sys
 import time
 from datetime import datetime
+from typing import ClassVar
+
 import frappe
 
 # Tables with fewer rows use direct ALTER
@@ -29,9 +31,7 @@ DOCTYPE_DATE_FIELD_MAP = {
 
 # Doctypes that need a virtual posting_date column (they use transaction_date)
 DOCTYPES_NEEDING_VIRTUAL_POSTING_DATE = [
-	doctype
-	for doctype, field in DOCTYPE_DATE_FIELD_MAP.items()
-	if field == "transaction_date"
+	doctype for doctype, field in DOCTYPE_DATE_FIELD_MAP.items() if field == "transaction_date"
 ]
 
 
@@ -47,7 +47,7 @@ def _get_setting_value(settings: dict, key: str, default: str) -> str:
 
 
 class PerconaConfig:
-	DEFAULT_OPTIONS = {
+	DEFAULT_OPTIONS: ClassVar[dict[str, int | str | bool]] = {
 		"chunk_size": 10000,
 		"max_load": "Threads_running=100",
 		"critical_load": "Threads_running=200",
@@ -64,9 +64,7 @@ class PerconaConfig:
 		return f"h={host},D={database},t={table}"
 
 	@classmethod
-	def build_command(
-		cls, dsn: str, user: str, password: str, alter: str, **kwargs
-	) -> list[str]:
+	def build_command(cls, dsn: str, user: str, password: str, alter: str, **kwargs) -> list[str]:
 		options = {**cls.DEFAULT_OPTIONS, **kwargs}
 
 		cmd = [
@@ -81,9 +79,9 @@ class PerconaConfig:
 		for key, value in options.items():
 			if isinstance(value, bool):
 				if value:
-					cmd.append(f'--{key.replace("_", "-")}')
+					cmd.append(f"--{key.replace('_', '-')}")
 			else:
-				cmd.append(f'--{key.replace("_", "-")}={value}')
+				cmd.append(f"--{key.replace('_', '-')}={value}")
 
 		return cmd
 
@@ -96,9 +94,7 @@ class DatabaseConnection:
 		self.database = self.config.get("db_name")
 		self.user = root_user or self.config.get("root_login") or self.config.get("db_user")
 		self.password = (
-			root_password
-			or self.config.get("root_password")
-			or self.config.get("db_password", "")
+			root_password or self.config.get("root_password") or self.config.get("db_password", "")
 		)
 
 	def execute(self, query: str, as_dict: bool = True):
@@ -329,9 +325,7 @@ class FieldManager:
 		if db.column_exists(table, "posting_date"):
 			print(f"INFO: Virtual 'posting_date' column already exists in {doctype}")
 		else:
-			print(
-				f"INFO: Adding virtual 'posting_date' column to {doctype} (derived from transaction_date)"
-			)
+			print(f"INFO: Adding virtual 'posting_date' column to {doctype} (derived from transaction_date)")
 
 			try:
 				frappe.db.sql(
@@ -443,18 +437,14 @@ class FieldManager:
 				)
 				custom_field.insert(ignore_permissions=True)
 				frappe.db.commit()
-				print(
-					f"SUCCESS: Created Custom Field metadata for 'posting_date' in {child_doctype}"
-				)
+				print(f"SUCCESS: Created Custom Field metadata for 'posting_date' in {child_doctype}")
 			except Exception as e:
 				print(f"WARNING: Could not create Custom Field metadata (column exists): {e}")
 
 		return True
 
 	@staticmethod
-	def ensure_partition_indexes(
-		table: str, date_field: str, db: DatabaseConnection
-	) -> bool:
+	def ensure_partition_indexes(table: str, date_field: str, db: DatabaseConnection) -> bool:
 		"""
 		Ensure table has optimal indexes for partitioning operations.
 		- Index on name (usually exists as PK, but verify)
@@ -541,9 +531,7 @@ class FieldManager:
 		"""
 		table = f"tab{child_doctype}"
 
-		print(
-			f"\nINFO: Populating 'posting_date' in '{child_doctype}' from all parent types..."
-		)
+		print(f"\nINFO: Populating 'posting_date' in '{child_doctype}' from all parent types...")
 		sys.stdout.flush()
 
 		if not db.column_exists(table, "posting_date"):
@@ -567,9 +555,7 @@ class FieldManager:
 		# Ensure all parent types that need virtual posting_date have it
 		for parent_type in parent_types:
 			if parent_type in DOCTYPES_NEEDING_VIRTUAL_POSTING_DATE:
-				print(
-					f"INFO: Ensuring virtual 'posting_date' exists for parent type: {parent_type}"
-				)
+				print(f"INFO: Ensuring virtual 'posting_date' exists for parent type: {parent_type}")
 				FieldManager.ensure_virtual_posting_date(parent_type, db)
 
 		for parent_type in parent_types:
@@ -592,8 +578,7 @@ class FieldManager:
 				use_date_function = False
 
 			print(
-				f"  Using field: {source_field}"
-				+ (" (with DATE() conversion)" if use_date_function else "")
+				f"  Using field: {source_field}" + (" (with DATE() conversion)" if use_date_function else "")
 			)
 
 			# Process in chunks for progress tracking and to avoid long-running queries
@@ -702,9 +687,7 @@ class FieldManager:
 		if partition_field not in frappe.model.default_fields and not frappe.get_meta(
 			child_doctype
 		)._fields.get(partition_field):
-			print(
-				f"WARNING: Field '{partition_field}' does not exist in '{child_doctype}'. Skipping."
-			)
+			print(f"WARNING: Field '{partition_field}' does not exist in '{child_doctype}'. Skipping.")
 			return
 
 		print(f"DEBUG: Counting unpopulated rows in '{child_doctype}'...")
@@ -734,9 +717,7 @@ class FieldManager:
 		except Exception as e:
 			count_time = time.time() - count_start
 			if "MAX_EXECUTION_TIME" in str(e) or count_time >= count_timeout_seconds:
-				print(
-					f"WARNING: Count query timed out after {count_timeout_seconds}s - assuming large table"
-				)
+				print(f"WARNING: Count query timed out after {count_timeout_seconds}s - assuming large table")
 			else:
 				print(f"WARNING: Error counting rows: {e}")
 			print("INFO: Proceeding with optimized update (no progress tracking)...")
@@ -781,7 +762,7 @@ class FieldManager:
 
 					elapsed_time = time.time() - update_start
 					print(
-						f"SUCCESS: Populated '{partition_field}' in '{child_doctype}' (completed in {elapsed_time/60:.1f} minutes)"
+						f"SUCCESS: Populated '{partition_field}' in '{child_doctype}' (completed in {elapsed_time / 60:.1f} minutes)"
 					)
 					sys.stdout.flush()
 
@@ -838,7 +819,7 @@ class FieldManager:
 					total_time = time.time() - start_time
 					print(
 						f"SUCCESS: Populated '{partition_field}' in '{child_doctype}' "
-						f"({total_updated:,} rows in {total_time/60:.1f} minutes)"
+						f"({total_updated:,} rows in {total_time / 60:.1f} minutes)"
 					)
 					sys.stdout.flush()
 				else:
@@ -864,9 +845,7 @@ class FieldManager:
 				frappe.db.rollback()
 
 	@staticmethod
-	def populate_partition_fields(
-		doctype: str, partition_field: str, chunk_size: int = 50000
-	):
+	def populate_partition_fields(doctype: str, partition_field: str, chunk_size: int = 50000):
 		"""Populate partition field in child tables from parent table"""
 		parent_meta = frappe.get_meta(doctype)
 
@@ -889,9 +868,7 @@ class PartitionStrategy:
 		}
 
 		if strategy not in self.strategies:
-			raise ValueError(
-				f"Invalid strategy: {strategy}. Use: {list(self.strategies.keys())}"
-			)
+			raise ValueError(f"Invalid strategy: {strategy}. Use: {list(self.strategies.keys())}")
 
 	def get_expression(self) -> str:
 		expressions = {
@@ -902,14 +879,10 @@ class PartitionStrategy:
 		}
 		return expressions[self.strategy]
 
-	def generate_partitions(
-		self, start_year: int, end_year: int, table_name: str
-	) -> list[dict]:
+	def generate_partitions(self, start_year: int, end_year: int, table_name: str) -> list[dict]:
 		return self.strategies[self.strategy](start_year, end_year, table_name)
 
-	def _generate_monthly(
-		self, start_year: int, end_year: int, table_name: str
-	) -> list[dict]:
+	def _generate_monthly(self, start_year: int, end_year: int, table_name: str) -> list[dict]:
 		partitions = []
 		for year in range(start_year, end_year + 1):
 			for month in range(1, 13):
@@ -924,9 +897,7 @@ class PartitionStrategy:
 				)
 		return partitions
 
-	def _generate_quarterly(
-		self, start_year: int, end_year: int, table_name: str
-	) -> list[dict]:
+	def _generate_quarterly(self, start_year: int, end_year: int, table_name: str) -> list[dict]:
 		partitions = []
 		for year in range(start_year, end_year + 1):
 			for quarter in range(1, 5):
@@ -941,9 +912,7 @@ class PartitionStrategy:
 				)
 		return partitions
 
-	def _generate_yearly(
-		self, start_year: int, end_year: int, table_name: str
-	) -> list[dict]:
+	def _generate_yearly(self, start_year: int, end_year: int, table_name: str) -> list[dict]:
 		partitions = []
 		for year in range(start_year, end_year + 1):
 			partitions.append(
@@ -955,9 +924,7 @@ class PartitionStrategy:
 			)
 		return partitions
 
-	def _generate_fiscal_year(
-		self, start_year: int, end_year: int, table_name: str
-	) -> list[dict]:
+	def _generate_fiscal_year(self, start_year: int, end_year: int, table_name: str) -> list[dict]:
 		partitions = []
 		fiscal_years = frappe.get_all(
 			"Fiscal Year",
@@ -993,19 +960,13 @@ class PartitionEngine:
 		row_count = self.analyzer.get_row_count(table)
 
 		if row_count < PERCONA_THRESHOLD_ROWS:
-			print(
-				f"INFO: Table has {row_count:,} rows (< {PERCONA_THRESHOLD_ROWS:,}) - using direct ALTER"
-			)
+			print(f"INFO: Table has {row_count:,} rows (< {PERCONA_THRESHOLD_ROWS:,}) - using direct ALTER")
 			return False
 		else:
-			print(
-				f"INFO: Table has {row_count:,} rows (>= {PERCONA_THRESHOLD_ROWS:,}) - using Percona"
-			)
+			print(f"INFO: Table has {row_count:,} rows (>= {PERCONA_THRESHOLD_ROWS:,}) - using Percona")
 			return True
 
-	def _direct_alter_pk(
-		self, table: str, pk_field: str, pk_columns: str, index_columns: dict
-	) -> bool:
+	def _direct_alter_pk(self, table: str, pk_field: str, pk_columns: str, index_columns: dict) -> bool:
 		"""Perform direct ALTER TABLE to modify primary key
 
 		Args:
@@ -1056,7 +1017,7 @@ class PartitionEngine:
 		years_back: int = 2,
 		years_ahead: int = 10,
 		dry_run: bool = False,
-		pk_field: str = None,
+		pk_field: str | None = None,
 	) -> bool:
 		"""
 		Partition a table by the specified field.
@@ -1076,12 +1037,10 @@ class PartitionEngine:
 		if pk_field is None:
 			pk_field = partition_field
 
-		print(f"\n{'='*80}")
+		print(f"\n{'=' * 80}")
 		print(f"Partitioning Table: {table}")
-		print(
-			f"Strategy: {strategy} | Partition Field: {partition_field} | PK Field: {pk_field}"
-		)
-		print(f"{'='*80}\n")
+		print(f"Strategy: {strategy} | Partition Field: {partition_field} | PK Field: {pk_field}")
+		print(f"{'=' * 80}\n")
 
 		is_partitioned = self.analyzer.is_partitioned(table)
 
@@ -1100,9 +1059,7 @@ class PartitionEngine:
 			return False
 
 		# Step 3: Apply partitioning (uses partition_field for the expression)
-		if not self._apply_partitioning(
-			table, partition_field, strategy, years_back, years_ahead, dry_run
-		):
+		if not self._apply_partitioning(table, partition_field, strategy, years_back, years_ahead, dry_run):
 			return False
 
 		print(f"\nTable {table} partitioned successfully!\n")
@@ -1141,10 +1098,10 @@ class PartitionEngine:
 			print()
 			return True
 
-		new_pk = current_pk + [pk_field]
+		new_pk = [*current_pk, pk_field]
 
 		if "name" not in new_pk:
-			new_pk = ["name"] + [pk_field]
+			new_pk = ["name", pk_field]
 			print(f"  WARNING: 'name' was not in PK, adding it: {new_pk}")
 
 		if "name" in new_pk:
@@ -1165,9 +1122,7 @@ class PartitionEngine:
 			print()
 			return True
 
-		unique_indexes = frappe.db.sql(
-			f"SHOW INDEXES FROM `{table}` WHERE Non_unique = 0", as_dict=True
-		)
+		unique_indexes = frappe.db.sql(f"SHOW INDEXES FROM `{table}` WHERE Non_unique = 0", as_dict=True)
 
 		index_columns = {}
 		for idx in unique_indexes:
@@ -1241,9 +1196,7 @@ class PartitionEngine:
 		print(f"Generating {len(partitions)} partitions from {start_year} to {end_year}")
 
 		partition_expr = partition_strategy.get_expression()
-		partition_defs = [
-			f"PARTITION {p['name']} VALUES LESS THAN ({p['value']})" for p in partitions
-		]
+		partition_defs = [f"PARTITION {p['name']} VALUES LESS THAN ({p['value']})" for p in partitions]
 
 		alter_stmt = f"PARTITION BY RANGE ({partition_expr}) ({', '.join(partition_defs)})"
 
@@ -1260,9 +1213,7 @@ class PartitionEngine:
 		# We must use native ALTER TABLE for partitioning
 		# This is generally fast as it's primarily a metadata operation for RANGE partitioning
 		print("Applying partitioning with native ALTER TABLE...")
-		print(
-			"NOTE: Partitioning is primarily a metadata operation and should be relatively fast"
-		)
+		print("NOTE: Partitioning is primarily a metadata operation and should be relatively fast")
 
 		try:
 			self.db.kill_blocking_queries(table)
@@ -1333,9 +1284,7 @@ class PartitionEngine:
 
 		success_count = 0
 		for partition in new_partitions:
-			partition_def = (
-				f"PARTITION {partition['name']} VALUES LESS THAN ({partition['value']})"
-			)
+			partition_def = f"PARTITION {partition['name']} VALUES LESS THAN ({partition['value']})"
 			alter_stmt = f"ALTER TABLE `{table}` ADD PARTITION ({partition_def})"
 
 			try:
@@ -1362,15 +1311,13 @@ class PartitionEngine:
 		self.db.kill_blocking_queries(table)
 
 		dsn = self.db.get_dsn(table)
-		cmd = PerconaConfig.build_command(
-			dsn, self.db.user, self.db.password, alter_stmt, **options
-		)
+		cmd = PerconaConfig.build_command(dsn, self.db.user, self.db.password, alter_stmt, **options)
 
 		safe_cmd = [arg if "--password=" not in arg else "--password=***" for arg in cmd]
 		print(f"\n   Command: {' '.join(safe_cmd)}\n")
-		print(f"   {'='*76}")
+		print(f"   {'=' * 76}")
 		print("   Percona Toolkit Output:")
-		print(f"   {'='*76}\n")
+		print(f"   {'=' * 76}\n")
 
 		try:
 			process = subprocess.Popen(
@@ -1386,7 +1333,7 @@ class PartitionEngine:
 				print(f"   {line.rstrip()}")
 
 			return_code = process.wait()
-			print(f"\n   {'='*76}")
+			print(f"\n   {'=' * 76}")
 
 			if return_code == 0:
 				print("Operation completed successfully")
@@ -1460,10 +1407,10 @@ def create_partition(
 		original_partition_field = _get_setting_value(settings, "field", "posting_date")
 		partition_by = _get_setting_value(settings, "partition_by", "month")
 
-		print(f"\n{'='*80}")
+		print(f"\n{'=' * 80}")
 		print(f"Processing: {doctype}")
 		print(f"Original Field: {original_partition_field} | Strategy: {partition_by}")
-		print(f"{'='*80}")
+		print(f"{'=' * 80}")
 
 		# Get the actual date field for this doctype (transaction_date or posting_date)
 		actual_date_field = DOCTYPE_DATE_FIELD_MAP.get(doctype, original_partition_field)
@@ -1503,9 +1450,9 @@ def create_partition(
 
 			for idx, (child_doctype, child_table) in enumerate(child_tables, 1):
 				print(f"\nDEBUG: Processing child {idx}/{len(child_tables)}: {child_doctype}")
-				print(f"\n{'='*80}")
+				print(f"\n{'=' * 80}")
 				print(f"Processing child table: {child_doctype}")
-				print(f"{'='*80}")
+				print(f"{'=' * 80}")
 
 				# Skip if already processed (shared child table)
 				if child_table in processed_child_tables:
@@ -1524,9 +1471,7 @@ def create_partition(
 				# Partition child table using posting_date (REAL column, not virtual)
 				# Child tables always use posting_date for both PK and partition
 				total_count += 1
-				print(
-					"INFO: Partitioning child table with field='posting_date', pk_field='posting_date'"
-				)
+				print("INFO: Partitioning child table with field='posting_date', pk_field='posting_date'")
 				if engine.partition_table(
 					child_table,
 					partition_field="posting_date",  # Real column for partition
@@ -1540,9 +1485,9 @@ def create_partition(
 
 				print(f"DEBUG: Completed child {idx}/{len(child_tables)}: {child_doctype}")
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print(f"Summary: {success_count}/{total_count} tables partitioned successfully")
-	print(f"{'='*80}\n")
+	print(f"{'=' * 80}\n")
 	return success_count == total_count
 
 
@@ -1580,9 +1525,9 @@ def create_partition_phase1(
 	field_mgr = FieldManager()
 	processed_child_tables = set()
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print("PHASE 1: Creating posting_date columns")
-	print(f"{'='*80}\n")
+	print(f"{'=' * 80}\n")
 
 	success_count = 0
 	total_count = 0
@@ -1590,9 +1535,9 @@ def create_partition_phase1(
 
 	for doctype, settings in partition_doctypes.items():
 		doctype_start = time.time()
-		print(f"\n{'='*80}")
+		print(f"\n{'=' * 80}")
 		print(f"Processing: {doctype}")
-		print(f"{'='*80}")
+		print(f"{'=' * 80}")
 
 		actual_date_field = DOCTYPE_DATE_FIELD_MAP.get(
 			doctype, _get_setting_value(settings, "field", "posting_date")
@@ -1651,18 +1596,18 @@ def create_partition_phase1(
 
 	phase_elapsed = time.time() - phase_start_time
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print("PHASE 1 Summary")
 	print("=" * 80)
 	print(f"Operations: {success_count}/{total_count} successful")
-	print(f"Total time: {phase_elapsed:.1f}s ({phase_elapsed/60:.1f} minutes)")
-	print(f"{'='*80}\n")
+	print(f"Total time: {phase_elapsed:.1f}s ({phase_elapsed / 60:.1f} minutes)")
+	print(f"{'=' * 80}\n")
 
 	# Print timing breakdown
 	if timing_details:
 		print("Timing Breakdown:")
 		print(f"{'Operation':<50} {'Time':>10}")
-		print(f"{'-'*50} {'-'*10}")
+		print(f"{'-' * 50} {'-' * 10}")
 		for t in timing_details:
 			print(f"{t['doctype'][:45]:<50} {t['elapsed']:>10.1f}s")
 		print()
@@ -1705,17 +1650,17 @@ def create_partition_phase2(
 	field_mgr = FieldManager()
 	processed_child_tables = set()
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print("PHASE 2: Populating posting_date columns")
-	print(f"{'='*80}\n")
+	print(f"{'=' * 80}\n")
 
 	timing_details = []
 
 	for doctype, settings in partition_doctypes.items():
 		doctype_start = time.time()
-		print(f"\n{'='*80}")
+		print(f"\n{'=' * 80}")
 		print(f"Processing: {doctype}")
-		print(f"{'='*80}")
+		print(f"{'=' * 80}")
 
 		actual_date_field = DOCTYPE_DATE_FIELD_MAP.get(
 			doctype, _get_setting_value(settings, "field", "posting_date")
@@ -1737,9 +1682,9 @@ def create_partition_phase2(
 
 			processed_child_tables.add(child_table)
 
-			print(f"\n{'='*80}")
+			print(f"\n{'=' * 80}")
 			print(f"Processing child table: {child_doctype}")
-			print(f"{'='*80}")
+			print(f"{'=' * 80}")
 
 			child_start = time.time()
 
@@ -1755,31 +1700,29 @@ def create_partition_phase2(
 					"elapsed": child_elapsed,
 				}
 			)
-			print(
-				f"\n  {child_doctype} completed in {child_elapsed:.1f}s ({child_elapsed/60:.1f} min)"
-			)
+			print(f"\n  {child_doctype} completed in {child_elapsed:.1f}s ({child_elapsed / 60:.1f} min)")
 
 		doctype_elapsed = time.time() - doctype_start
 		print(
-			f"\n {doctype} (all children) completed in {doctype_elapsed:.1f}s ({doctype_elapsed/60:.1f} min)"
+			f"\n {doctype} (all children) completed in {doctype_elapsed:.1f}s ({doctype_elapsed / 60:.1f} min)"
 		)
 
 	phase_elapsed = time.time() - phase_start_time
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print("PHASE 2 Summary")
 	print("=" * 80)
 	print(f"Child tables processed: {len(timing_details)}")
-	print(f"Total time: {phase_elapsed:.1f}s ({phase_elapsed/60:.1f} minutes)")
-	print(f"{'='*80}\n")
+	print(f"Total time: {phase_elapsed:.1f}s ({phase_elapsed / 60:.1f} minutes)")
+	print(f"{'=' * 80}\n")
 
 	# Print timing breakdown sorted by longest first
 	if timing_details:
 		print("Timing Breakdown:")
 		print(f"{'Child Table':<50} {'Time':>12} {'Min':>8}")
-		print(f"{'-'*50} {'-'*12} {'-'*8}")
+		print(f"{'-' * 50} {'-' * 12} {'-' * 8}")
 		for t in sorted(timing_details, key=lambda x: -x["elapsed"]):
-			print(f"{t['doctype'][:45]:<50} {t['elapsed']:>12.1f}s {t['elapsed']/60:>8.1f}")
+			print(f"{t['doctype'][:45]:<50} {t['elapsed']:>12.1f}s {t['elapsed'] / 60:>8.1f}")
 		print()
 
 	return True
@@ -1787,9 +1730,9 @@ def create_partition_phase2(
 
 def create_partition_phase3(
 	doc=None,
-	output_file: str = None,
-	root_user: str = None,
-	root_password: str = None,
+	output_file: str | None = None,
+	root_user: str | None = None,
+	root_password: str | None = None,
 	partition_doctypes=None,
 ):
 	"""
@@ -1815,6 +1758,7 @@ def create_partition_phase3(
 	3. Run create_partition_phase4() to apply partitioning
 	"""
 	import shlex
+
 	from frappe.utils import get_table_name
 
 	if partition_doctypes is None:
@@ -1846,9 +1790,9 @@ def create_partition_phase3(
 	commands = []
 	tables_info = []
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print("PHASE 3: Generating Percona PK modification commands")
-	print(f"{'='*80}\n")
+	print(f"{'=' * 80}\n")
 
 	for doctype, settings in partition_doctypes.items():
 		original_partition_field = _get_setting_value(settings, "field", "posting_date")
@@ -1888,9 +1832,7 @@ def create_partition_phase3(
 			)
 			if cmd:
 				commands.append(cmd)
-				tables_info.append(
-					{"table": child_table, "doctype": child_doctype, "type": "child"}
-				)
+				tables_info.append({"table": child_table, "doctype": child_doctype, "type": "child"})
 				print(f"  ✓ {child_table} - command generated")
 			else:
 				print(f"  ⊘ {child_table} - PK already includes date field or skipped")
@@ -1910,22 +1852,22 @@ def create_partition_phase3(
 
 	os.chmod(output_file, 0o755)
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print("PHASE 3 Summary")
-	print(f"{'='*80}")
+	print(f"{'=' * 80}")
 	print(f"Commands generated: {len(commands)}")
 	print(f"Shell script written to: {output_file}")
 	print("\nNext steps:")
 	print(f"  1. Review and execute the script: bash {output_file}")
 	print("  2. After all commands complete, run: create_partition_phase4()")
-	print(f"{'='*80}\n")
+	print(f"{'=' * 80}\n")
 
 	# Also print commands to console
 	print("\n" + "=" * 80)
 	print("GENERATED COMMANDS (also saved to script file):")
 	print("=" * 80 + "\n")
 	for i, cmd in enumerate(commands, 1):
-		print(f"# {i}. {tables_info[i-1]['doctype']} ({tables_info[i-1]['type']})")
+		print(f"# {i}. {tables_info[i - 1]['doctype']} ({tables_info[i - 1]['type']})")
 		print(cmd)
 		print()
 
@@ -1955,15 +1897,13 @@ def _generate_pk_modification_command(
 		if pk_field in current_pk:
 			return None
 
-		new_pk = current_pk + [pk_field]
+		new_pk = [*current_pk, pk_field]
 		if "name" not in new_pk:
-			new_pk = ["name"] + [pk_field]
+			new_pk = ["name", pk_field]
 
 		pk_columns = ", ".join([f"`{col}`" for col in new_pk])
 
-		unique_indexes = frappe.db.sql(
-			f"SHOW INDEXES FROM `{table}` WHERE Non_unique = 0", as_dict=True
-		)
+		unique_indexes = frappe.db.sql(f"SHOW INDEXES FROM `{table}` WHERE Non_unique = 0", as_dict=True)
 
 		index_columns = {}
 		for idx in unique_indexes:
@@ -1989,9 +1929,7 @@ def _generate_pk_modification_command(
 		dsn = db.get_dsn(table)
 
 		user_arg = f"--user={db.user}" if db.user else "--user=YOUR_DB_USER"
-		pass_arg = (
-			f"--password={db.password}" if db.password else "--password=YOUR_DB_PASSWORD"
-		)
+		pass_arg = f"--password={db.password}" if db.password else "--password=YOUR_DB_PASSWORD"
 
 		cmd_parts = [
 			"pt-online-schema-change",
@@ -2018,9 +1956,7 @@ def _generate_pk_modification_command(
 		return None
 
 
-def _generate_percona_script(
-	commands: list, tables_info: list, db: DatabaseConnection
-) -> str:
+def _generate_percona_script(commands: list, tables_info: list, db: DatabaseConnection) -> str:
 	"""Generate a shell script with all Percona commands"""
 
 	# Check if credentials are placeholders
@@ -2064,20 +2000,20 @@ echo ""
 
 """
 
-	for i, (cmd, info) in enumerate(zip(commands, tables_info), 1):
+	for i, (cmd, info) in enumerate(zip(commands, tables_info, strict=False), 1):
 		script += f"""
 # ============================================================================
-# {i}/{len(commands)}: {info['doctype']} ({info['type']})
-# Table: {info['table']}
+# {i}/{len(commands)}: {info["doctype"]} ({info["type"]})
+# Table: {info["table"]}
 # ============================================================================
 echo ""
-echo "Processing {i}/{len(commands)}: {info['table']}..."
+echo "Processing {i}/{len(commands)}: {info["table"]}..."
 echo ""
 
 {cmd}
 
 echo ""
-echo "✓ Completed: {info['table']}"
+echo "✓ Completed: {info["table"]}"
 echo ""
 
 """
@@ -2141,9 +2077,9 @@ def create_partition_phase4(
 	engine = PartitionEngine(db, use_percona=False)
 	processed_child_tables = set()
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print("PHASE 4: Applying partitioning")
-	print(f"{'='*80}\n")
+	print(f"{'=' * 80}\n")
 
 	success_count = 0
 	total_count = 0
@@ -2154,9 +2090,9 @@ def create_partition_phase4(
 		original_partition_field = _get_setting_value(settings, "field", "posting_date")
 		partition_by = _get_setting_value(settings, "partition_by", "month")
 
-		print(f"\n{'='*80}")
+		print(f"\n{'=' * 80}")
 		print(f"Processing: {doctype}")
-		print(f"{'='*80}")
+		print(f"{'=' * 80}")
 
 		actual_date_field = DOCTYPE_DATE_FIELD_MAP.get(doctype, original_partition_field)
 
@@ -2203,9 +2139,9 @@ def create_partition_phase4(
 
 			processed_child_tables.add(child_table)
 
-			print(f"\n{'='*80}")
+			print(f"\n{'=' * 80}")
 			print(f"Processing child table: {child_doctype}")
-			print(f"{'='*80}")
+			print(f"{'=' * 80}")
 
 			total_count += 1
 			child_start = time.time()
@@ -2234,28 +2170,26 @@ def create_partition_phase4(
 					"success": child_success,
 				}
 			)
-			print(
-				f"\n  {child_doctype} completed in {child_elapsed:.1f}s ({child_elapsed/60:.1f} min)"
-			)
+			print(f"\n  {child_doctype} completed in {child_elapsed:.1f}s ({child_elapsed / 60:.1f} min)")
 
 		doctype_elapsed = time.time() - doctype_start
 		print(
-			f"\n  {doctype} (with children) completed in {doctype_elapsed:.1f}s ({doctype_elapsed/60:.1f} min)"
+			f"\n  {doctype} (with children) completed in {doctype_elapsed:.1f}s ({doctype_elapsed / 60:.1f} min)"
 		)
 
 	phase_elapsed = time.time() - phase_start_time
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print("PHASE 4 Summary")
 	print("=" * 80)
 	print(f"Tables partitioned: {success_count}/{total_count}")
-	print(f"Total time: {phase_elapsed:.1f}s ({phase_elapsed/60:.1f} minutes)")
-	print(f"{'='*80}\n")
+	print(f"Total time: {phase_elapsed:.1f}s ({phase_elapsed / 60:.1f} minutes)")
+	print(f"{'=' * 80}\n")
 
 	if timing_details:
 		print("Timing Breakdown:")
 		print(f"{'Table':<50} {'Type':<8} {'Status':<8} {'Time':>12}")
-		print(f"{'-'*50} {'-'*8} {'-'*8} {'-'*12}")
+		print(f"{'-' * 50} {'-' * 8} {'-' * 8} {'-' * 12}")
 		for t in sorted(timing_details, key=lambda x: -x["elapsed"]):
 			status = "✓" if t["success"] else "✗"
 			print(f"{t['doctype'][:45]:<50} {t['type']:<8} {status:<8} {t['elapsed']:>12.1f}s")
@@ -2306,9 +2240,9 @@ def create_partition_phase3_legacy(
 	engine = PartitionEngine(db, use_percona)
 	processed_child_tables = set()
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print("PHASE 3 (LEGACY): Applying partitioning")
-	print(f"{'='*80}\n")
+	print(f"{'=' * 80}\n")
 
 	success_count = 0
 	total_count = 0
@@ -2319,9 +2253,9 @@ def create_partition_phase3_legacy(
 		original_partition_field = _get_setting_value(settings, "field", "posting_date")
 		partition_by = _get_setting_value(settings, "partition_by", "month")
 
-		print(f"\n{'='*80}")
+		print(f"\n{'=' * 80}")
 		print(f"Processing: {doctype}")
-		print(f"{'='*80}")
+		print(f"{'=' * 80}")
 
 		actual_date_field = DOCTYPE_DATE_FIELD_MAP.get(doctype, original_partition_field)
 
@@ -2368,9 +2302,9 @@ def create_partition_phase3_legacy(
 
 			processed_child_tables.add(child_table)
 
-			print(f"\n{'='*80}")
+			print(f"\n{'=' * 80}")
 			print(f"Processing child table: {child_doctype}")
-			print(f"{'='*80}")
+			print(f"{'=' * 80}")
 
 			total_count += 1
 			child_start = time.time()
@@ -2399,29 +2333,27 @@ def create_partition_phase3_legacy(
 					"success": child_success,
 				}
 			)
-			print(
-				f"\n  {child_doctype} completed in {child_elapsed:.1f}s ({child_elapsed/60:.1f} min)"
-			)
+			print(f"\n  {child_doctype} completed in {child_elapsed:.1f}s ({child_elapsed / 60:.1f} min)")
 
 		doctype_elapsed = time.time() - doctype_start
 		print(
-			f"\n  {doctype} (with children) completed in {doctype_elapsed:.1f}s ({doctype_elapsed/60:.1f} min)"
+			f"\n  {doctype} (with children) completed in {doctype_elapsed:.1f}s ({doctype_elapsed / 60:.1f} min)"
 		)
 
 	phase_elapsed = time.time() - phase_start_time
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print("PHASE 3 (LEGACY) Summary")
 	print("=" * 80)
 	print(f"Tables partitioned: {success_count}/{total_count}")
-	print(f"Total time: {phase_elapsed:.1f}s ({phase_elapsed/60:.1f} minutes)")
-	print(f"{'='*80}\n")
+	print(f"Total time: {phase_elapsed:.1f}s ({phase_elapsed / 60:.1f} minutes)")
+	print(f"{'=' * 80}\n")
 
 	# Print timing breakdown sorted by longest first
 	if timing_details:
 		print("Timing Breakdown:")
 		print(f"{'Table':<50} {'Type':<8} {'Status':<8} {'Time':>12}")
-		print(f"{'-'*50} {'-'*8} {'-'*8} {'-'*12}")
+		print(f"{'-' * 50} {'-' * 8} {'-' * 8} {'-' * 12}")
 		for t in sorted(timing_details, key=lambda x: -x["elapsed"]):
 			status = "✓" if t["success"] else "✗"
 			print(f"{t['doctype'][:45]:<50} {t['type']:<8} {status:<8} {t['elapsed']:>12.1f}s")
@@ -2433,7 +2365,7 @@ def create_partition_phase3_legacy(
 def scheduled_populate_partition_fields(
 	max_hours: float = 2.0,
 	chunk_size: int = 5000,
-	partition_doctypes: dict = None,
+	partition_doctypes: dict | None = None,
 ):
 	"""
 	This function:
@@ -2475,7 +2407,7 @@ def scheduled_populate_partition_fields(
 
 	processed_child_tables = set()
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print("Scheduled Phase 2: Populating posting_date columns")
 	print(f"Time limit: {max_hours} hours | Chunk size: {chunk_size:,}")
 	print("=" * 80 + "\n")
@@ -2564,10 +2496,10 @@ def scheduled_populate_partition_fields(
 		doctype = item["doctype"]
 		actual_date_field = item["actual_date_field"]
 
-		print(f"\n{'='*80}")
+		print(f"\n{'=' * 80}")
 		print(f"Processing: {doctype}")
 		print(f"Time remaining: {time_remaining() / 60:.1f} minutes")
-		print(f"{'='*80}")
+		print(f"{'=' * 80}")
 
 		for child_info in item["children"]:
 			if not should_continue():
@@ -2583,10 +2515,10 @@ def scheduled_populate_partition_fields(
 
 			processed_child_tables.add(child_table)
 
-			print(f"\n{'='*80}")
+			print(f"\n{'=' * 80}")
 			print(f"Processing child table: {child_doctype}")
 			print(f"Time remaining: {time_remaining() / 60:.1f} minutes")
-			print(f"{'='*80}")
+			print(f"{'=' * 80}")
 
 			rows_updated = _populate_with_time_limit(
 				child_doctype=child_doctype,
@@ -2617,7 +2549,7 @@ def scheduled_populate_partition_fields(
 	summary["elapsed_seconds"] = elapsed
 	summary["status"] = "partial" if summary["stopped_due_to_time"] else "complete"
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print("Scheduled Phase 2 Summary")
 	print("=" * 80)
 	print(f"Status: {summary['status']}")
@@ -2635,7 +2567,7 @@ def _populate_with_time_limit(
 	child_doctype: str,
 	end_time: float,
 	chunk_size: int = 50000,
-	partition_doctypes: dict = None,
+	partition_doctypes: dict | None = None,
 ) -> int:
 	"""
 	Populate posting_date for a child table using parent-based bulk updates.
@@ -2661,9 +2593,7 @@ def _populate_with_time_limit(
 		print(f"\nINFO: Time limit reached, skipping '{child_doctype}'")
 		return 0
 
-	print(
-		f"\nINFO: Populating 'posting_date' in '{child_doctype}' (parent-based bulk updates)..."
-	)
+	print(f"\nINFO: Populating 'posting_date' in '{child_doctype}' (parent-based bulk updates)...")
 	sys.stdout.flush()
 
 	parent_types = []
@@ -2770,9 +2700,7 @@ def _populate_with_time_limit(
 				rows_this_batch = 0
 				for date_val, parent_list in date_groups.items():
 					if not should_continue():
-						print(
-							f"\nTime limit reached during batch {batch_num}, committing and stopping..."
-						)
+						print(f"\nTime limit reached during batch {batch_num}, committing and stopping...")
 						frappe.db.commit()
 						return total_updated + rows_this_batch
 
@@ -2786,7 +2714,7 @@ def _populate_with_time_limit(
 						AND parenttype = %s
 						AND posting_date IS NULL
 						""",
-						[date_val] + parent_list + [parent_type],
+						[date_val, *parent_list, parent_type],
 					)
 
 					rows = frappe.db.sql("SELECT ROW_COUNT()")[0][0]
@@ -2852,9 +2780,9 @@ def get_phase_status(doc=None, partition_doctypes=None):
 	db = DatabaseConnection()
 	analyzer = TableAnalyzer(db)
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print("Partition Phase Status")
-	print(f"{'='*80}\n")
+	print(f"{'=' * 80}\n")
 
 	status = {}
 
@@ -2924,9 +2852,7 @@ def get_phase_status(doc=None, partition_doctypes=None):
 
 		# Print status
 		print(f"\n{doctype}:")
-		print(
-			f"  Phase 1 (Columns):    {'✓ Complete' if phase1_complete else '✗ Incomplete'}"
-		)
+		print(f"  Phase 1 (Columns):    {'✓ Complete' if phase1_complete else '✗ Incomplete'}")
 		print(
 			f"  Phase 2 (Populate):   {'✓ Complete' if status[doctype]['phase2_complete'] else '✗ Incomplete'}"
 		)
@@ -2946,7 +2872,7 @@ def get_phase_status(doc=None, partition_doctypes=None):
 			p3 = "✓" if child["phase3"] else "✗"
 			print(f"    {child['doctype']}: P1:{p1} P2:{p2} P3:{p3}")
 
-	print(f"\n{'='*80}\n")
+	print(f"\n{'=' * 80}\n")
 	return status
 
 
@@ -2977,9 +2903,7 @@ def populate_partition_fields(doc, event=None):
 		child_fieldname = df.fieldname
 		child_meta = frappe.get_meta(child_doctype)
 		if not child_meta._fields.get("posting_date"):
-			if not frappe.get_all(
-				"Custom Field", filters={"dt": child_doctype, "fieldname": "posting_date"}
-			):
+			if not frappe.get_all("Custom Field", filters={"dt": child_doctype, "fieldname": "posting_date"}):
 				try:
 					custom_field = frappe.get_doc(
 						{
@@ -3003,7 +2927,7 @@ def populate_partition_fields(doc, event=None):
 				continue
 
 		for row in doc.get(child_fieldname) or []:
-			setattr(row, "posting_date", date_value)
+			row.posting_date = date_value
 
 
 def analyze_table(doctype: str):
@@ -3013,9 +2937,9 @@ def analyze_table(doctype: str):
 	analyzer = TableAnalyzer(db)
 	table = get_table_name(doctype)
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print(f"Table Analysis: {table}")
-	print(f"{'='*80}\n")
+	print(f"{'=' * 80}\n")
 
 	size = analyzer.get_table_size(table)
 	print(f"Rows: {size.get('TABLE_ROWS', 0):,}")
@@ -3042,9 +2966,9 @@ def inspect_partitions(doctype: str):
 	db = DatabaseConnection()
 	table = get_table_name(doctype)
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print(f"Partition Inspection: {doctype} ({table})")
-	print(f"{'='*80}\n")
+	print(f"{'=' * 80}\n")
 
 	result = db.execute(
 		f"""
@@ -3074,7 +2998,7 @@ def inspect_partitions(doctype: str):
 	print(f"\nTotal partitions: {len(result)}\n")
 
 	print(f"{'Partition':<40} {'Rows':>10} {'Data MB':>10} {'Index MB':>10}")
-	print(f"{'-'*40} {'-'*10} {'-'*10} {'-'*10}")
+	print(f"{'-' * 40} {'-' * 10} {'-' * 10} {'-' * 10}")
 
 	total_rows = 0
 	total_data = 0
@@ -3088,7 +3012,7 @@ def inspect_partitions(doctype: str):
 		total_data += p["DATA_MB"] or 0
 		total_index += p["INDEX_MB"] or 0
 
-	print(f"{'-'*40} {'-'*10} {'-'*10} {'-'*10}")
+	print(f"{'-' * 40} {'-' * 10} {'-' * 10} {'-' * 10}")
 	print(f"{'TOTAL':<40} {total_rows:>10,} {total_data:>10.2f} {total_index:>10.2f}\n")
 
 
@@ -3126,9 +3050,7 @@ def check_partition_status(doctype: str) -> dict:
 		child_table = get_table_name(child_doctype)
 
 		is_child_partitioned = analyzer.is_partitioned(child_table)
-		child_partitions = (
-			analyzer.get_existing_partitions(child_table) if is_child_partitioned else []
-		)
+		child_partitions = analyzer.get_existing_partitions(child_table) if is_child_partitioned else []
 
 		child_info = {
 			"doctype": child_doctype,
@@ -3141,9 +3063,9 @@ def check_partition_status(doctype: str) -> dict:
 		if not is_child_partitioned:
 			result["all_partitioned"] = False
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print(f"Partition Status: {doctype}")
-	print(f"{'='*80}\n")
+	print(f"{'=' * 80}\n")
 
 	status_icon = "✓" if result["main_table"]["partitioned"] else "✗"
 	print(
@@ -3173,9 +3095,7 @@ def check_partition_status(doctype: str) -> dict:
 		not_partitioned = []
 		if not result["main_table"]["partitioned"]:
 			not_partitioned.append(main_table)
-		not_partitioned.extend(
-			[c["table"] for c in result["child_tables"] if not c["partitioned"]]
-		)
+		not_partitioned.extend([c["table"] for c in result["child_tables"] if not c["partitioned"]])
 		print(f"Tables NOT partitioned: {', '.join(not_partitioned)}")
 
 	print()
@@ -3207,17 +3127,15 @@ def get_partition_progress(doctype: str) -> dict:
 		"ready_for_partition": True,
 	}
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print(f"Partition Progress: {doctype}")
-	print(f"{'='*80}\n")
+	print(f"{'=' * 80}\n")
 
 	# Main table status
 	mt = progress["main_table"]
 	print(f"Main Table: {main_table}")
 	print(f"  - Has posting_date: {'✓' if mt['has_posting_date'] else '✗'}")
-	print(
-		f"  - PK includes posting_date: {'✓' if mt['pk_includes_posting_date'] else '✗'}"
-	)
+	print(f"  - PK includes posting_date: {'✓' if mt['pk_includes_posting_date'] else '✗'}")
 	print(f"  - Partitioned: {'✓' if mt['partitioned'] else '✗'}")
 
 	if not mt["partitioned"]:
@@ -3264,18 +3182,16 @@ def get_partition_progress(doctype: str) -> dict:
 
 		print(f"  - {child_doctype}: [{' | '.join(status_icons)}]")
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	if progress["ready_for_partition"]:
 		print("All tables are partitioned!")
 	else:
 		not_done = []
 		if not mt["partitioned"]:
 			not_done.append(main_table)
-		not_done.extend(
-			[c["table"] for c in progress["child_tables"] if not c["partitioned"]]
-		)
+		not_done.extend([c["table"] for c in progress["child_tables"] if not c["partitioned"]])
 		print(f"○ Tables pending: {len(not_done)}")
-	print(f"{'='*80}\n")
+	print(f"{'=' * 80}\n")
 
 	return progress
 
@@ -3340,13 +3256,11 @@ def print_largest_tables(limit=50, include_child_tables=True):
 
 	tables = get_largest_tables(limit, include_child_tables)
 
-	print(f"\n{'='*100}")
+	print(f"\n{'=' * 100}")
 	print(f"Top {limit} Largest Tables in ERPNext")
-	print(f"{'='*100}\n")
-	print(
-		f"{'#':<4} {'Doctype':<45} {'Rows':>12} {'Data MB':>10} {'Total MB':>10} {'Type':<8}"
-	)
-	print(f"{'-'*4} {'-'*45} {'-'*12} {'-'*10} {'-'*10} {'-'*8}")
+	print(f"{'=' * 100}\n")
+	print(f"{'#':<4} {'Doctype':<45} {'Rows':>12} {'Data MB':>10} {'Total MB':>10} {'Type':<8}")
+	print(f"{'-' * 4} {'-' * 45} {'-' * 12} {'-' * 10} {'-' * 10} {'-' * 8}")
 
 	total_rows = 0
 	total_size = 0
@@ -3359,7 +3273,7 @@ def print_largest_tables(limit=50, include_child_tables=True):
 		total_rows += t["rows"]
 		total_size += t["total_mb"]
 
-	print(f"{'-'*4} {'-'*45} {'-'*12} {'-'*10} {'-'*10} {'-'*8}")
+	print(f"{'-' * 4} {'-' * 45} {'-' * 12} {'-' * 10} {'-' * 10} {'-' * 8}")
 	print(f"{'':4} {'TOTAL':<45} {total_rows:>12,} {'':>10} {total_size:>10.2f}")
 	print()
 
@@ -3407,18 +3321,16 @@ def print_partition_candidates(min_rows=100000, limit=20):
 	"""Print tables that are good candidates for partitioning"""
 
 	candidates = get_partition_candidates(min_rows)
-	print(f"\n{'='*110}")
+	print(f"\n{'=' * 110}")
 	print(f"Partition Candidates (tables with >= {min_rows:,} rows)")
-	print(f"{'='*110}\n")
+	print(f"{'=' * 110}\n")
 
 	if not candidates:
 		print(f"No tables found with >= {min_rows:,} rows")
 		return
 
-	print(
-		f"{'#':<4} {'Doctype':<40} {'Rows':>12} {'Size MB':>10} {'Date Field':<18} {'Children':<8}"
-	)
-	print(f"{'-'*4} {'-'*40} {'-'*12} {'-'*10} {'-'*18} {'-'*8}")
+	print(f"{'#':<4} {'Doctype':<40} {'Rows':>12} {'Size MB':>10} {'Date Field':<18} {'Children':<8}")
+	print(f"{'-' * 4} {'-' * 40} {'-' * 12} {'-' * 10} {'-' * 18} {'-' * 8}")
 
 	for i, t in enumerate(candidates, 1):
 		print(
@@ -3439,9 +3351,9 @@ def print_partition_candidates(min_rows=100000, limit=20):
 
 def create_posting_date_defaults_phase(
 	doc=None,
-	output_file: str = None,
-	root_user: str = None,
-	root_password: str = None,
+	output_file: str | None = None,
+	root_user: str | None = None,
+	root_password: str | None = None,
 	partition_doctypes=None,
 ):
 	"""
@@ -3471,11 +3383,11 @@ def create_posting_date_defaults_phase(
 	commands = []
 	tables_info = []
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print("Generating Percona commands for posting_date DEFAULT (CURRENT_DATE)")
-	print(f"{'='*80}\n")
+	print(f"{'=' * 80}\n")
 
-	for doctype, settings in partition_doctypes.items():
+	for doctype, _settings in partition_doctypes.items():
 		print(f"\nProcessing: {doctype}")
 
 		meta = frappe.get_meta(doctype)
@@ -3554,14 +3466,14 @@ def create_posting_date_defaults_phase(
 
 	os.chmod(output_file, 0o755)
 
-	print(f"\n{'='*80}")
+	print(f"\n{'=' * 80}")
 	print("Summary")
-	print(f"{'='*80}")
+	print(f"{'=' * 80}")
 	print(f"Commands generated: {len(commands)}")
 	print(f"Shell script written to: {output_file}")
 	print("\nNext steps:")
 	print(f"  1. Review and execute the script: bash {output_file}")
-	print(f"{'='*80}\n")
+	print(f"{'=' * 80}\n")
 
 	# Also print commands to console
 	print("\n" + "=" * 80)
@@ -3595,9 +3507,7 @@ def _generate_posting_date_default_command(
 		dsn = db.get_dsn(table)
 
 		user_arg = f"--user={db.user}" if db.user else "--user=YOUR_DB_USER"
-		pass_arg = (
-			f"--password={db.password}" if db.password else "--password=YOUR_DB_PASSWORD"
-		)
+		pass_arg = f"--password={db.password}" if db.password else "--password=YOUR_DB_PASSWORD"
 
 		cmd_parts = [
 			"pt-online-schema-change",
@@ -3666,23 +3576,21 @@ echo ""
 
 """
 
-	for i, (cmd, info) in enumerate(zip(commands, tables_info), 1):
-		partitioned_note = (
-			" (PARTITIONED - may take longer)" if info.get("partitioned") else ""
-		)
+	for i, (cmd, info) in enumerate(zip(commands, tables_info, strict=False), 1):
+		partitioned_note = " (PARTITIONED - may take longer)" if info.get("partitioned") else ""
 		script += f"""
 # ============================================================================
-# {i}/{len(commands)}: {info['doctype']}{partitioned_note}
-# Table: {info['table']}
+# {i}/{len(commands)}: {info["doctype"]}{partitioned_note}
+# Table: {info["table"]}
 # ============================================================================
 echo ""
-echo "Processing {i}/{len(commands)}: {info['table']}..."
+echo "Processing {i}/{len(commands)}: {info["table"]}..."
 echo ""
 
 {cmd}
 
 echo ""
-echo "✓ Completed: {info['table']}"
+echo "✓ Completed: {info["table"]}"
 echo ""
 
 """

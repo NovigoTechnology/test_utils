@@ -32,7 +32,7 @@ Go to Settings > Actions > General > Workflow permissions and enable:
 In your app's `hooks` module, define `docs_languages` as a list of target language codes:
 
 ```python
-docs_languages = ['es', 'fr']  # Spanish and French
+docs_languages = ["es", "fr"]  # Spanish and French
 ```
 
 If the folder for a language does not exist under `docs/{version}/{language}/`, it will be created.
