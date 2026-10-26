@@ -74,7 +74,8 @@ duckdb = "^1.5.1"
 networkx = ">=3.2,<3.6"
 
 [tool.codespell]
-skip = "CHANGELOG.md, poetry.lock"
+# Preserve release history and Spanish synchronization notes verbatim.
+skip = "CHANGELOG.md,poetry.lock,docs/changelog-novigo-before-sync.md,docs/upstream-sync.md"
 ignore-words-list = "nd"
 
 [tool.ruff]
