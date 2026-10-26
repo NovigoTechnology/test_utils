@@ -1,5 +1,5 @@
 exclude: '.git'
-default_stages: [commit]
+default_stages: [pre-commit]
 fail_fast: false
 
 repos:
@@ -23,6 +23,7 @@ repos:
     rev: v2.4.1
     hooks:
       - id: codespell
+        args: ["--check-filenames", "--ignore-words-list", "notin"]
         additional_dependencies:
           - tomli
 
@@ -49,6 +50,16 @@ repos:
 
       - id: ruff-format
         name: "Run ruff formatter"
+
+  - repo: local
+    hooks:
+      - id: check_code_duplication
+        name: Check for code duplication
+        entry: python -m test_utils.pre_commit.check_code_duplication --max-clones 60 --max-percentage 5.0
+        language: python
+        additional_dependencies: ['.']
+        pass_filenames: false
+        always_run: true
 
   # - repo: https://github.com/pre-commit/mirrors-mypy
   #   rev: v1.5.1

@@ -1,0 +1,221 @@
+# Changelog Generator Action
+
+This GitHub Action automatically generates a changelog entry as a PR comment by analyzing PR changes using an LLM. It supports Anthropic Claude, OpenAI, and Amazon Bedrock.
+
+## Features
+
+- Automatically generates detailed changelog entries when a PR is opened or updated
+- Analyzes PR details including commits, files changed, and PR description
+- Identifies breaking changes, new features, bug fixes, and more
+- Adds context on user impact and required actions
+- Creates changelog as a PR comment that can be edited if needed
+- Only auto-generates one changelog per PR (no duplicate comments on updates)
+- Provides clear error messages when API issues occur
+- Reuses changelog content for GitHub releases
+- Allows generating changelogs on demand with a simple comment command
+
+## Requirements
+
+- GitHub repository with Actions enabled
+- An API key or credentials for one of the supported LLM providers:
+  - **Anthropic** (default): Anthropic API key
+  - **OpenAI**: OpenAI API key
+  - **Amazon Bedrock**: either a Bedrock API key (bearer token), an AWS IAM access key pair, or an OIDC role — with `bedrock:InvokeModel` permissions and model access enabled in your AWS account
+
+## Setup
+
+### 1. Configure GitHub Secrets
+
+Add the secrets for your chosen provider:
+
+**Anthropic (default)**
+- `ANTHROPIC_API_KEY`: Your Anthropic API key
+
+**OpenAI**
+- `OPENAI_API_KEY`: Your OpenAI API key
+
+**Amazon Bedrock**
+
+Option A — Bedrock API key (simpler):
+- `AWS_BEARER_TOKEN_BEDROCK`: Your Amazon Bedrock API key
+
+Option B — IAM credentials:
+- `AWS_ACCESS_KEY_ID`: Your AWS access key ID
+- `AWS_SECRET_ACCESS_KEY`: Your AWS secret access key
+
+### 2. Create a Workflow File
+
+Create a workflow file at `.github/workflows/generate-changelog.yml`.
+
+**Using Anthropic (default):**
+
+```yaml
+name: Generate Changelog
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  issue_comment:
+    types: [created]
+
+jobs:
+  generate-changelog:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Changelog
+        uses: agritheory/test_utils/actions/generate_changelog@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Optional: Use custom prompt template
+          # prompt-template: '.github/changelog-prompt.txt'
+```
+
+**Using OpenAI:**
+
+```yaml
+      - name: Generate Changelog
+        uses: agritheory/test_utils/actions/generate_changelog@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          llm-provider: openai
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          # Optional: override default model (gpt-4o-mini)
+          # openai-model: gpt-4o
+```
+
+**Using an OpenAI-compatible endpoint (e.g. OpenRouter):**
+
+```yaml
+      - name: Generate Changelog
+        uses: agritheory/test_utils/actions/generate_changelog@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          llm-provider: openai
+          openai-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          openai-base-url: https://openrouter.ai/api/v1
+          openai-model: anthropic/claude-3-haiku
+```
+
+**Using Amazon Bedrock with a Bedrock API key:**
+
+```yaml
+      - name: Generate Changelog
+        uses: agritheory/test_utils/actions/generate_changelog@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          llm-provider: bedrock
+          aws-bearer-token-bedrock: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          # Optional: override region (us-east-1) and model (us.amazon.nova-lite-v1:0)
+          # aws-region: us-west-2
+          # bedrock-model: us.amazon.nova-pro-v1:0
+```
+
+**Using Amazon Bedrock with IAM credentials:**
+
+```yaml
+      - name: Generate Changelog
+        uses: agritheory/test_utils/actions/generate_changelog@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          llm-provider: bedrock
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          # Optional: override region (us-east-1) and model (us.amazon.nova-lite-v1:0)
+          # aws-region: us-west-2
+          # bedrock-model: us.anthropic.claude-3-haiku-20240307-v1:0
+```
+
+**Using Amazon Bedrock with GitHub Actions OIDC (no stored credentials):**
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+steps:
+  - uses: actions/checkout@v4
+
+  - name: Configure AWS credentials
+    uses: aws-actions/configure-aws-credentials@v4
+    with:
+      role-to-assume: arn:aws:iam::123456789012:role/my-bedrock-role
+      aws-region: us-east-1
+
+  - name: Generate Changelog
+    uses: agritheory/test_utils/actions/generate_changelog@main
+    with:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+      llm-provider: bedrock
+      # aws-region is picked up automatically from the configure-aws-credentials step
+```
+
+That's it! The action automatically handles different event types and determines when to run.
+
+### 3. Set Up Release Integration (Optional)
+
+For integrating with release workflows, see the [Release Integration Guide](generate_changelog-release-integration.md).
+
+This covers:
+- Integration with the GitHub Releases API
+- Integration with [`python-semantic-release`](https://github.com/python-semantic-release/python-semantic-release)
+- Integration with other release tools
+
+## Usage
+
+Once installed and configured:
+
+1. When a PR is opened, the action will automatically generate a changelog entry as a comment.
+2. To regenerate the changelog at any time, add a comment to the PR with exactly: `/regenerate-changelog`
+   - This will delete the existing changelog comment and generate a new one based on the current PR state
+   - Use this when you've made changes to the PR and want to update the changelog
+3. When the PR is merged, the release workflow (if configured) will use the changelog content for the release notes.
+
+## Configuration Options
+
+The action accepts the following inputs:
+
+| Input | Description | Required | Default |
+|-------|-------------|----------|---------|
+| `github-token` | GitHub token with permissions to read PRs and create comments | Yes | N/A |
+| `llm-provider` | LLM provider to use: `anthropic`, `openai`, or `bedrock` | No | `anthropic` |
+| `anthropic-api-key` | API key for Anthropic (required when `llm-provider` is `anthropic`) | No | N/A |
+| `anthropic-model` | Anthropic model to use | No | `claude-haiku-4-5` |
+| `openai-api-key` | API key for OpenAI or a compatible provider (required when `llm-provider` is `openai`) | No | N/A |
+| `openai-base-url` | Base URL for an OpenAI-compatible API endpoint. Defaults to the official OpenAI API. | No | N/A |
+| `openai-model` | Model to use when `llm-provider` is `openai` | No | `gpt-4o-mini` |
+| `aws-bearer-token-bedrock` | Amazon Bedrock API key. Takes precedence over IAM credentials when `llm-provider` is `bedrock`. | No | N/A |
+| `aws-access-key-id` | AWS IAM access key ID. Used when `llm-provider` is `bedrock` and no bearer token is provided. | No | N/A |
+| `aws-secret-access-key` | AWS IAM secret access key. Used when `llm-provider` is `bedrock` and no bearer token is provided. | No | N/A |
+| `aws-region` | AWS region for Amazon Bedrock. Picked up automatically from `aws-actions/configure-aws-credentials` if not set. | No | `us-east-1` |
+| `bedrock-model` | Amazon Bedrock model ID or inference profile ID. Most on-demand models require a cross-region inference profile prefix: `us.`, `eu.`, or `ap.` (e.g. `us.amazon.nova-lite-v1:0`). | No | `us.amazon.nova-lite-v1:0` |
+| `prompt-template` | Path to a custom prompt template file | No | `.github/changelog-prompt.txt` |
+| `comment-header` | Header text for the comment that will contain the changelog | No | `## Draft Changelog Entry` |
+| `max_tokens` | Maximum number of tokens to generate in the response | No | `1500` |
+| `temperature` | Temperature for the model response (lower is more analytical) | No | `0.2` |
+
+All event-specific parameters are handled automatically by the action.
+
+## How It Works
+
+1. The action automatically detects relevant events:
+   - When a PR is opened or reopened
+   - When new commits are pushed to the PR
+   - When someone comments /regenerate-changelog on a PR
+2. When triggered, the action:
+   - Checks if a changelog comment already exists
+   - If one exists and the trigger is not a regeneration command, takes no action (preserving any manual edits)
+   - If one exists and the trigger is a regeneration command, deletes the existing comment and generates a new one
+   - If none exists, analyzes PR title, description, commits, and files
+   - Generates a comprehensive changelog using the configured LLM provider
+   - Posts the changelog as a PR comment
+3. The comment can be edited manually if needed
+4. If API errors occur (like insufficient credits or invalid credentials), the action posts a clear error comment
+5. When the PR is merged, the release workflow (if configured) finds the changelog comment and uses its content for the release notes
