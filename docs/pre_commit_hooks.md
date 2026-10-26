@@ -19,6 +19,8 @@ Check JavaScript, TypeScript, Python, Markdown, HTML, and SQL files. Add or refr
 
 In the Novigo fork, `--app` is optional: the hook reads the app name from `[project].name` or `[tool.poetry].name` in `pyproject.toml`. Existing configurations with `--app` remain supported. Python callers can use either `validate_copyright(files)` or `validate_copyright(app, files)`; the latter also accepts a dictionary with `app_publisher`.
 
+The hook inserts the header after a shebang and Python encoding declaration, preserving their positions. It preserves source encoding, UTF-8 BOM, original line endings, file permissions, and body contents. Repeated runs leave an unchanged file untouched.
+
 ### Clean customized doctypes - `clean_customized_doctypes`
 
 Remove unused keys in customizations.

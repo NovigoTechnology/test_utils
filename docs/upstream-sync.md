@@ -14,7 +14,7 @@ Integración preparada el 26 de octubre de 2026 en la rama `update-main`.
 | --- | --- |
 | Copyright | Inferir la aplicación desde `pyproject.toml` sin exigir `--app`, con soporte para metadatos PEP 621 y Poetry. Mantener ambas llamadas Python: `validate_copyright(files)` y `validate_copyright(app, files)`. |
 | Interfaces del original | Admitir `--app`, diccionario con `app_publisher` y archivos SQL; conservar también el soporte local para HTML. Actualizar el filtro del manifiesto de hooks. |
-| Escritura de archivos | Actualizar encabezados existentes, conservar el contenido y los permisos, cerrar el temporal antes de moverlo y evitar escrituras repetidas si el encabezado ya coincide. |
+| Escritura de archivos | Actualizar encabezados después del shebang y la declaración de codificación de Python. Conservar contenido, codificación, BOM UTF-8, saltos de línea y permisos; cerrar el temporal antes de moverlo y evitar escrituras repetidas si el encabezado ya coincide. |
 | Python | Soportar exclusivamente Python 3.14 (`>=3.14,<3.15`), con herramientas, archivo `.python-version` y acciones que seleccionan Python 3.14. |
 | Formato | Conservar Ruff y su configuración local, con versión 0.15.4 en desarrollo; incorporar el hook de duplicación del original. |
 | Metadatos | Conservar descripción y autor de Novigo, lectura de versión desde `importlib.metadata` y actualizaciones locales de GitHub Actions. Adoptar el formato PEP 621, los nuevos comandos y dependencias y la versión 1.30.1 del original. |
@@ -35,7 +35,7 @@ Había un secuenciador de cherry-pick antiguo, de marzo de 2026, cuyo estado ya 
 
 ## Validación
 
-- Suite completa con Python 3.14: 28 pruebas aprobadas, incluidas 13 nuevas para las interfaces del copyright, HTML/SQL, actualización de encabezados, conservación del contenido y permisos e idempotencia.
+- Suite completa con Python 3.14: 67 pruebas aprobadas, incluidas 52 para las interfaces del copyright, HTML/SQL, actualización de encabezados, shebang, codificación de Python, BOM UTF-8, saltos de línea, conservación del contenido y permisos e idempotencia.
 - `poetry check --lock` y construcción de wheel y sdist.
 - Instalación completa de dependencias de ejecución y desarrollo con el lock regenerado.
 - Sintaxis Python, YAML, destinos de los 23 comandos y comandos usados por los hooks; ejecución de `--help` en 21 comandos instalados. Se excluyeron el comando de particiones que requiere Frappe y el actualizador de pre-commit, que modifica configuraciones.

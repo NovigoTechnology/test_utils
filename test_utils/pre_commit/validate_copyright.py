@@ -1,10 +1,14 @@
 import argparse
 import ast
+import codecs
 import datetime
+import io
 import pathlib
+import re
 import shutil
 import sys
 import tempfile
+import tokenize
 import tomllib
 from collections.abc import Sequence
 
@@ -67,18 +71,40 @@ def validate_copyright(app=None, files=None):
 
 def validate_and_write_file(file, initial_string, copyright_string):
 	path = pathlib.Path(file)
-	original = path.read_text()
-	lines = original.splitlines(keepends=True)
-	if lines and lines[0].startswith(initial_string):
+	original = path.read_bytes()
+	encoding = "utf-8"
+	if path.suffix == ".py":
+		encoding, _ = tokenize.detect_encoding(io.BytesIO(original).readline)
+		if encoding == "utf-8-sig":
+			encoding = "utf-8"
+
+	bom = codecs.BOM_UTF8 if original.startswith(codecs.BOM_UTF8) else b""
+	lines = original[len(bom) :].splitlines(keepends=True)
+	newline_match = re.search(rb"\r\n|\r|\n", original)
+	newline = newline_match.group() if newline_match else b"\n"
+	header = copyright_string.encode(encoding).replace(b"\n", newline)
+	license_lines = header.splitlines()
+
+	# Keep executable directives and Python encoding cookies in their original positions.
+	preamble_end = 1 if lines and lines[0].startswith(b"#!") else 0
+	if path.suffix == ".py":
+		for index, line in enumerate(lines[:2]):
+			if re.match(rb"^[ \t\f]*#.*?coding[:=][ \t]*[-\w.]+", line):
+				preamble_end = max(preamble_end, index + 1)
+	preamble = b"".join(lines[:preamble_end])
+	lines = lines[preamble_end:]
+	if preamble and not preamble.endswith((b"\n", b"\r")):
+		preamble += newline
+	if lines and lines[0].startswith(initial_string.encode(encoding)):
 		lines.pop(0)
-		if lines and "license.txt" in lines[0]:
+		if lines and len(license_lines) > 1 and lines[0].strip() == license_lines[1].strip():
 			lines.pop(0)
-	updated = copyright_string + "".join(lines)
+	updated = bom + preamble + header + b"".join(lines)
 	if updated == original:
 		return
 
 	# Close the temporary file before replacing the original, including on Windows.
-	with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as temp_file:
+	with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as temp_file:
 		temp_file.write(updated)
 		temp_path = pathlib.Path(temp_file.name)
 	try:

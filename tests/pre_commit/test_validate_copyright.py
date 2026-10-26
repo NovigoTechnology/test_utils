@@ -1,3 +1,4 @@
+import codecs
 import datetime
 
 import pytest
@@ -80,3 +81,112 @@ def test_missing_metadata_suggests_explicit_app(tmp_path, monkeypatch):
 	monkeypatch.chdir(tmp_path)
 	with pytest.raises(ValueError, match="use --app APP"):
 		copyright_hook.validate_copyright(["example.py"])
+
+
+@pytest.mark.parametrize(
+	"preamble,encoding",
+	[
+		(b"#!/usr/bin/env python3\n", "utf-8"),
+		(b"# coding: latin-1\n", "latin-1"),
+		(b"#!/usr/bin/env python3\n# coding: latin-1\n", "latin-1"),
+		(b"# Application comment\n# coding: latin-1\n", "latin-1"),
+		(b"\n# coding: latin-1\n", "latin-1"),
+	],
+)
+@pytest.mark.parametrize("existing_header", [False, True])
+def test_preserves_python_preamble_and_source_encoding(tmp_path, preamble, encoding, existing_header):
+	file = tmp_path / "script.py"
+	body = "print('café')\n".encode(encoding)
+	old_header = (
+		b"# Copyright (c) 2000, Old Publisher and contributors\n"
+		b"# For license information, please see license.txt\n"
+		if existing_header
+		else b""
+	)
+	file.write_bytes(preamble + old_header + body)
+	copyright_hook.validate_copyright({"app_publisher": "Compañía"}, [str(file)])
+	result = file.read_bytes()
+	assert result.startswith(preamble + b"# Copyright (c) ")
+	assert result.endswith(body)
+	assert "Compañía".encode(encoding) in result
+	assert result.count(b"Copyright (c)") == 1
+	compile(result, str(file), "exec")
+	first_stat = file.stat()
+	copyright_hook.validate_copyright({"app_publisher": "Compañía"}, [str(file)])
+	assert file.read_bytes() == result
+	assert file.stat().st_mtime_ns == first_stat.st_mtime_ns
+
+
+@pytest.mark.parametrize("extension", ["py", "js", "ts", "md", "html", "sql"])
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
+def test_preserves_original_line_endings(tmp_path, extension, newline):
+	file = tmp_path / f"example.{extension}"
+	body = newline.join([b"first line", b"second line", b""])
+	file.write_bytes(body)
+	copyright_hook.validate_copyright({"app_publisher": "Publisher"}, [str(file)])
+	result = file.read_bytes()
+	assert result.endswith(body)
+	assert result.count(newline) == 4
+	assert len(result.split(newline)) == len(result.splitlines()) + 1
+	first_stat = file.stat()
+	copyright_hook.validate_copyright({"app_publisher": "Publisher"}, [str(file)])
+	assert file.read_bytes() == result
+	assert file.stat().st_mtime_ns == first_stat.st_mtime_ns
+
+
+@pytest.mark.parametrize("extension", ["py", "js", "ts"])
+def test_preserves_shebang_with_crlf(tmp_path, extension):
+	file = tmp_path / f"script.{extension}"
+	shebang = b"#!/usr/bin/env python3\r\n" if extension == "py" else b"#!/usr/bin/env node\r\n"
+	body = b"print('keep')" if extension == "py" else b"console.log('keep');"
+	file.write_bytes(shebang + body)
+	copyright_hook.validate_copyright({"app_publisher": "Publisher"}, [str(file)])
+	result = file.read_bytes()
+	assert result.startswith(shebang)
+	assert result.endswith(body)
+	assert result.count(b"\r\n") == 3
+	assert result.count(b"\n") == 3
+
+
+@pytest.mark.parametrize("extension", ["py", "js", "md", "html", "sql"])
+def test_preserves_utf8_bom(tmp_path, extension):
+	file = tmp_path / f"example.{extension}"
+	body = "print('café')\r\n".encode()
+	file.write_bytes(codecs.BOM_UTF8 + body)
+	copyright_hook.validate_copyright({"app_publisher": "Publisher"}, [str(file)])
+	result = file.read_bytes()
+	assert result.startswith(codecs.BOM_UTF8)
+	assert result.count(codecs.BOM_UTF8) == 1
+	assert result.endswith(body)
+	if extension == "py":
+		compile(result, str(file), "exec")
+	copyright_hook.validate_copyright({"app_publisher": "Publisher"}, [str(file)])
+	assert file.read_bytes() == result
+
+
+def test_preserves_mixed_line_endings_in_body(tmp_path):
+	file = tmp_path / "script.py"
+	preamble = b"#!/usr/bin/env python3\r\n# coding: utf-8\r\n"
+	body = b"print('first')\nprint('second')\r\nprint('last')"
+	file.write_bytes(preamble + body)
+	copyright_hook.validate_copyright({"app_publisher": "Publisher"}, [str(file)])
+	result = file.read_bytes()
+	assert result.startswith(preamble)
+	assert result.endswith(body)
+	assert result[len(preamble) : -len(body)].count(b"\r\n") == 2
+	compile(result, str(file), "exec")
+
+
+def test_preserves_code_that_mentions_license_file(tmp_path):
+	file = tmp_path / "script.py"
+	body = b"print('license.txt')\nprint('keep')\n"
+	file.write_bytes(b"# Copyright (c) 2000, Old Publisher and contributors\n" + body)
+	copyright_hook.validate_copyright({"app_publisher": "Publisher"}, [str(file)])
+	assert file.read_bytes().endswith(body)
+
+
+def test_shebang_only_file_keeps_directive_on_first_line(tmp_path):
+	file = tmp_path / "script.py"
+	file.write_bytes(b"#!/usr/bin/env python3")
+	copyright_hook.validate_copyright({"app_publisher": "Publisher"}, [str(file)])
+	assert file.read_bytes().startswith(b"#!/usr/bin/env python3\n# Copyright (c) ")
