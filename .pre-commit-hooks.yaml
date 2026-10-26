@@ -2,7 +2,7 @@
   name: validate_copyright
   description: "Validate Copyright"
   entry: validate_copyright
-  files: '\.(js|ts|py|md)$'
+  files: '\.(js|ts|py|md|html|sql)$'
   language: python
   require_serial: true
 
@@ -49,3 +49,120 @@
   types: [python]
   exclude: ^tests/
   args: ["--install-types", "--non-interactive", "--ignore-missing-imports"]
+
+- id: track_overrides
+  name: track_overrides
+  description: "Track changes in override methods (requires args: --app APP, --base-branch BRANCH)"
+  entry: track_overrides
+  language: python
+  require_serial: true
+  pass_filenames: false
+  always_run: true
+  pass_env: [GH_TOKEN, GITHUB_TOKEN]
+
+- id: add_translations
+  name: add_translations
+  description: "Get untranslated strings in app and translate them to the language specified"
+  entry: add_translations
+  language: python
+  require_serial: true
+
+- id: sql_docstring_formatter
+  name: sql_docstring_formatter
+  description: "Format SQL statements in Python docstrings"
+  entry: sql_docstring_formatter
+  language: python
+  types: [python]
+  additional_dependencies: ['sqlglot>=30.12,<31']
+  args: ['--dialect', 'mysql']
+
+- id: sql_registry
+  name: SQL Registry
+  description: "Register SQL operations for tracking and potential rewriting"
+  entry: sql_registration
+  language: python
+  files: '\.py$'
+  require_serial: true
+  additional_dependencies: ['sqlglot>=30.12,<31']
+  args: ['scan']
+
+- id: sql_rewriter
+  name: SQL Rewriter CLI
+  description: "Interactive tool for converting SQL calls to Query Builder"
+  entry: sql_registration
+  language: python
+  pass_filenames: false
+  always_run: true
+  require_serial: true
+  additional_dependencies: ['sqlglot>=30.12,<31']
+  
+- id: bylines
+  name: bylines
+  description: "Add byline <div> in markdown files with authors from git history"
+  entry: bylines
+  language: python
+  require_serial: true
+
+- id: validate_patches
+  name: validate_patches
+  description: "Validate patches.txt matches patch files for ERPNext apps"
+  entry: validate_patches
+  language: python
+  require_serial: true
+  pass_filenames: false
+  args: []
+
+- id: patch_linters
+  name: patch_linters
+  description: "Deprecated alias for validate_patches"
+  entry: validate_patches
+  language: python
+  require_serial: true
+  pass_filenames: false
+  args: []
+
+- id: validate_frappe_project
+  name: validate_frappe_project
+  description: "Validate pyproject.toml files for Frappe applications (structure, dependencies, build backend)"
+  entry: validate_frappe_project
+  language: python
+  always_run: true
+  pass_filenames: false
+  require_serial: true
+
+- id: validate_doctype_python_types
+  name: validate_doctype_python_types
+  description: "Require Frappe auto-generated controller type blocks when export_python_type_annotations is enabled (or use --force)"
+  entry: validate_doctype_python_types
+  language: python
+  always_run: true
+  pass_filenames: false
+  require_serial: true
+
+- id: check_code_duplication
+  name: check_code_duplication
+  description: "Check for copy-paste duplication in Python, JavaScript, TypeScript (requires npx)"
+  entry: check_code_duplication
+  language: python
+  pass_filenames: false
+  always_run: true
+  require_serial: true
+
+- id: static_analysis
+  name: static_analysis
+  description: "Validate Frappe app paths in hooks, patches, frontend calls, Python calls, and Jinja templates; detect orphaned code"
+  entry: static_analysis
+  language: python
+  pass_filenames: false
+  always_run: true
+  require_serial: true
+  additional_dependencies: [vulture>=2.0]
+
+- id: semgrep_fmt
+  name: semgrep_fmt
+  description: "Run Semgrep with compact, grouped, colorized output — one block per rule, one file:line per finding"
+  entry: semgrep_fmt
+  language: python
+  pass_filenames: false
+  require_serial: true
+  additional_dependencies: [semgrep]

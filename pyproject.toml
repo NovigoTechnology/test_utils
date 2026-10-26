@@ -1,33 +1,82 @@
-[tool.poetry]
+[project]
 name = "test_utils"
-version = "1.0.2"
 description = "Novigo Technology Test Utilities and Fixtures"
-authors = ["Novigo Technology <earona@novigo.com.ar>"]
-readme = "README.md"
-packages = [
-	{include = "test_utils"}
+authors = [
+    { name = "Novigo Technology", email = "earona@novigo.com.ar"}
 ]
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dynamic = ["dependencies", "version"]
 
-[tool.poetry.scripts]
+[project.scripts]
 clean_customized_doctypes = "test_utils.pre_commit.clean_customized_doctypes:main"
+create_partition = "test_utils.utils.create_partition:create_partition"
+track_overrides = "test_utils.pre_commit.track_overrides:main"
+update_pre_commit_config = "test_utils.pre_commit.update_pre_commit_config:main"
 validate_copyright = "test_utils.pre_commit.validate_copyright:main"
+validate_customizations = "test_utils.pre_commit.validate_customizations:main"
 validate_javascript_dependencies = "test_utils.pre_commit.validate_javascript_dependencies:main"
 validate_python_dependencies = "test_utils.pre_commit.validate_python_dependencies:main"
-validate_customizations = "test_utils.pre_commit.validate_customizations:main"
-update_pre_commit_config = "test_utils.pre_commit.update_pre_commit_config:main"
-
-[tool.poetry.dependencies]
-python = ">3.13,<3.15"
-mypy = "^1.19.0"
-toml = "^0.10.2"
-tomli = "^2.4.0"
+add_translations = "test_utils.pre_commit.add_translations:main"
+sql_registry = "test_utils.utils.sql_registry:main"
+sql_docstring_formatter = "test_utils.pre_commit.sql_formatter:main"
+sql_registration = "test_utils.pre_commit.sql_registration:main"
+sql_rewriter = "test_utils.pre_commit.sql_registration:main"
+sql_pipeline = "test_utils.utils.sql_pipeline:main"
+bylines = "test_utils.pre_commit.bylines:main"
+validate_patches = "test_utils.pre_commit.validate_patches:main"
+validate_frappe_project = "test_utils.pre_commit.validate_frappe_project:main"
+validate_doctype_python_types = "test_utils.pre_commit.validate_doctype_python_types:main"
+check_code_duplication = "test_utils.pre_commit.check_code_duplication:main"
+static_analysis = "test_utils.pre_commit.static_analysis:main"
+semgrep_fmt = "test_utils.pre_commit.semgrep_fmt:main"
+code_graph = "test_utils.utils.graph.cli:main"
+mock-printer = "test_utils.printers.cli:main"
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
+[tool.poetry]
+version = "1.30.1"
+packages = [{include = "test_utils"}]
+
+[tool.poetry.dependencies]
+python = ">=3.14,<3.15"
+mypy = "^1.19.0"
+toml = "^0.10.2"
+requests = "^2.32.3"
+sqlglot = ">=30.12,<31"
+asttokens = ">=2.4.0"
+astpath = {extras = ["xpath"], version = "^0.9.1"}
+vulture = ">=2.0"
+tree-sitter = "^0.25.2"
+tree-sitter-javascript = "^0.25.0"
+tree-sitter-typescript = "^0.23.2"
+anthropic = "^0.99.0"
+openai = "^2.34.0"
+boto3 = "^1.43.4"
+pygithub = "^2.9.1"
+
+[tool.poetry.group.dev.dependencies]
+coverage = "^7.13.4"
+matplotlib = "^3.10.8"
+ruff = "==0.17.2"
+pytest = "^8.3.3"
+pytest-asyncio = "^0.24.0"
+httpx = "^0.27.2"
+
+[tool.poetry.group.graph]
+optional = true
+
+[tool.poetry.group.graph.dependencies]
+duckdb = "^1.5.1"
+networkx = ">=3.2,<3.6"
+
 [tool.codespell]
-skip = "CHANGELOG.md"
+# Preserve release history and Spanish synchronization notes verbatim.
+skip = "CHANGELOG.md,poetry.lock,docs/changelog-novigo-before-sync.md,docs/upstream-sync.md"
+ignore-words-list = "nd"
 
 [tool.ruff]
 line-length = 110

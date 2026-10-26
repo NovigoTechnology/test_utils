@@ -59,8 +59,7 @@ def get_mismatched_versions():
 				if package in app2_packages and app2_packages[package] != package_version:
 					# Check if exception already exists
 					existing_exception = next(
-						(exception for exception in exceptions if package in exception),
-						None,
+						(exception for exception in exceptions if package in exception), None
 					)
 					if existing_exception:
 						existing_exception[package][app] = package_version
@@ -72,7 +71,7 @@ def get_mismatched_versions():
 def main(argv: Sequence[str] | None = None):
 	parser = argparse.ArgumentParser()
 	parser.add_argument("filenames", nargs="*")
-	parser.parse_args(argv)
+	_args = parser.parse_args(argv)
 
 	exceptions = get_mismatched_versions()
 	if exceptions:

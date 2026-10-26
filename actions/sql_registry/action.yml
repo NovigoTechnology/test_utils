@@ -1,0 +1,57 @@
+name: SQL Registry
+description: Scan for SQL operations, track stability, and report on database call patterns.
+author: Novigo Technology
+
+inputs:
+  directory:
+    description: 'Directory to scan for SQL operations'
+    required: false
+    default: '.'
+  registry:
+    description: 'Path to the registry file'
+    required: false
+    default: '.sql_registry.json'
+
+branding:
+  icon: database
+  color: blue
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.14'
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        pip install 'sqlglot>=30.12,<31'
+        pip install ${{ github.action_path }}/../..
+
+    - name: Load previous registry (if exists)
+      id: load-registry
+      shell: bash
+      run: |
+        if [ -f "${{ inputs.registry }}" ]; then
+          echo "registry_exists=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "registry_exists=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Scan for SQL calls
+      shell: bash
+      run: |
+        sql_registry scan --directory "${{ inputs.directory }}" --registry "${{ inputs.registry }}"
+        echo "SQL Registry scan completed"
+
+    - name: Generate stability report
+      shell: bash
+      run: |
+        sql_registry report --registry "${{ inputs.registry }}"

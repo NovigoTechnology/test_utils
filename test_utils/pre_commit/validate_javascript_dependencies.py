@@ -55,7 +55,7 @@ def get_mismatched_versions():
 def main(argv: Sequence[str] | None = None):
 	parser = argparse.ArgumentParser()
 	parser.add_argument("filenames", nargs="*")
-	parser.parse_args(argv)
+	_args = parser.parse_args(argv)
 
 	exceptions = get_mismatched_versions()
 	if exceptions:
