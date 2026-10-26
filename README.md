@@ -8,6 +8,8 @@ See [docs/index.md](docs/index.md) for a full overview of every tool.
 
 ## Installation
 
+The Novigo fork supports Python 3.14 only (`>=3.14,<3.15`).
+
 ### Python
 
 ```bash

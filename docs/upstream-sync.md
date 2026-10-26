@@ -15,7 +15,7 @@ Integración preparada el 26 de octubre de 2026 en la rama `update-main`.
 | Copyright | Inferir la aplicación desde `pyproject.toml` sin exigir `--app`, con soporte para metadatos PEP 621 y Poetry. Mantener ambas llamadas Python: `validate_copyright(files)` y `validate_copyright(app, files)`. |
 | Interfaces del original | Admitir `--app`, diccionario con `app_publisher` y archivos SQL; conservar también el soporte local para HTML. Actualizar el filtro del manifiesto de hooks. |
 | Escritura de archivos | Actualizar encabezados existentes, conservar el contenido y los permisos, cerrar el temporal antes de moverlo y evitar escrituras repetidas si el encabezado ya coincide. |
-| Python | Conservar el rango del fork `>3.13,<3.15`, con herramientas, archivo `.python-version` y acciones que seleccionan Python 3.14. |
+| Python | Soportar exclusivamente Python 3.14 (`>=3.14,<3.15`), con herramientas, archivo `.python-version` y acciones que seleccionan Python 3.14. |
 | Formato | Conservar Ruff y su configuración local, con versión 0.15.4 en desarrollo; incorporar el hook de duplicación del original. |
 | Metadatos | Conservar descripción y autor de Novigo, lectura de versión desde `importlib.metadata` y actualizaciones locales de GitHub Actions. Adoptar el formato PEP 621, los nuevos comandos y dependencias y la versión 1.30.1 del original. |
 | Distribución | Mantener `build/` y `dist/` ignorados y retirar los cuatro paquetes antiguos que el original incorpora al árbol. |
