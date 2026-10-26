@@ -1,6 +1,6 @@
 name: 'Changelog Generator'
 description: 'Analyzes PR changes and generates a draft changelog entry as a comment'
-author: 'agritheory'
+author: 'Novigo Technology'
 
 inputs:
   github-token:
