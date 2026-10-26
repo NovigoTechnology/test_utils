@@ -5,8 +5,6 @@ Ensure DocType controllers include Frappe auto-generated TYPE_CHECKING blocks wh
 Detection matches Frappe's exporter markers (see frappe.types.exporter).
 """
 
-from __future__ import annotations
-
 import argparse
 import ast
 import json

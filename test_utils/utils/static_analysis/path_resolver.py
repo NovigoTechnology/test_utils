@@ -69,7 +69,7 @@ class PathResolver:
 		self.prefix_whitelist: list[str] = [p[:-2] for p in wl if p.endswith(".*")]
 
 	@classmethod
-	def from_app(cls, app_path: Path, dependency_paths: list[Path] | None = None) -> "PathResolver":
+	def from_app(cls, app_path: Path, dependency_paths: list[Path] | None = None) -> PathResolver:
 		"""Create a resolver, loading the whitelist from the app's pyproject.toml."""
 		whitelist = load_whitelist(app_path)
 		return cls([app_path] + (dependency_paths or []), whitelist=whitelist)

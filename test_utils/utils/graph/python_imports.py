@@ -1,7 +1,5 @@
 """Resolve Python import statements to absolute module paths (AST, no import execution)."""
 
-from __future__ import annotations
-
 import ast
 from pathlib import Path
 from typing import Literal

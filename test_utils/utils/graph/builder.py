@@ -1,7 +1,5 @@
 """Build a DuckDB code graph artifact for one Frappe app."""
 
-from __future__ import annotations
-
 import ast
 from datetime import UTC, datetime, timezone
 from pathlib import Path

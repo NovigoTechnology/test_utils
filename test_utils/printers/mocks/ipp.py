@@ -111,7 +111,7 @@ class IppPrinterMock:
 			self._server = None
 			_logger.info("IPP printer mock stopped")
 
-	async def __aenter__(self) -> "IppPrinterMock":
+	async def __aenter__(self) -> IppPrinterMock:
 		await self.start()
 		return self
 

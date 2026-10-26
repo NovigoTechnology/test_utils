@@ -17,8 +17,6 @@ Example::
     top = complexity_leaderboard(\"myapp_graph.duckdb\", limit=20)
 """
 
-from __future__ import annotations
-
 __all__ = [
 	"JsCallSite",
 	"build_graph",

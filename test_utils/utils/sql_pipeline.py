@@ -94,7 +94,7 @@ class PipelineState:
 		}
 
 	@classmethod
-	def from_dict(cls, data: dict) -> "PipelineState":
+	def from_dict(cls, data: dict) -> PipelineState:
 		chunks = {k: Chunk(**v) for k, v in data.get("chunks", {}).items()}
 		return cls(
 			app=data["app"],

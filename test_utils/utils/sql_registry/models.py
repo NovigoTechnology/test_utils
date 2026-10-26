@@ -45,7 +45,7 @@ class VarRef:
 		return f"{self._PREFIX}{self.expr}"
 
 	@classmethod
-	def from_json(cls, s: str) -> "VarRef":
+	def from_json(cls, s: str) -> VarRef:
 		return cls(s[len(cls._PREFIX) :])
 
 	@staticmethod
@@ -98,7 +98,7 @@ class SQLCall:
 		return d
 
 	@classmethod
-	def from_dict(cls, d: dict) -> "SQLCall":
+	def from_dict(cls, d: dict) -> SQLCall:
 		d = d.copy()
 		for key in ("created_at", "updated_at"):
 			if key in d and isinstance(d[key], str):

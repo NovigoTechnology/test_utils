@@ -274,7 +274,7 @@ def locate_call_node(
 	xml_tree,
 	node_mappings: dict,
 	atok: asttokens.ASTTokens,
-) -> "ast.Call | None":
+) -> ast.Call | None:
 	"""Return the AST Call node for *call*, preferring the XPath pin over text match."""
 	ast_path_val = getattr(call, "ast_path", None)
 	if ast_path_val and xml_tree is not None:

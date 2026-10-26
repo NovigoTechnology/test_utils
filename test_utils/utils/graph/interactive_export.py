@@ -1,7 +1,5 @@
 """Export an interactive, Obsidian-style force graph (standalone HTML via vis-network)."""
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
 from typing import Any

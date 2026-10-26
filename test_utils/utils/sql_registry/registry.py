@@ -717,7 +717,7 @@ class SQLRegistry:
 ## Summary
 - **Files with SQL Operations**: {len(by_file)}
 - **Total Operations Tracked**: {total}
-- **Unique Query Patterns**: {len(set(c.semantic_signature for c in calls.values()))}
+- **Unique Query Patterns**: {len({c.semantic_signature for c in calls.values()})}
 """
 
 		return report

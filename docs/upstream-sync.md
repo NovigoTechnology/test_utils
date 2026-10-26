@@ -42,6 +42,7 @@ Había un secuenciador de cherry-pick antiguo, de marzo de 2026, cuyo estado ya 
 - Sintaxis Python, YAML, destinos de los 23 comandos y comandos usados por los hooks; ejecución de `--help` en 21 comandos instalados. Se excluyeron el comando de particiones que requiere Frappe y el actualizador de pre-commit, que modifica configuraciones.
 - Validación de configuración y manifiesto de pre-commit.
 - Ruff y formato aprobados para el hook modificado y sus pruebas.
+- Secuencia completa de formato `flynt`, `pyupgrade`, `ruff-check` y `ruff-format` aprobada sin modificar archivos; las anotaciones se ajustan a Python 3.14 antes de aplicar el formato.
 - Ruff 0.17.2: análisis y formato de todo el repositorio aprobados; se corrigieron las observaciones heredadas conservando las expresiones con efectos y el comportamiento de truncado de `zip`. Los hooks usan `ruff-check` y `ruff-format`.
 
 Las pruebas de impresoras abren sockets locales. La suite emite advertencias de obsolescencia de `pytest-asyncio` 0.24 con Python 3.14. No se ejecutaron operaciones de base de datos ni pruebas de integración en un bench de Frappe/ERPNext.

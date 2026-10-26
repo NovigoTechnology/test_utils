@@ -1,7 +1,5 @@
 """Shared path filters for scanning app trees."""
 
-from __future__ import annotations
-
 SKIP_DIR_PARTS: frozenset[str] = frozenset(
 	{
 		"__pycache__",

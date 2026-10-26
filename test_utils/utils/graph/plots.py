@@ -1,7 +1,5 @@
 """Generate static plots from a code graph DuckDB file (requires matplotlib)."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
 

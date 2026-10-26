@@ -78,7 +78,7 @@ class RawPrinterMock:
 			self._server = None
 			_logger.info("Raw printer mock stopped")
 
-	async def __aenter__(self) -> "RawPrinterMock":
+	async def __aenter__(self) -> RawPrinterMock:
 		await self.start()
 		return self
 

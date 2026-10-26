@@ -1,7 +1,5 @@
 """CLI: ``code_graph`` — build/query/plot DuckDB code graphs for a Frappe app tree."""
 
-from __future__ import annotations
-
 import argparse
 import json
 import sys

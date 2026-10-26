@@ -1,7 +1,5 @@
 """Path exclusion patterns (e.g. skip tests) when scanning an app tree."""
 
-from __future__ import annotations
-
 import fnmatch
 import re
 from pathlib import PurePosixPath

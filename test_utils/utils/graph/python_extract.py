@@ -1,7 +1,5 @@
 """Extract Python function metadata from a Frappe app tree (AST, no import)."""
 
-from __future__ import annotations
-
 import ast
 from dataclasses import dataclass
 from pathlib import Path

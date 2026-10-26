@@ -1,7 +1,5 @@
 """Extract ``frappe.call`` / ``frappe.xcall`` sites from JS/TS/Vue with loop context (tree-sitter)."""
 
-from __future__ import annotations
-
 import re
 from dataclasses import dataclass
 from pathlib import Path

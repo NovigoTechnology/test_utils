@@ -1,7 +1,5 @@
 """Extract Python call edges via AST: same-module + import-resolved cross-module calls."""
 
-from __future__ import annotations
-
 import ast
 from pathlib import Path
 
