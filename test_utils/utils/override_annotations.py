@@ -65,7 +65,8 @@ def literal(node: ast.expr, values: dict, invalid=None):
 		except KeyError, IndexError, TypeError:
 			raise ResolutionError(f"Unsupported container lookup at line {node.lineno}") from None
 	if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-		return [literal(item, values, invalid) for item in node.elts]
+		collection = {ast.List: list, ast.Tuple: tuple, ast.Set: set}[type(node)]
+		return collection(literal(item, values, invalid) for item in node.elts)
 	if isinstance(node, ast.Dict):
 		result = {}
 		for key, value in zip(node.keys, node.values, strict=True):
@@ -83,8 +84,24 @@ def literal(node: ast.expr, values: dict, invalid=None):
 def mutation_references(node, functions=None, seen=frozenset(), controlled=False):
 	"""Unsupported operations that can mutate a known container or one of its aliases."""
 	if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+		if controlled and not isinstance(node, ast.Lambda):
+			yield ast.copy_location(ast.Name(id=node.name, ctx=ast.Store()), node)
 		return
-	if isinstance(node, ast.Call):
+	if controlled:
+		binding = None
+		if isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+			binding = node.name
+		elif isinstance(node, ast.MatchMapping):
+			binding = node.rest
+		if binding:
+			yield ast.copy_location(ast.Name(id=binding, ctx=ast.Store()), node)
+	if isinstance(node, (ast.Import, ast.ImportFrom)):
+		yield node
+	elif isinstance(node, ast.NamedExpr):
+		yield node.target
+	elif isinstance(node, ast.Name) and controlled and isinstance(node.ctx, (ast.Store, ast.Del)):
+		yield node
+	elif isinstance(node, ast.Call):
 		yield node
 		if functions and isinstance(node.func, ast.Name) and node.func.id in functions:
 			function = functions[node.func.id]
@@ -115,12 +132,31 @@ def read_hooks(path: Path, *, only: set[str] | None = None) -> dict:
 	invalid = {}
 	functions = {}
 	for node in read_tree(path).body:
+		if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+			if node.name in selected:
+				raise ResolutionError(f"{path}:{node.lineno}: hooks require static assignments")
+			values.pop(node.name, None)
+			functions.pop(node.name, None)
 		if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
 			functions[node.name] = node
 		for reference in mutation_references(node, functions):
+			if isinstance(reference, (ast.Import, ast.ImportFrom)):
+				for alias in reference.names:
+					name = alias.asname or (
+						alias.name.split(".")[0] if isinstance(reference, ast.Import) else alias.name
+					)
+					if name in selected or alias.name == "*":
+						raise ResolutionError(
+							f"{path}:{reference.lineno}: hook-binding imports are unsupported; use static assignments"
+						)
+					values.pop(name, None)
+					functions.pop(name, None)
 			for child in ast.walk(reference):
 				if isinstance(child, ast.Name) and child.id in values:
 					invalid.update(mutable_objects(values[child.id]))
+					if isinstance(child.ctx, (ast.Store, ast.Del)):
+						values.pop(child.id, None)
+						functions.pop(child.id, None)
 		if isinstance(node, (ast.Assign, ast.AnnAssign)):
 			targets = node.targets if isinstance(node, ast.Assign) else [node.target]
 			names = [target.id for target in targets if isinstance(target, ast.Name)]
@@ -133,6 +169,9 @@ def read_hooks(path: Path, *, only: set[str] | None = None) -> dict:
 			if any(not isinstance(target, (ast.Name, ast.Subscript)) for target in targets):
 				if indirect_names & selected:
 					raise ResolutionError(f"{path}:{node.lineno}: hooks require simple static assignments")
+				for name in indirect_names:
+					values.pop(name, None)
+					functions.pop(name, None)
 				if node.value is not None:
 					for child in ast.walk(node.value):
 						if isinstance(child, ast.Name) and child.id in values:
@@ -336,6 +375,8 @@ class SourceResolver:
 				continue
 			first, *rest = name.split(".")
 			reference = ".".join([symbol.module.imports.get(first, f"{symbol.module.name}.{first}"), *rest])
+			if reference in {"abc.ABC", "typing.Protocol", "typing_extensions.Protocol", "builtins.object"}:
+				continue
 			resolved = self.resolve(reference)
 			if not isinstance(resolved.node, ast.ClassDef):
 				raise ResolutionError(f"Base {reference} is not a class")
@@ -451,8 +492,9 @@ class AnnotationValidator:
 					raise ResolutionError(
 						f"Cannot validate REPO: configure remote.origin.url in {upstream.module.app.root} or use owner/repository in required_apps"
 					)
-				if repository_identity(annotations["REPO"]) != repository_identity(expected):
-					raise ResolutionError(f"REPO does not match the upstream checkout ({expected})")
+				expected_identity = repository_identity(expected)
+				if repository_identity(annotations["REPO"]) != expected_identity:
+					raise ResolutionError(f"REPO does not match the upstream checkout ({expected_identity})")
 				github_repository(annotations["REPO"])
 			except (ResolutionError, ValueError) as exc:
 				self.error(custom, upstream.reference, str(exc))
@@ -492,11 +534,11 @@ class AnnotationValidator:
 			if custom.module.app.name != self.app.name or not isinstance(custom.node, ast.ClassDef):
 				raise ResolutionError("DocType override must resolve to a class in the custom app")
 			hooks_path = self.app.package / "hooks.py"
+			hooks = read_hooks(hooks_path) if hooks_path.is_file() else {}
 			if extension is None:
-				hooks = read_hooks(hooks_path) if hooks_path.is_file() else {}
 				extension = (doctype, replacement) in hook_mapping(hooks, "extend_doctype_class")
 			if extension:
-				controller = self.resolver.controller(doctype, self.app.name)
+				controller = self.extension_controller(doctype, hooks)
 				if controller is None:
 					raise ResolutionError(f"Cannot resolve upstream controller for DocType {doctype!r}")
 				hierarchy = self.resolver.compose([custom, controller])
@@ -514,16 +556,7 @@ class AnnotationValidator:
 			for owner in hierarchy:
 				for node in scope_statements(owner.node.body):
 					if isinstance(node, FUNCTION_NODES) and node.name not in methods:
-						concrete = node
-						if owner.module.app.name == self.app.name:
-							concrete = find_function(owner.module.tree, f"{owner.qualname}.{node.name}")
-							if concrete is None:
-								raise ResolutionError(
-									f"Cannot resolve concrete implementation of {owner.reference}.{node.name}"
-								)
-						methods.setdefault(
-							node.name, Symbol(owner.module, f"{owner.qualname}.{node.name}", concrete)
-						)
+						methods[node.name] = Symbol(owner.module, f"{owner.qualname}.{node.name}", node)
 			for name, method in methods.items():
 				if method.module.app.name != self.app.name:
 					continue
@@ -533,12 +566,33 @@ class AnnotationValidator:
 					if isinstance(node, FUNCTION_NODES):
 						original = Symbol(owner.module, f"{owner.qualname}.{name}", node)
 						break
+				owner = find_definition(method.module.tree, method.qualname.rsplit(".", 1)[0])
+				definitions = [
+					node
+					for node in scope_statements(owner.body)
+					if isinstance(node, FUNCTION_NODES) and node.name == name
+				]
+				annotated = any(parse_annotation(ast.get_docstring(node) or "")[0] for node in definitions)
+				upstream_defines_name = any(
+					isinstance(node, FUNCTION_NODES) and node.name == name
+					for owner in upstream_classes
+					for node in scope_statements(owner.node.body)
+				)
+				if not original and not annotated and not upstream_defines_name:
+					# Helper descriptors may define a getter and setter with the same name.
+					continue
+				concrete = find_function(method.module.tree, method.qualname)
+				if concrete is None or (original is None and upstream_defines_name):
+					self.error(
+						method,
+						original.reference if original else f"DocType {doctype}",
+						f"Cannot resolve concrete implementation of overriding method {method.reference}",
+					)
+					continue
+				method = Symbol(method.module, method.qualname, concrete)
 				if original:
 					self.validate_annotation(method, original)
-				elif any(
-					re.match(r"\s*(?:APP|HASH|REPO|PATH|METHOD):", line)
-					for line in (ast.get_docstring(method.node) or "").splitlines()
-				):
+				elif annotated:
 					self.error(
 						method,
 						f"{upstream_classes[0].reference}.{name}",
@@ -546,6 +600,35 @@ class AnnotationValidator:
 					)
 		except ResolutionError as exc:
 			self.error(custom, f"DocType {doctype}", str(exc))
+
+	def extension_controller(self, doctype: str, hooks: dict) -> Symbol | None:
+		"""Frappe applies class replacement before composing extension mixins."""
+		replacements = [
+			value for key, value in hook_mapping(hooks, "override_doctype_class") if key == doctype
+		]
+		if not replacements:
+			for app in self.resolver.apps.values():
+				path = app.package / "hooks.py"
+				if app.name == self.app.name or not path.is_file():
+					continue
+				registered = read_hooks(path, only={"override_doctype_class"})
+				matches = [
+					value
+					for key, value in hook_mapping(registered, "override_doctype_class")
+					if key == doctype
+				]
+				if matches:
+					replacements.append(matches[-1])
+			if len(set(replacements)) > 1:
+				raise ResolutionError(
+					f"Ambiguous replacement controller for {doctype}: installed app order is unavailable"
+				)
+		if replacements:
+			controller = self.resolver.resolve(replacements[-1])
+			if not isinstance(controller.node, ast.ClassDef):
+				raise ResolutionError(f"Replacement controller for {doctype} must resolve to a class")
+			return controller
+		return self.resolver.controller(doctype, self.app.name)
 
 
 def hook_mapping(hooks: dict, name: str) -> list[tuple[str, str]]:
@@ -558,7 +641,9 @@ def hook_mapping(hooks: dict, name: str) -> list[tuple[str, str]]:
 			raise ResolutionError(f"{name} keys must be non-empty strings")
 		if isinstance(values, str):
 			values = [values]
-		if not isinstance(values, list) or not all(isinstance(value, str) and value for value in values):
+		if not isinstance(values, (list, tuple)) or not all(
+			isinstance(value, str) and value for value in values
+		):
 			raise ResolutionError(f"{name}[{key!r}] must contain dotted Python paths")
 		result.extend((key, value) for value in values)
 	return result
@@ -579,8 +664,8 @@ def dependency_apps(app: App, apps_root: Path, additional_dependencies=()) -> li
 		required = hooks.get("required_apps", [])
 		if isinstance(required, str):
 			required = [required]
-		if not isinstance(required, list):
-			raise ResolutionError(f"{hooks_path}: required_apps must be a string or a list of app names")
+		if not isinstance(required, (list, tuple)):
+			raise ResolutionError(f"{hooks_path}: required_apps must be a string, list or tuple of app names")
 		if current.name == app.name:
 			required = [*required, *additional_dependencies]
 		dependencies = {"frappe": None}

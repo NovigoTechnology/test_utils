@@ -53,7 +53,11 @@ It inspects these hooks:
 - `override_whitelisted_methods`: resolves each original function and its replacement.
 - `override_doctype_class`: resolves registered classes and their inherited methods.
 - `extend_doctype_class`: also finds the upstream DocType controller, so mixins without
-  an explicit upstream base class are checked.
+  an explicit upstream base class are checked. When a replacement is registered with
+  `override_doctype_class`, extensions are composed with that replacement first. A replacement
+  in the inspected app takes precedence over dependencies, and the last entry in its hook wins.
+  Conflicting dependency replacements are reported as ambiguous because installed app order
+  cannot be inferred from source checkouts.
 
 Imported bases, aliases, relative imports, re-exports, and multiple inheritance use
 AST resolution. Methods are matched using Python's C3 inheritance order. Functions and
@@ -61,7 +65,11 @@ methods may be async or have return annotations. Overload declarations from typi
 typing_extensions are excluded when selecting the concrete implementation; an overload-only
 or ambiguous definition is reported as unresolved. Extension/controller composition uses C3,
 while replacement classes use only their declared bases. New helper methods absent from the
-upstream hierarchy do not need annotations. A previously annotated method that no longer
+upstream hierarchy do not need annotations, including properties with getters and setters.
+An overriding descriptor that cannot resolve to one concrete callable is reported as unresolved;
+validation continues for the remaining methods. Imported aliases for `abc.ABC`, `typing.Protocol`,
+`typing_extensions.Protocol`, and `builtins.object` do not require application checkouts.
+A previously annotated method that no longer
 exists upstream is an error. Without an earlier annotation, a removed method cannot be
 distinguished from a new helper.
 
@@ -70,13 +78,17 @@ The validator reads only registered implementations and the source needed to res
 
 Hooks support static strings, dictionaries, lists/tuples, references to earlier static
 variables, concatenation, dictionary unpacking/union, and `+=`/`|=` assignments.
+Tuple concatenation creates a new tuple, preserving earlier alias values; list `+=` and
+dictionary `|=` preserve in-place updates shared by aliases.
 Dynamic hook construction using application calls, conditional assignments, item mutations,
 or `.update()` is unsupported and must be rewritten as static assignments. This includes
 mutations through aliases and nested containers, before or after assigning the hook.
 Unsupported operations touching a hook container invalidate its aliases, rather than
-silently yielding an empty registration. Application
-code is never executed to obtain hook values. Dynamically computed class bases and wildcard
-imports cannot be resolved; use explicit imports and static base classes.
+silently yielding an empty registration. Conditional reassignment or deletion of a scalar
+alias invalidates that binding too. Hook-binding imports and wildcard imports in `hooks.py`
+are rejected; imports cannot reuse an earlier static binding. Application code is never
+executed to obtain hook values. Dynamically computed class bases cannot be resolved;
+use explicit imports and static base classes.
 
 ## Required docstring
 
@@ -103,6 +115,7 @@ def get_coa(doctype: str) -> list:
   `.git` suffixes, and trailing slashes are normalized for comparison. If no origin is
   configured, an `owner/repository` entry in `required_apps` supplies a GitHub fallback.
   A short app name alone does not identify a repository; configure its origin.
+  Repository mismatch errors show the normalized identity without origin credentials.
 - `PATH` must equal the repository-relative path of the resolved upstream implementation.
 - `METHOD` must identify that implementation within the file. Use `Ledger.validate` for
   class methods. Legacy bare names such as `validate` are accepted only when unambiguous.
