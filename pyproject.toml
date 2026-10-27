@@ -12,6 +12,7 @@ dynamic = ["dependencies", "version"]
 clean_customized_doctypes = "test_utils.pre_commit.clean_customized_doctypes:main"
 create_partition = "test_utils.utils.create_partition:create_partition"
 track_overrides = "test_utils.pre_commit.track_overrides:main"
+validate_override_annotations = "test_utils.pre_commit.validate_override_annotations:main"
 update_pre_commit_config = "test_utils.pre_commit.update_pre_commit_config:main"
 validate_copyright = "test_utils.pre_commit.validate_copyright:main"
 validate_customizations = "test_utils.pre_commit.validate_customizations:main"

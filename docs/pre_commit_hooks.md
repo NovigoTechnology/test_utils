@@ -90,6 +90,24 @@ Run mypy on the codebase using a preset configuration
       - id: mypy
 ```
 
+### Override annotations - `validate_override_annotations`
+
+Discover overrides in `override_whitelisted_methods`, `override_doctype_class`, and
+`extend_doctype_class` using AST, then require valid upstream metadata in each overriding
+callable's docstring. Dependencies from `required_apps`, plus Frappe, must be checked out
+under `--apps-root`. Full reference: [`validate_override_annotations.md`](validate_override_annotations.md).
+
+```yaml
+  - repo: https://github.com/NovigoTechnology/test_utils
+    rev: <tag-or-commit>
+    hooks:
+      - id: validate_override_annotations
+        args: ["--app", "nagus", "--apps-root", ".."]
+```
+
+Use alongside `track_overrides`: annotation validation detects untracked overrides;
+tracking checks upstream drift for annotated overrides.
+
 ### DocType Python types - `validate_doctype_python_types`
 
 Ensures DocType controllers include Frappe’s auto-generated `TYPE_CHECKING` block or a documented opt-out comment when `export_python_type_annotations` is enabled. Full reference: [`validate_doctype_python_types.md`](validate_doctype_python_types.md).

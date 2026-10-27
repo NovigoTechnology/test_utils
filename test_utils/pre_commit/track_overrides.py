@@ -1,12 +1,12 @@
 import argparse
 import os
 import pathlib
-import re
 import sys
 from collections.abc import Sequence
 
 import requests
 
+from test_utils.utils.override_metadata import github_repository, iter_annotations
 from test_utils.utils.track_overrides import (
 	UpstreamFetchError,
 	compare_method_diff,
@@ -32,8 +32,10 @@ def get_all_python_files(repo_path):
 
 
 def get_last_commit_hash_for_file_in_branch(repo_url, file_path, base_branch):
-	repo_url_split = repo_url.strip("/").split("/")
-	username, repo_name = repo_url_split[-2], repo_url_split[-1]
+	try:
+		username, repo_name = github_repository(repo_url)
+	except ValueError as exc:
+		raise UpstreamFetchError(str(exc)) from exc
 	api_url = f"https://api.github.com/repos/{username}/{repo_name}/commits"
 	params = {"path": file_path, "sha": base_branch}
 	headers = {}
@@ -70,17 +72,13 @@ def print_diff(diff_text, color=True):
 def check_tracked_methods(repo_directory, base_branch, apps_filter=None):
 	changed_methods = []
 	unverified = []
-	pattern = (
-		r"(?:APP:\s*([\w_-]+)\s+)?"
-		r"HASH:\s*(\w+)\s*REPO:\s*([\w\/:.]+)\s*PATH:\s*([\w\/.]+)\s*METHOD:\s*([\w]+)"
-	)
 	for file_path, source_code in get_all_python_files(repo_directory):
-		for match in re.finditer(pattern, source_code, re.DOTALL):
-			app_name = match.group(1)
-			commit_hash = match.group(2)
-			repo_url = match.group(3)
-			original_file_path = match.group(4)
-			method_name = match.group(5)
+		for annotation in iter_annotations(source_code):
+			app_name = annotation.get("APP")
+			commit_hash = annotation["HASH"]
+			repo_url = annotation["REPO"]
+			original_file_path = annotation["PATH"]
+			method_name = annotation["METHOD"]
 			# Infer app from file path if APP not in annotation (backward compat)
 			if not app_name and "/" in file_path:
 				parts = file_path.replace("\\", "/").split("/")
