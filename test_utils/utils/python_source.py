@@ -143,7 +143,11 @@ def find_definition(tree: ast.Module | ast.ClassDef, qualified_name: str):
 		if not isinstance(node, (ast.Module, ast.ClassDef)):
 			return None
 		decorators.update(overload_names(node.body))
-		matches = scope_bindings(node.body).get(part, [])
+		bindings = scope_bindings(node.body)
+		if "*" in bindings:
+			# The exported names are unknown without evaluating the imported module.
+			return None
+		matches = bindings.get(part, [])
 		if any(not isinstance(item, DEFINITION_NODES) for item in matches):
 			return None
 		concrete = [
@@ -162,7 +166,8 @@ def find_function(tree: ast.Module, name: str):
 	"""Find the concrete implementation; ambiguous scopes and overload-only stubs fail."""
 	node = find_definition(tree, name)
 	if node is None and "." not in name:
-		if name in scope_bindings(tree.body):
+		bindings = scope_bindings(tree.body)
+		if name in bindings or "*" in bindings:
 			return None
 		candidates = []
 

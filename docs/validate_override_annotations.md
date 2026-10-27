@@ -80,6 +80,10 @@ when they replace an upstream method. Define the overriding method explicitly wi
 `async def` and put its metadata on that definition. A registered function that is rebound
 after its definition cannot reuse the old definition's metadata.
 Plain literal data attributes redeclared in both classes do not require method annotations.
+Modules containing wildcard imports are conservatively unresolved, including imports inside
+conditional branches. This applies to direct definitions, explicit re-exports, and qualified
+or legacy method names; unknown exports cannot be assumed to preserve an earlier binding.
+Use explicit imports so validation and historical tracking can resolve the implementation.
 Imported aliases for `abc.ABC`, `typing.Protocol`,
 `typing_extensions.Protocol`, and `builtins.object` do not require application checkouts.
 Application classes imported or declared under names such as `ABC` or `Protocol` remain part

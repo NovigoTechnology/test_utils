@@ -393,10 +393,15 @@ class SourceResolver:
 				remaining = parts[end:]
 				if not remaining:
 					continue
+				declarations = scope_bindings(module.tree.body)
+				if "*" in declarations:
+					raise ResolutionError(
+						f"Cannot resolve {reference} in {path}: wildcard imports may rebind symbols; use explicit imports"
+					)
 				node = find_definition(module.tree, ".".join(remaining))
 				if node is not None:
 					return Symbol(module, ".".join(remaining), node)
-				bindings = scope_bindings(module.tree.body).get(remaining[0], [])
+				bindings = declarations.get(remaining[0], [])
 				if (
 					remaining[0] in module.imports
 					and len(bindings) == 1
