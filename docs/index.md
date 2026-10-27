@@ -20,6 +20,7 @@ Test Utils is a collection of development tools for [Frappe](https://frappeframe
 | `update_pre_commit_config` | Keep pre-commit config pinned to the latest test_utils revision |
 | `mypy` | Run mypy with a preset configuration |
 | `track_overrides` | Track changes to override methods across branches |
+| `validate_override_annotations` | Require complete upstream annotations on Frappe overrides ([details](validate_override_annotations.md)) |
 | `add_translations` | Extract untranslated strings and translate them |
 | `sql_docstring_formatter` | Format SQL in Python docstrings via sqlglot |
 | `sql_registry` | Register SQL operations for tracking |

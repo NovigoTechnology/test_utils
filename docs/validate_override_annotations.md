@@ -1,0 +1,135 @@
+# Validate override annotations
+
+`validate_override_annotations` detects Frappe overrides missing upstream tracking metadata.
+It reads Python source with AST, without importing apps, starting a site, or accessing the network.
+Use it alongside [`track_overrides`](actions/track_overrides.md), which compares annotated
+implementations against upstream history.
+
+## Local use
+
+In a Bench layout, dependencies are sibling repositories:
+
+```text
+apps/
+  frappe/frappe/
+  erpnext/erpnext/
+  nvg_base/nvg_base/
+  nagus/nagus/hooks.py
+```
+
+Run from the custom app repository:
+
+```bash
+validate_override_annotations --app nagus --apps-root ..
+# Equivalent defaults when running from apps/nagus:
+validate_override_annotations
+```
+
+`--app` accepts a repository path, package path, or app name under `--apps-root`.
+When omitted, `--apps-root` defaults to the parent of the custom app repository.
+The command exits with 0 when validation passes, or 1 for missing/invalid annotations,
+unresolved references, missing checkouts, or unsupported hook configuration.
+Errors include the custom file, line, symbol, and resolved upstream symbol.
+
+## Discovery
+
+The validator reads `required_apps` from the custom app's `hooks.py` and includes `frappe`
+implicitly. Entries can be app names (`erpnext`) or GitHub repository names
+(`NovigoTechnology/nvg_base`). Repository names with hyphens are normalized to package
+names with underscores. All these apps must be checked out under `--apps-root`.
+Declare any additional apps needed to resolve the upstream class hierarchy too.
+
+It inspects these hooks:
+
+- `override_whitelisted_methods`: resolves each original function and its replacement.
+- `override_doctype_class`: resolves registered classes and their inherited methods.
+- `extend_doctype_class`: also finds the upstream DocType controller, so mixins without
+  an explicit upstream base class are checked.
+
+Imported bases, aliases, relative imports, re-exports, and multiple inheritance use
+AST resolution. Methods are matched using Python's C3 inheritance order. Functions and
+methods may be async or have return annotations. New helper methods absent from the
+upstream hierarchy do not need annotations. A previously annotated method that no longer
+exists upstream is an error. Without an earlier annotation, a removed method cannot be
+distinguished from a new helper.
+
+`doc_events`, unrelated functions, and mock-based tests are not discovery sources.
+The validator reads only registered implementations and the source needed to resolve them.
+
+Hooks support static strings, dictionaries, lists/tuples, references to earlier static
+variables, concatenation, dictionary unpacking/union, and `+=`/`|=` assignments.
+Dynamic hook construction using application calls, conditional assignments, item mutations,
+or `.update()` is unsupported and must be rewritten as static assignments. Application
+code is never executed to obtain hook values. Dynamically computed class bases and wildcard
+imports cannot be resolved; use explicit imports and static base classes.
+
+## Required docstring
+
+Put all five fields in the overriding callable's own docstring:
+
+```python
+def get_coa(doctype: str) -> list:
+	"""
+	APP: nagus
+	HASH: cf4e3a0715d4fcb182d645c6fca72ae345c9761f
+	REPO: https://github.com/NovigoTechnology/erpnext
+	PATH: erpnext/accounts/utils.py
+	METHOD: get_coa
+	"""
+	...
+```
+
+- `APP` must identify the custom app containing the override (`nagus` here).
+- `HASH` must contain exactly 40 hexadecimal characters. This validator checks the SHA
+  format; historical commit availability and implementation drift are handled by
+  `track_overrides`. The hash need not equal the checkout's current HEAD.
+- `REPO` must match the upstream checkout's `origin` remote. HTTPS, SSH, SCP syntax,
+  `.git` suffixes, and trailing slashes are normalized for comparison. If no origin is
+  configured, an `owner/repository` entry in `required_apps` supplies a GitHub fallback.
+  A short app name alone does not identify a repository; configure its origin.
+- `PATH` must equal the repository-relative path of the resolved upstream implementation.
+- `METHOD` must identify that implementation within the file. Use `Ledger.validate` for
+  class methods. Legacy bare names such as `validate` are accepted only when unambiguous.
+  Methods inherited from another upstream class must name the class that defines them.
+
+Each field must appear exactly once. Annotations in comments, module docstrings, or class
+docstrings do not cover a function or method.
+
+## Pre-commit
+
+Replace `<tag-or-commit>` with a release or full commit SHA containing the new hook:
+
+```yaml
+- repo: https://github.com/NovigoTechnology/test_utils
+  rev: <tag-or-commit>
+  hooks:
+    - id: validate_override_annotations
+      args: ["--app", "nagus", "--apps-root", ".."]
+      pass_filenames: false
+      always_run: true
+
+    - id: track_overrides
+      args: ["--app", "nagus", "--base-branch", "nvg-develop"]
+      pass_filenames: false
+      always_run: true
+```
+
+The new hook discovers untracked overrides; `track_overrides` detects changes to the
+upstream implementations of overrides that already have metadata. Both support qualified
+`METHOD` values. Tracking reports upstream method removal and unresolved symbols, rather
+than treating a missing method as unchanged.
+
+## CI checkouts
+
+CI must explicitly check out the custom app, Frappe, and each `required_apps` dependency
+into sibling directories before running validation. For example, if the custom checkout
+is `apps/nagus`, use checkout paths `apps/frappe`, `apps/erpnext`, and `apps/nvg_base`, then:
+
+```bash
+validate_override_annotations --app apps/nagus --apps-root apps
+```
+
+Select dependency repositories and refs in the workflow to match the supported app versions.
+The validator uses the checked-out source and origin; it does not infer a branch from an
+app name, fetch dependencies, or select a public repository in place of a checked-out fork.
+Shallow checkouts work because annotation validation does not require historical commits.
