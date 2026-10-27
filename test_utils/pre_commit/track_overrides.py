@@ -72,7 +72,7 @@ def check_tracked_methods(repo_directory, base_branch, apps_filter=None):
 	unverified = []
 	pattern = (
 		r"(?:APP:\s*([\w_-]+)\s+)?"
-		r"HASH:\s*(\w+)\s*REPO:\s*([\w\/:.]+)\s*PATH:\s*([\w\/.]+)\s*METHOD:\s*([\w]+)"
+		r"HASH:\s*(\w+)\s*REPO:\s*([^\s]+)\s*PATH:\s*([\w/.-]+)\s*METHOD:\s*([\w.]+)"
 	)
 	for file_path, source_code in get_all_python_files(repo_directory):
 		for match in re.finditer(pattern, source_code, re.DOTALL):

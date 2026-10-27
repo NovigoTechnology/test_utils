@@ -35,7 +35,7 @@ def compare_commit_hashes(directory):
 	changed_methods = []
 	pattern = (
 		r"(?:APP:\s*([\w_-]+)\s+)?"
-		r"HASH:\s*(\w+)\s*REPO:\s*([\w\/:.]+)\s*PATH:\s*([\w\/.]+)\s*METHOD:\s*([\w]+)"
+		r"HASH:\s*(\w+)\s*REPO:\s*([^\s]+)\s*PATH:\s*([\w/.-]+)\s*METHOD:\s*([\w.]+)"
 	)
 
 	for root, _, files in os.walk(directory):
