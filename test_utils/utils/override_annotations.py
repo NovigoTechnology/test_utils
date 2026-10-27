@@ -14,7 +14,16 @@ from test_utils.utils.override_metadata import (
 	parse_annotation,
 	repository_identity,
 )
-from test_utils.utils.python_source import FUNCTION_NODES, find_definition, find_function, scope_statements
+from test_utils.utils.python_source import (
+	FUNCTION_NODES,
+	definition_expressions,
+	executable_nodes,
+	find_definition,
+	find_function,
+	scope_bindings,
+	scope_statements,
+	static_attribute,
+)
 
 HOOKS = {"required_apps", "override_whitelisted_methods", "override_doctype_class", "extend_doctype_class"}
 
@@ -86,6 +95,26 @@ def mutation_references(node, functions=None, seen=frozenset(), controlled=False
 	if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
 		if controlled and not isinstance(node, ast.Lambda):
 			yield ast.copy_location(ast.Name(id=node.name, ctx=ast.Store()), node)
+		for expression in definition_expressions(node):
+			yield from mutation_references(expression, functions, seen, controlled)
+		for decorator in getattr(node, "decorator_list", []):
+			# A bare decorator is called implicitly after evaluating the definition.
+			call = ast.copy_location(ast.Call(func=decorator, args=[], keywords=[]), decorator)
+			yield from mutation_references(call, functions, seen, controlled)
+		if isinstance(node, ast.ClassDef):
+			for statement in node.body:
+				for child in executable_nodes(statement):
+					if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
+						# Class-local aliases of known containers are unsupported: taint
+						# their source rather than silently ignoring later mutations.
+						yield child
+					elif isinstance(child, ast.Call):
+						yield from mutation_references(child, functions, seen)
+					elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+						yield from mutation_references(child, functions, seen)
+					elif isinstance(child, ast.Global):
+						for name in child.names:
+							yield ast.copy_location(ast.Name(id=name, ctx=ast.Store()), child)
 		return
 	if controlled:
 		binding = None
@@ -152,8 +181,13 @@ def read_hooks(path: Path, *, only: set[str] | None = None) -> dict:
 					values.pop(name, None)
 					functions.pop(name, None)
 			for child in ast.walk(reference):
-				if isinstance(child, ast.Name) and child.id in values:
-					invalid.update(mutable_objects(values[child.id]))
+				if isinstance(child, ast.Name):
+					if isinstance(child.ctx, (ast.Store, ast.Del)) and child.id in selected:
+						raise ResolutionError(
+							f"{path}:{child.lineno}: dynamic configuration of {child.id}; use static assignments"
+						)
+					if child.id in values:
+						invalid.update(mutable_objects(values[child.id]))
 					if isinstance(child.ctx, (ast.Store, ast.Del)):
 						values.pop(child.id, None)
 						functions.pop(child.id, None)
@@ -225,7 +259,11 @@ def read_hooks(path: Path, *, only: set[str] | None = None) -> dict:
 						values.pop(target.id, None)
 						functions.pop(target.id, None)
 			# Conditional assignments and mutations must not silently hide registrations.
-			for child in ast.walk(node):
+			for child in (
+				[]
+				if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+				else ast.walk(node)
+			):
 				if isinstance(child, ast.Name) and child.id in selected:
 					raise ResolutionError(
 						f"{path}:{child.lineno}: dynamic configuration of {child.id}; use top-level static assignments"
@@ -317,7 +355,7 @@ class Module:
 class Symbol:
 	module: Module
 	qualname: str
-	node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+	node: ast.AST
 
 	@property
 	def reference(self) -> str:
@@ -358,7 +396,12 @@ class SourceResolver:
 				node = find_definition(module.tree, ".".join(remaining))
 				if node is not None:
 					return Symbol(module, ".".join(remaining), node)
-				if remaining[0] in module.imports:
+				bindings = scope_bindings(module.tree.body).get(remaining[0], [])
+				if (
+					remaining[0] in module.imports
+					and len(bindings) == 1
+					and isinstance(bindings[0], ast.alias)
+				):
 					return self.resolve(".".join([module.imports[remaining[0]], *remaining[1:]]), seen)
 				raise ResolutionError(
 					f"Upstream symbol {reference} not found in {path}; it may have been removed or renamed"
@@ -371,9 +414,14 @@ class SourceResolver:
 		result = []
 		for base in symbol.node.bases:
 			name = dotted_name(base)
-			if name in {"object", "typing.Protocol", "Protocol", "ABC", "abc.ABC"}:
-				continue
 			first, *rest = name.split(".")
+			bindings = scope_bindings(symbol.module.tree.body).get(first, [])
+			if name == "object" and not bindings:
+				continue
+			if first in symbol.module.imports and (
+				len(bindings) != 1 or not isinstance(bindings[0], ast.alias)
+			):
+				raise ResolutionError(f"Cannot resolve rebound base {name!r} in {symbol.module.path}")
 			reference = ".".join([symbol.module.imports.get(first, f"{symbol.module.name}.{first}"), *rest])
 			if reference in {"abc.ABC", "typing.Protocol", "typing_extensions.Protocol", "builtins.object"}:
 				continue
@@ -538,10 +586,7 @@ class AnnotationValidator:
 			if extension is None:
 				extension = (doctype, replacement) in hook_mapping(hooks, "extend_doctype_class")
 			if extension:
-				controller = self.extension_controller(doctype, hooks)
-				if controller is None:
-					raise ResolutionError(f"Cannot resolve upstream controller for DocType {doctype!r}")
-				hierarchy = self.resolver.compose([custom, controller])
+				hierarchy = self.extension_hierarchy(doctype, custom, hooks)
 			else:
 				# A replacement class uses its declared bases; it does not inherit the
 				# original controller merely because it is registered for that DocType.
@@ -553,39 +598,50 @@ class AnnotationValidator:
 				)
 			# Include inherited methods from local mixins, not just the registered class.
 			methods = {}
+			class_bindings = {owner.reference: scope_bindings(owner.node.body) for owner in hierarchy}
 			for owner in hierarchy:
-				for node in scope_statements(owner.node.body):
-					if isinstance(node, FUNCTION_NODES) and node.name not in methods:
-						methods[node.name] = Symbol(owner.module, f"{owner.qualname}.{node.name}", node)
-			for name, method in methods.items():
+				for name, declarations in class_bindings[owner.reference].items():
+					if name not in methods:
+						methods[name] = (
+							owner,
+							Symbol(owner.module, f"{owner.qualname}.{name}", declarations[0]),
+						)
+			for name, (method_owner, method) in methods.items():
 				if method.module.app.name != self.app.name:
 					continue
 				original = None
+				upstream_owner = None
 				for owner in upstream_classes:
+					if name not in class_bindings[owner.reference]:
+						continue
+					upstream_owner = owner
 					node = find_function(owner.module.tree, f"{owner.qualname}.{name}")
 					if isinstance(node, FUNCTION_NODES):
 						original = Symbol(owner.module, f"{owner.qualname}.{name}", node)
-						break
-				owner = find_definition(method.module.tree, method.qualname.rsplit(".", 1)[0])
+					# A descriptor or assignment shadows the same name on every ancestor.
+					break
 				definitions = [
 					node
-					for node in scope_statements(owner.body)
-					if isinstance(node, FUNCTION_NODES) and node.name == name
+					for node in class_bindings[method_owner.reference][name]
+					if isinstance(node, FUNCTION_NODES)
 				]
 				annotated = any(parse_annotation(ast.get_docstring(node) or "")[0] for node in definitions)
-				upstream_defines_name = any(
-					isinstance(node, FUNCTION_NODES) and node.name == name
-					for owner in upstream_classes
-					for node in scope_statements(owner.node.body)
-				)
-				if not original and not annotated and not upstream_defines_name:
+				if upstream_owner is None and not annotated:
 					# Helper descriptors may define a getter and setter with the same name.
 					continue
+				if (
+					upstream_owner is not None
+					and static_attribute(class_bindings[method_owner.reference][name])
+					and static_attribute(class_bindings[upstream_owner.reference][name])
+				):
+					# Ordinary data attributes do not become method overrides merely
+					# because both the controller and customization declare them.
+					continue
 				concrete = find_function(method.module.tree, method.qualname)
-				if concrete is None or (original is None and upstream_defines_name):
+				if concrete is None or (original is None and upstream_owner is not None):
 					self.error(
 						method,
-						original.reference if original else f"DocType {doctype}",
+						f"{upstream_owner.reference}.{name}" if upstream_owner else f"DocType {doctype}",
 						f"Cannot resolve concrete implementation of overriding method {method.reference}",
 					)
 					continue
@@ -600,6 +656,36 @@ class AnnotationValidator:
 					)
 		except ResolutionError as exc:
 			self.error(custom, f"DocType {doctype}", str(exc))
+
+	def extension_hierarchy(self, doctype: str, custom: Symbol, hooks: dict) -> list[Symbol]:
+		"""Compose known mixin order; fail closed when dependency app order is unknown."""
+		controller = self.extension_controller(doctype, hooks)
+		if controller is None:
+			raise ResolutionError(f"Cannot resolve upstream controller for DocType {doctype!r}")
+		paths = [value for key, value in hook_mapping(hooks, "extend_doctype_class") if key == doctype]
+		dependency_extensions = []
+		for app in self.resolver.apps.values():
+			path = app.package / "hooks.py"
+			if app.name == self.app.name or not path.is_file():
+				continue
+			registered = read_hooks(path, only={"extend_doctype_class"})
+			matches = [
+				value for key, value in hook_mapping(registered, "extend_doctype_class") if key == doctype
+			]
+			if matches:
+				dependency_extensions.append(matches)
+		if len(dependency_extensions) > 1:
+			raise ResolutionError(
+				f"Unresolved extension composition for {doctype}: installed dependency app order is unavailable"
+			)
+		mixins = [self.resolver.resolve(path) for path in reversed(paths)]
+		if not any(mixin.reference == custom.reference for mixin in mixins):
+			raise ResolutionError(f"Extension {custom.reference} is not registered for DocType {doctype!r}")
+		if dependency_extensions:
+			mixins.extend(self.resolver.resolve(path) for path in reversed(dependency_extensions[0]))
+		if any(not isinstance(mixin.node, ast.ClassDef) for mixin in mixins):
+			raise ResolutionError(f"Extensions for {doctype} must resolve to classes")
+		return self.resolver.compose([*mixins, controller])
 
 	def extension_controller(self, doctype: str, hooks: dict) -> Symbol | None:
 		"""Frappe applies class replacement before composing extension mixins."""

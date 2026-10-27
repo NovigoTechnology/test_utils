@@ -59,6 +59,11 @@ It inspects these hooks:
   Conflicting dependency replacements are reported as ambiguous because installed app order
   cannot be inferred from source checkouts.
 
+Extension mixins from a dependency are included before the controller in the C3 hierarchy.
+Mixins within an app follow reverse registration order, as in Frappe. When several dependency
+apps register extensions for the same DocType, validation reports an unresolved composition:
+the checkouts alone do not establish their installed app order.
+
 Imported bases, aliases, relative imports, re-exports, and multiple inheritance use
 AST resolution. Methods are matched using Python's C3 inheritance order. Functions and
 methods may be async or have return annotations. Overload declarations from typing or
@@ -67,8 +72,18 @@ or ambiguous definition is reported as unresolved. Extension/controller composit
 while replacement classes use only their declared bases. New helper methods absent from the
 upstream hierarchy do not need annotations, including properties with getters and setters.
 An overriding descriptor that cannot resolve to one concrete callable is reported as unresolved;
-validation continues for the remaining methods. Imported aliases for `abc.ABC`, `typing.Protocol`,
+validation continues for the remaining methods. Resolution stops at the first upstream class
+declaring an attribute, including descriptors and assigned attributes; it never falls through
+to an ancestor hidden by that declaration. Class-level callable aliases such as
+`validate = custom_validate`, and reassigned/deleted callable names, are reported as unresolved
+when they replace an upstream method. Define the overriding method explicitly with `def` or
+`async def` and put its metadata on that definition. A registered function that is rebound
+after its definition cannot reuse the old definition's metadata.
+Plain literal data attributes redeclared in both classes do not require method annotations.
+Imported aliases for `abc.ABC`, `typing.Protocol`,
 `typing_extensions.Protocol`, and `builtins.object` do not require application checkouts.
+Application classes imported or declared under names such as `ABC` or `Protocol` remain part
+of the hierarchy; only resolved standard-library identities are excluded.
 A previously annotated method that no longer
 exists upstream is an error. Without an earlier annotation, a removed method cannot be
 distinguished from a new helper.
@@ -89,6 +104,13 @@ alias invalidates that binding too. Hook-binding imports and wildcard imports in
 are rejected; imports cannot reuse an earlier static binding. Application code is never
 executed to obtain hook values. Dynamically computed class bases cannot be resolved;
 use explicit imports and static base classes.
+
+Definition-time effects also count: decorators, default argument values (including lambdas),
+and executable class bodies can change a hook container. Unsupported effects invalidate the
+container instead of silently producing an empty registry. Class-local aliases of a known
+hook container are conservatively unsupported. Deferred function and method bodies are not
+treated as executed merely because they are defined. Conditional hook bindings, including
+match captures and exception aliases, are rejected even when no earlier hook value exists.
 
 ## Required docstring
 
