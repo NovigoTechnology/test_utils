@@ -5,6 +5,7 @@ import os
 
 import requests
 
+from test_utils.utils.override_metadata import github_repository
 from test_utils.utils.python_source import extract_function
 
 
@@ -13,8 +14,10 @@ class UpstreamFetchError(Exception):
 
 
 def download_file_from_commit(repo_url, commit_hash, file_path):
-	repo_url_split = repo_url.strip("/").split("/")
-	username, repo_name = repo_url_split[-2], repo_url_split[-1]
+	try:
+		username, repo_name = github_repository(repo_url)
+	except ValueError as exc:
+		raise UpstreamFetchError(str(exc)) from exc
 	token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
 
 	if token:

@@ -33,11 +33,20 @@ Errors include the custom file, line, symbol, and resolved upstream symbol.
 
 ## Discovery
 
-The validator reads `required_apps` from the custom app's `hooks.py` and includes `frappe`
-implicitly. Entries can be app names (`erpnext`) or GitHub repository names
+The validator reads `required_apps` transitively from the custom app and each dependency's
+`hooks.py`, and includes `frappe` implicitly. Entries can be app names (`erpnext`) or GitHub repository names
 (`NovigoTechnology/nvg_base`). Repository names with hyphens are normalized to package
 names with underscores. All these apps must be checked out under `--apps-root`.
-Declare any additional apps needed to resolve the upstream class hierarchy too.
+Every transitive dependency must also be available under `--apps-root`. If an app's
+`required_apps` declaration is incomplete, explicitly add resolution dependencies with
+repeatable `--dependency` arguments, for example:
+
+```bash
+validate_override_annotations --app blindaris --apps-root .. --dependency nagus --dependency nvg_base
+```
+
+These arguments supplement static analysis; they do not change runtime Frappe hooks.
+Prefer keeping the application's `required_apps` declaration accurate.
 
 It inspects these hooks:
 
@@ -48,7 +57,10 @@ It inspects these hooks:
 
 Imported bases, aliases, relative imports, re-exports, and multiple inheritance use
 AST resolution. Methods are matched using Python's C3 inheritance order. Functions and
-methods may be async or have return annotations. New helper methods absent from the
+methods may be async or have return annotations. Overload declarations from typing or
+typing_extensions are excluded when selecting the concrete implementation; an overload-only
+or ambiguous definition is reported as unresolved. Extension/controller composition uses C3,
+while replacement classes use only their declared bases. New helper methods absent from the
 upstream hierarchy do not need annotations. A previously annotated method that no longer
 exists upstream is an error. Without an earlier annotation, a removed method cannot be
 distinguished from a new helper.
@@ -59,7 +71,10 @@ The validator reads only registered implementations and the source needed to res
 Hooks support static strings, dictionaries, lists/tuples, references to earlier static
 variables, concatenation, dictionary unpacking/union, and `+=`/`|=` assignments.
 Dynamic hook construction using application calls, conditional assignments, item mutations,
-or `.update()` is unsupported and must be rewritten as static assignments. Application
+or `.update()` is unsupported and must be rewritten as static assignments. This includes
+mutations through aliases and nested containers, before or after assigning the hook.
+Unsupported operations touching a hook container invalidate its aliases, rather than
+silently yielding an empty registration. Application
 code is never executed to obtain hook values. Dynamically computed class bases and wildcard
 imports cannot be resolved; use explicit imports and static base classes.
 
@@ -83,7 +98,8 @@ def get_coa(doctype: str) -> list:
 - `HASH` must contain exactly 40 hexadecimal characters. This validator checks the SHA
   format; historical commit availability and implementation drift are handled by
   `track_overrides`. The hash need not equal the checkout's current HEAD.
-- `REPO` must match the upstream checkout's `origin` remote. HTTPS, SSH, SCP syntax,
+- `REPO` must identify a GitHub repository supported by the trackers and match the upstream
+  checkout's `origin` remote. HTTPS, SSH, SCP syntax,
   `.git` suffixes, and trailing slashes are normalized for comparison. If no origin is
   configured, an `owner/repository` entry in `required_apps` supplies a GitHub fallback.
   A short app name alone does not identify a repository; configure its origin.
@@ -92,7 +108,8 @@ def get_coa(doctype: str) -> list:
   class methods. Legacy bare names such as `validate` are accepted only when unambiguous.
   Methods inherited from another upstream class must name the class that defines them.
 
-Each field must appear exactly once. Annotations in comments, module docstrings, or class
+Fields may appear in any order, with prose between them. Validation and both trackers
+share the same field parser. Each field must appear exactly once. Annotations in comments, module docstrings, or class
 docstrings do not cover a function or method.
 
 ## Pre-commit
@@ -121,7 +138,7 @@ than treating a missing method as unchanged.
 
 ## CI checkouts
 
-CI must explicitly check out the custom app, Frappe, and each `required_apps` dependency
+CI must explicitly check out the custom app, Frappe, and every direct or transitive `required_apps` dependency
 into sibling directories before running validation. For example, if the custom checkout
 is `apps/nagus`, use checkout paths `apps/frappe`, `apps/erpnext`, and `apps/nvg_base`, then:
 

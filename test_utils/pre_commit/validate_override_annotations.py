@@ -18,11 +18,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 		type=Path,
 		help="Directory containing dependency checkouts (default: sibling app repositories)",
 	)
+	parser.add_argument(
+		"--dependency",
+		action="append",
+		default=[],
+		help="Additional app or owner/repository needed for resolution; repeat when required_apps is incomplete",
+	)
 	args = parser.parse_args(argv)
 	app_path = Path(args.app)
 	if not app_path.exists() and args.apps_root:
 		app_path = args.apps_root / args.app
-	result = validate_overrides(app_path, args.apps_root)
+	result = validate_overrides(app_path, args.apps_root, args.dependency)
 	for error in result.errors:
 		print(error, file=sys.stderr)
 	print(

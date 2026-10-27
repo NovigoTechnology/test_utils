@@ -28,7 +28,11 @@ METHOD: <method_name>
 - **PATH**: Path to the file in the upstream repo.
 - **METHOD**: Function name or qualified class method (`Ledger.validate`). Use qualified names when multiple classes define a method with the same name.
 
-Source extraction uses AST and supports async methods and return annotations. Removed or
+Source extraction uses AST and supports async methods and return annotations.
+The concrete implementation of an overloaded function is selected; declaration-only or
+ambiguous symbols are reported for review. Annotation fields can be reordered or separated
+by prose. HTTPS, SSH and SCP GitHub URLs, including .git suffixes, are normalized before
+calling the API. Legacy complete annotations in comment blocks remain supported by tracking. Removed or
 unresolvable methods are reported for review.
 
 Use [`validate_override_annotations`](../validate_override_annotations.md) alongside tracking
