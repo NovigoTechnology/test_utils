@@ -50,6 +50,15 @@
   exclude: ^tests/
   args: ["--install-types", "--non-interactive", "--ignore-missing-imports"]
 
+- id: validate_override_annotations
+  name: validate_override_annotations
+  description: "Require complete upstream annotations on Frappe overrides using local app checkouts"
+  entry: validate_override_annotations
+  language: python
+  require_serial: true
+  pass_filenames: false
+  always_run: true
+
 - id: track_overrides
   name: track_overrides
   description: "Track changes in override methods (requires args: --app APP, --base-branch BRANCH)"
