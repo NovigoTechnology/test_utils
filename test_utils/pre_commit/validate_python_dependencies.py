@@ -1,16 +1,47 @@
 import argparse
 import pathlib
 import sys
+import tomllib
 from collections.abc import Sequence
 
-import toml
+from packaging.markers import Marker
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.utils import canonicalize_name
 
 
 def get_dependencies(app):
 	apps_dir = pathlib.Path().resolve().parent
 	if pathlib.Path.exists(apps_dir / app / "pyproject.toml"):
-		with open(apps_dir / app / "pyproject.toml") as f:
-			return toml.load(f)
+		with open(apps_dir / app / "pyproject.toml", "rb") as f:
+			return tomllib.load(f)
+
+
+def poetry_versions(app, dependencies):
+	if not isinstance(dependencies, dict):
+		raise ValueError(f"{app}/pyproject.toml: tool.poetry.dependencies must be a table")
+	versions = {}
+	for package, declaration in dependencies.items():
+		if package == "python":
+			continue
+		if isinstance(declaration, dict):
+			if declaration.get("markers") and not Marker(declaration["markers"]).evaluate():
+				continue
+			declaration = declaration.get("version", "*")
+		if not isinstance(declaration, str):
+			raise ValueError(f"{app}/pyproject.toml: unsupported Poetry dependency declaration for {package}")
+		constraint = declaration.strip()
+		if constraint == "*":
+			constraint = ""
+		elif constraint[:1].isdigit():
+			constraint = "==" + constraint
+		try:
+			constraint = str(SpecifierSet(constraint))
+		except InvalidSpecifier:
+			# Poetry caret, tilde and union syntax is compared as declared.
+			constraint = declaration.strip()
+		versions[canonicalize_name(package)] = constraint
+	return versions
 
 
 def get_versions(app):
@@ -18,36 +49,32 @@ def get_versions(app):
 	if not pyproject_toml:
 		return {}
 
-	if pyproject_toml.get("build-system", {}).get("build-backend") == "flit_core.buildapi":
-		dependencies = pyproject_toml.get("project", {}).get("dependencies", [])
-	elif pyproject_toml.get("build-system", {}).get("build-backend") == "poetry.core.masonry.api":
-		dependencies = pyproject_toml.get("tool", {}).get("poetry", {}).get("dependencies", [])
-
+	project = pyproject_toml.get("project", {})
+	if "dependencies" not in project:
+		return poetry_versions(app, pyproject_toml.get("tool", {}).get("poetry", {}).get("dependencies", {}))
+	dependencies = project["dependencies"]
+	if not isinstance(dependencies, list):
+		raise ValueError(f"{app}/pyproject.toml: project.dependencies must be a list of requirement strings")
 	dependency_objects = {}
-	for dep in dependencies:
-		if "==" in dep:
-			package, version = dep.split("==")
-		elif "~=" in dep:
-			package, version = dep.split("~=")
-			version = "~" + version
-		elif ">=" in dep:
-			package, version = dep.split(">=")
-			version = ">=" + version
-		elif "<=" in dep:
-			package, version = dep.split("<=")
-			version = "<=" + version
-		else:
-			package = dep
-			version = ""
-
-		dependency_objects[package] = version
+	for index, dep in enumerate(dependencies, start=1):
+		try:
+			requirement = Requirement(dep)
+		except InvalidRequirement, TypeError:
+			raise ValueError(
+				f"{app}/pyproject.toml: invalid project.dependencies entry #{index}; expected a PEP 508 requirement"
+			) from None
+		if requirement.marker is not None and not requirement.marker.evaluate():
+			continue
+		package = canonicalize_name(requirement.name)
+		constraints = [dependency_objects.get(package, ""), str(requirement.specifier)]
+		dependency_objects[package] = str(SpecifierSet(",".join(filter(None, constraints))))
 
 	return dependency_objects
 
 
 def get_mismatched_versions():
 	apps_order = pathlib.Path().resolve().parent.parent / "sites" / "apps.txt"
-	apps_order = apps_order.read_text().split("\n")
+	apps_order = [app.strip() for app in apps_order.read_text().splitlines() if app.strip()]
 	exceptions = []
 	app_packages = {app: get_versions(app) for app in apps_order}
 	for app, packages in app_packages.items():
@@ -73,7 +100,11 @@ def main(argv: Sequence[str] | None = None):
 	parser.add_argument("filenames", nargs="*")
 	_args = parser.parse_args(argv)
 
-	exceptions = get_mismatched_versions()
+	try:
+		exceptions = get_mismatched_versions()
+	except (OSError, ValueError) as exc:
+		print(f"validate_python_dependencies: {exc}", file=sys.stderr)
+		return 1
 	if exceptions:
 		for exception in exceptions:
 			for package, apps in exception.items():
@@ -81,4 +112,8 @@ def main(argv: Sequence[str] | None = None):
 				for app, version in apps.items():
 					print(f"{app}: {version}")
 
-	sys.exit(1) if exceptions else sys.exit(0)
+	return 1 if exceptions else 0
+
+
+if __name__ == "__main__":
+	sys.exit(main())
