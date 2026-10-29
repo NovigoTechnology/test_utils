@@ -5,7 +5,9 @@ Replace `<tag-or-commit>` with a published Novigo tag or full commit SHA contain
 `track-overrides` is a GitHub Action designed to track method overrides in Python projects.
 It automatically detects the base branch from the pull request that triggers the action and compares the code changes in the pull request against the corresponding branch in the repository specified in the method annotations.
 
-This comparison is performed using the commit hash associated with each method. If the overridden method and the upstream method have different commit hashes, the action will indicate that the overridden method has changed. This seamless comparison capability enables efficient tracking of method overrides across different branches and repositories.
+Tracking compares the annotated upstream implementation at `HASH` with the selected upstream
+revision. Different hashes alone do not imply drift: the tracked implementation must differ.
+An invalid or unavailable baseline is reported as unverified, never as unchanged.
 
 
 ## Method Annotation
@@ -54,6 +56,32 @@ def is_system_manager_disabled(user):
 
 ## Pre-commit Usage
 
+From an app repository in a Bench, no arguments are needed:
+
+```yaml
+- id: track_overrides
+```
+
+The CLI scans the current Git repository (also when invoked from a subdirectory) and compares
+against the committed `HEAD` of each annotated upstream repository. It discovers sibling app
+checkouts, or app checkouts under `apps/`, by matching `REPO` against their configured Git
+remotes. Remote names such as `origin` and `upstream`, and detached HEADs, are supported.
+Uncommitted dependency edits are not part of this comparison.
+
+Historical baseline source is read locally when available. For shallow histories it falls
+back to GitHub; private repositories require `GH_TOKEN` or `GITHUB_TOKEN`. Missing or ambiguous
+checkouts produce exit 2 with guidance to select `--apps-root` or a remote `--base-branch`.
+
+```bash
+track_overrides
+track_overrides --apps-root ../
+```
+
+Exit codes are 0 for no detected drift, 1 for changes/removal/unresolved tracked methods, and
+2 for unverified upstream source or invalid configuration. A scan without annotations exits 0.
+The CLI prints the scan directory and comparison target rather than silently skipping work.
+
+Use `--base-branch` to explicitly compare with a remote branch/ref instead of local HEAD.
 For **monorepos** (bench structure with apps/frappe, apps/erpnext, etc.), use `--directory .` to scan
 the entire workspace—matching GHA behavior. Optionally add `--app` to limit which apps are checked:
 

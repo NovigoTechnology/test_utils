@@ -61,7 +61,7 @@
 
 - id: track_overrides
   name: track_overrides
-  description: "Track changes in override methods (requires args: --app APP, --base-branch BRANCH)"
+  description: "Track annotated overrides against local dependency HEAD by default; optional remote branch comparison"
   entry: track_overrides
   language: python
   require_serial: true
