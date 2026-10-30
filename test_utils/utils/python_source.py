@@ -1,25 +1,24 @@
 """Scope-aware Python source inspection without importing application code."""
 
 import ast
-from collections.abc import Iterator
 from dataclasses import dataclass
 
-FUNCTION_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
-DEFINITION_NODES = (*FUNCTION_NODES, ast.ClassDef)
-
-
-def scope_statements(body: list[ast.stmt]) -> Iterator[ast.stmt]:
-	"""Include conditional definitions/imports, but never descend into another scope."""
-	for node in body:
-		yield node
-		if not isinstance(node, DEFINITION_NODES):
-			for _, value in ast.iter_fields(node):
-				if isinstance(value, list):
-					for child in value:
-						if isinstance(child, ast.stmt):
-							yield from scope_statements([child])
-						elif isinstance(child, (ast.ExceptHandler, ast.match_case)):
-							yield from scope_statements(child.body)
+from test_utils.utils.python_ast import (
+	DEFINITION_NODES as DEFINITION_NODES,
+)
+from test_utils.utils.python_ast import (
+	FUNCTION_NODES as FUNCTION_NODES,
+)
+from test_utils.utils.python_ast import (
+	definition_expressions as definition_expressions,
+)
+from test_utils.utils.python_ast import (
+	scope_bindings as scope_bindings,
+)
+from test_utils.utils.python_ast import (
+	scope_statements as scope_statements,
+)
+from test_utils.utils.python_scope import EffectAnalyzer
 
 
 def overload_names(body):
@@ -44,18 +43,6 @@ def decorator_name(node):
 	return ""
 
 
-def definition_expressions(node):
-	"""Expressions evaluated when a function, lambda or class is defined."""
-	if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-		yield from node.decorator_list
-	if isinstance(node, ast.ClassDef):
-		yield from node.bases
-		yield from (keyword.value for keyword in node.keywords)
-	else:
-		yield from node.args.defaults
-		yield from (value for value in node.args.kw_defaults if value is not None)
-
-
 def executable_nodes(node):
 	"""Walk definition-time expressions and class bodies, excluding deferred function bodies."""
 	yield node
@@ -69,61 +56,6 @@ def executable_nodes(node):
 		children = ast.iter_child_nodes(node)
 	for child in children:
 		yield from executable_nodes(child)
-
-
-def scope_bindings(body):
-	"""All declarations of each name, without confusing nested lexical scopes."""
-	bindings = {}
-
-	def add(name, node):
-		if name:
-			bindings.setdefault(name, []).append(node)
-
-	def visit(node):
-		if isinstance(node, DEFINITION_NODES):
-			add(node.name, node)
-			for expression in definition_expressions(node):
-				visit(expression)
-			return
-		if isinstance(node, ast.Lambda):
-			for expression in definition_expressions(node):
-				visit(expression)
-			return
-		if isinstance(node, ast.AnnAssign) and node.value is None:
-			return
-		if isinstance(node, (ast.Assign, ast.AnnAssign)):
-			targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-			for target in targets:
-				for name in ast.walk(target):
-					if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store):
-						add(name.id, node)
-			visit(node.value)
-			return
-		if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
-			add(node.id, node)
-		elif isinstance(node, (ast.Import, ast.ImportFrom)):
-			for alias in node.names:
-				add(
-					alias.asname
-					or (alias.name.split(".")[0] if isinstance(node, ast.Import) else alias.name),
-					alias,
-				)
-		elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
-			add(node.name, node)
-		elif isinstance(node, ast.MatchMapping):
-			add(node.rest, node)
-		if isinstance(node, ast.comprehension):
-			# Comprehension loop variables belong to the comprehension's scope.
-			visit(node.iter)
-			for condition in node.ifs:
-				visit(condition)
-			return
-		for child in ast.iter_child_nodes(node):
-			visit(child)
-
-	for statement in body:
-		visit(statement)
-	return bindings
 
 
 def static_attribute(bindings):
@@ -154,7 +86,7 @@ def runtime_body(body):
 	typing_names = {}
 	checking_names = set()
 	changed_modules = set()
-	functions = {}
+	analyzer = EffectAnalyzer()
 	for statement in body:
 		guard = isinstance(statement, ast.If) and (
 			(isinstance(statement.test, ast.Name) and statement.test.id in checking_names)
@@ -169,20 +101,12 @@ def runtime_body(body):
 		statements = statement.orelse if guard else [statement]
 		for active in statements:
 			bindings = set(scope_bindings([active]))
-			for node, global_names in called_export_effects(active, functions):
-				if global_names:
-					bindings.update(scope_bindings([node]).keys() & global_names)
-				if dynamic_namespace(node):
+			for effect in analyzer.scan(active):
+				bindings.update(effect.bindings)
+				if effect.namespace:
 					checking_names.clear()
 					changed_modules.update({"typing", "typing_extensions"})
-				if (
-					isinstance(node, ast.Attribute)
-					and isinstance(node.ctx, (ast.Store, ast.Del))
-					and node.attr == "TYPE_CHECKING"
-					and isinstance(node.value, ast.Name)
-					and node.value.id in typing_names
-				):
-					changed_modules.add(typing_names[node.value.id])
+				changed_modules.update(effect.typing_modules)
 			alias_module = (
 				typing_names.get(active.value.id)
 				if (isinstance(active, ast.Assign) and isinstance(active.value, ast.Name))
@@ -216,19 +140,16 @@ def runtime_body(body):
 					checking_names.discard(name)
 					if alias.name == "TYPE_CHECKING" and active.module not in changed_modules:
 						checking_names.add(name)
-			update_local_functions(active, functions)
 			yield active
 
 
 def ordered_bindings(body, name):
 	"""Keep declaration order and the statement responsible for each binding."""
-	functions = {}
+	analyzer = EffectAnalyzer()
 	for statement in runtime_body(body):
-		for node, global_names in called_export_effects(statement, functions):
-			if dynamic_namespace(node) or (
-				global_names and name in global_names and name in scope_bindings([node])
-			):
-				# Definition-time effects happen before the definition binds its own name.
+		effects = analyzer.scan(statement)
+		for effect in effects:
+			if effect.namespace or name in effect.bindings:
 				target = ast.copy_location(ast.Name(id=name, ctx=ast.Store()), statement)
 				yield Binding(target, statement, conditional=True)
 				break
@@ -245,7 +166,10 @@ def ordered_bindings(body, name):
 					if isinstance(child, (ast.Import, ast.ImportFrom)) and node in child.names
 				)
 			yield Binding(node, responsible, not direct)
-		update_local_functions(statement, functions)
+		if any(effect.replaced_definition == name for effect in effects):
+			yield Binding(
+				ast.copy_location(ast.Name(id=name, ctx=ast.Store()), statement), statement, conditional=True
+			)
 
 
 def select_binding(body, name, *, wildcard=None, overloads=()):
@@ -277,63 +201,6 @@ def select_binding(body, name, *, wildcard=None, overloads=()):
 	return None
 
 
-def update_local_functions(statement, functions):
-	"""Track local helper definitions and simple aliases in declaration order."""
-	alias = (
-		functions.get(statement.value.id)
-		if (isinstance(statement, ast.Assign) and isinstance(statement.value, ast.Name))
-		else None
-	)
-	for name in scope_bindings([statement]):
-		functions.pop(name, None)
-	if isinstance(statement, FUNCTION_NODES):
-		functions[statement.name] = statement
-	elif alias is not None:
-		for target in statement.targets:
-			if isinstance(target, ast.Name):
-				functions[target.id] = alias
-
-
-def dynamic_namespace(node):
-	return (
-		isinstance(node, ast.Call)
-		and isinstance(node.func, ast.Name)
-		and node.func.id in {"globals", "locals", "vars", "exec", "eval"}
-		# vars(obj) inspects that object's attributes, rather than the active namespace.
-		and (
-			node.func.id != "vars" or not node.args or any(isinstance(arg, ast.Starred) for arg in node.args)
-		)
-	)
-
-
-def called_export_effects(node, functions, seen=frozenset(), *, global_names=None):
-	"""Walk executed syntax and known helpers, retaining their explicit global bindings."""
-	for child in executable_nodes(node):
-		yield child, global_names
-		calls = []
-		if isinstance(child, ast.Call):
-			calls.append(child.func)
-		if isinstance(child, DEFINITION_NODES):
-			# Applying a bare decorator invokes it without an explicit Call in the AST.
-			calls.extend(item for item in child.decorator_list if isinstance(item, ast.Name))
-		for callee in calls:
-			function = functions.get(callee.id) if isinstance(callee, ast.Name) else None
-			if function is None or id(function) in seen:
-				continue
-			helper_globals = frozenset(
-				name
-				for statement in scope_statements(function.body)
-				if isinstance(statement, ast.Global)
-				for name in statement.names
-			)
-			local_functions = functions.copy()
-			for statement in function.body:
-				yield from called_export_effects(
-					statement, local_functions, seen | {id(function)}, global_names=helper_globals
-				)
-				update_local_functions(statement, local_functions)
-
-
 def mutable_objects(value, seen=None):
 	"""Keep identity across aliases, including containers nested inside other values."""
 	seen = set() if seen is None else seen
@@ -352,7 +219,7 @@ def static_exports(body, *, wildcard=None):
 	unknown = object()
 	values = {}
 	invalid = {}
-	functions = {}
+	analyzer = EffectAnalyzer()
 	last_reset = max(
 		(
 			statement.lineno
@@ -391,15 +258,19 @@ def static_exports(body, *, wildcard=None):
 				values[name] = unknown
 			if node.lineno >= last_reset and (wildcard is None or wildcard(node)):
 				values["__all__"] = unknown
-		for node, global_names in called_export_effects(statement, functions):
-			if dynamic_namespace(node):
+		for effect in analyzer.scan(statement):
+			node = effect.node
+			if effect.namespace:
 				raise AmbiguousBinding(f"dynamic namespace at line {node.lineno}")
-			if global_names:
-				for name in scope_bindings([node]).keys() & global_names:
-					values[name] = unknown
-			if isinstance(node, ast.Call) or (
-				isinstance(node, (ast.Subscript, ast.Attribute))
-				and isinstance(node.ctx, (ast.Store, ast.Del))
+			for name in effect.bindings:
+				values[name] = unknown
+			if (
+				effect.mutation
+				or isinstance(node, ast.Call)
+				or (
+					isinstance(node, (ast.Subscript, ast.Attribute))
+					and isinstance(node.ctx, (ast.Store, ast.Del))
+				)
 			):
 				for child in ast.walk(node):
 					if isinstance(child, ast.Name) and child.id in values:
@@ -430,7 +301,6 @@ def static_exports(body, *, wildcard=None):
 		else:
 			for name in scope_bindings([statement]):
 				values[name] = unknown
-		update_local_functions(statement, functions)
 	if "__all__" not in values:
 		return None
 	value = values["__all__"]

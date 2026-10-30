@@ -88,6 +88,9 @@ replaces it follows the actual defining module for `PATH` and `METHOD` validatio
 Imported class members also retain their defining module and callable name. Inherited
 methods use the class selected when the subclass was defined, even if a later import
 replaces that class's name in the module.
+Inheritance and method ownership distinguish separate class definitions even when they
+share a qualified name. A redefinition such as `class Base(Base)` therefore keeps its
+earlier base rather than being mistaken for a cycle.
 
 Circular re-exports can resolve an already defined class from the partially initialized
 module, as with Frappe's `File` controller and `frappe.core.api.file`. Proven
@@ -97,6 +100,8 @@ import or an intervening wildcard cannot prove the guard false.
 Writes or deletions of the typing module's `TYPE_CHECKING` attribute also invalidate the
 proof through its known module aliases. Importing that same module again does not reset
 the attribute; an already copied false `TYPE_CHECKING` constant keeps its value.
+This includes helper-local imports, aliases passed as parameters, and writes made with
+`setattr` or `delattr`, including known aliases of those builtins.
 Mutations or rebindings of export lists inside called local helpers, and unsupported
 unpacking assignments to `__all__` or its constant aliases, make exports ambiguous.
 The analysis includes bare local decorators, conditional wildcard imports, and mutations
@@ -104,9 +109,16 @@ through nested container aliases. Annotation-only declarations such as
 `__all__: list[str]` do not rebind an existing export list.
 Executed helpers that rebind public names declared `global` also make those names
 ambiguous, even without `__all__`; a later explicit definition establishes a new binding.
-Dynamic namespace operations reached through helpers are rejected. `vars(SomeClass)`
-inspects that object's attributes and does not replace its module binding.
-Uncalled function bodies and ordinary helper-local assignments do not rebind public names.
+Class bodies also honor their `global` declarations. Container aliases follow lexical
+scope through parameters, closures, `nonlocal` assignments, branches and loops. A helper
+that creates its own local `__all__` does not mutate the module's export list.
+Dynamic namespace operations reached through helpers or builtin aliases are rejected.
+`vars(value)` is exempt only when the value is proven to be a declared class, including
+known class aliases. `vars(sys.modules[__name__])` and unknown objects remain ambiguous.
+Known local decorators that replace or modify their argument make the decorated
+definition ambiguous; merely writing `return cls` is insufficient when `cls` is rebound
+or its attributes are assigned. Uncalled function bodies and ordinary helper-local
+assignments do not rebind public names.
 Dynamic exports, unavailable
 source, conditional replacements, and unresolved cycles produce an **ambiguous resolution**
 diagnostic naming the responsible import and location, rather than claiming a controller

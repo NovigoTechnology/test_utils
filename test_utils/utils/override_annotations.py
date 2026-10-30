@@ -357,6 +357,10 @@ class Symbol:
 	def reference(self) -> str:
 		return f"{self.module.name}.{self.qualname}"
 
+	@property
+	def identity(self):
+		return self.module.path, id(self.node)
+
 
 class SourceResolver:
 	def __init__(self, apps: list[App]):
@@ -582,14 +586,14 @@ class SourceResolver:
 		value = self.function_symbol(module, name)
 		return value.node if value is not None else None
 
-	def hierarchy(self, symbol: Symbol, seen: frozenset[str] = frozenset()) -> list[Symbol]:
+	def hierarchy(self, symbol: Symbol, seen: frozenset[tuple] = frozenset()) -> list[Symbol]:
 		"""Python C3 linearization, so multiple inheritance resolves the real owner."""
-		if symbol.reference in seen:
+		if symbol.identity in seen:
 			raise ResolutionError(f"Cyclic inheritance at {symbol.reference}")
 		bases = self.base_classes(symbol)
-		return [symbol, *self.compose(bases, seen | {symbol.reference})]
+		return [symbol, *self.compose(bases, seen | {symbol.identity})]
 
-	def compose(self, bases: list[Symbol], seen: frozenset[str] = frozenset()) -> list[Symbol]:
+	def compose(self, bases: list[Symbol], seen: frozenset[tuple] = frozenset()) -> list[Symbol]:
 		"""Linearize the bases of a synthetic Frappe extended controller."""
 		sequences = [self.hierarchy(base, seen) for base in bases] + [bases[:]]
 		result = []
@@ -599,7 +603,7 @@ class SourceResolver:
 				(
 					seq[0]
 					for seq in sequences
-					if all(seq[0].reference not in [s.reference for s in other[1:]] for other in sequences)
+					if all(seq[0].identity not in [s.identity for s in other[1:]] for other in sequences)
 				),
 				None,
 			)
@@ -609,7 +613,7 @@ class SourceResolver:
 				)
 			result.append(candidate)
 			for seq in sequences:
-				if seq[0].reference == candidate.reference:
+				if seq[0].identity == candidate.identity:
 					seq.pop(0)
 		return result
 
@@ -657,7 +661,7 @@ class AnnotationValidator:
 		self.app = app
 		self.resolver = resolver
 		self.result = ValidationResult()
-		self.checked: set[tuple[str, str]] = set()
+		self.checked: set[tuple] = set()
 
 	def error(self, custom: Symbol, upstream: str, message: str):
 		self.result.errors.append(
@@ -665,7 +669,7 @@ class AnnotationValidator:
 		)
 
 	def validate_annotation(self, custom: Symbol, upstream: Symbol):
-		key = (custom.reference, upstream.reference)
+		key = (custom.identity, upstream.identity)
 		if key in self.checked:
 			return
 		self.checked.add(key)
@@ -752,9 +756,9 @@ class AnnotationValidator:
 				)
 			# Include inherited methods from local mixins, not just the registered class.
 			methods = {}
-			class_bindings = {owner.reference: scope_bindings(owner.node.body) for owner in hierarchy}
+			class_bindings = {owner.identity: scope_bindings(owner.node.body) for owner in hierarchy}
 			for owner in hierarchy:
-				for name, declarations in class_bindings[owner.reference].items():
+				for name, declarations in class_bindings[owner.identity].items():
 					if name not in methods:
 						methods[name] = (
 							owner,
@@ -767,7 +771,7 @@ class AnnotationValidator:
 				upstream_owner = None
 				resolution_error = None
 				for owner in upstream_classes:
-					if name not in class_bindings[owner.reference]:
+					if name not in class_bindings[owner.identity]:
 						continue
 					upstream_owner = owner
 					try:
@@ -781,7 +785,7 @@ class AnnotationValidator:
 					break
 				definitions = [
 					node
-					for node in class_bindings[method_owner.reference][name]
+					for node in class_bindings[method_owner.identity][name]
 					if isinstance(node, FUNCTION_NODES)
 				]
 				annotated = any(parse_annotation(ast.get_docstring(node) or "")[0] for node in definitions)
@@ -790,8 +794,8 @@ class AnnotationValidator:
 					continue
 				if (
 					upstream_owner is not None
-					and static_attribute(class_bindings[method_owner.reference][name])
-					and static_attribute(class_bindings[upstream_owner.reference][name])
+					and static_attribute(class_bindings[method_owner.identity][name])
+					and static_attribute(class_bindings[upstream_owner.identity][name])
 				):
 					# Ordinary data attributes do not become method overrides merely
 					# because both the controller and customization declare them.
@@ -845,7 +849,7 @@ class AnnotationValidator:
 				f"Unresolved extension composition for {doctype}: installed dependency app order is unavailable"
 			)
 		mixins = [self.resolver.resolve(path) for path in reversed(paths)]
-		if not any(mixin.reference == custom.reference for mixin in mixins):
+		if not any(mixin.identity == custom.identity for mixin in mixins):
 			raise ResolutionError(f"Extension {custom.reference} is not registered for DocType {doctype!r}")
 		if dependency_extensions:
 			mixins.extend(self.resolver.resolve(path) for path in reversed(dependency_extensions[0]))
