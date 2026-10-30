@@ -16,13 +16,17 @@ from test_utils.utils.override_metadata import (
 )
 from test_utils.utils.python_source import (
 	FUNCTION_NODES,
+	AmbiguousBinding,
+	Binding,
 	definition_expressions,
 	executable_nodes,
-	find_definition,
-	find_function,
+	overload_names,
+	runtime_body,
 	scope_bindings,
 	scope_statements,
+	select_binding,
 	static_attribute,
+	static_exports,
 )
 
 HOOKS = {"required_apps", "override_whitelisted_methods", "override_doctype_class", "extend_doctype_class"}
@@ -30,6 +34,10 @@ HOOKS = {"required_apps", "override_whitelisted_methods", "override_doctype_clas
 
 class ResolutionError(ValueError):
 	"""An override cannot be verified from the configured checkouts."""
+
+
+class MissingSymbol(ResolutionError):
+	"""The inspected namespace provably has no declaration for this symbol."""
 
 
 def read_tree(path: Path) -> ast.Module:
@@ -366,16 +374,14 @@ class SourceResolver:
 	def __init__(self, apps: list[App]):
 		self.apps = {app.name: app for app in apps}
 		self.modules: dict[Path, Module] = {}
+		self.import_limits: dict[str, list[int]] = {}
 
 	def module(self, app: App, name: str, path: Path) -> Module:
 		if path not in self.modules:
 			self.modules[path] = Module(app, name, path, read_tree(path))
 		return self.modules[path]
 
-	def resolve(self, reference: str, seen: frozenset[str] = frozenset()) -> Symbol:
-		if reference in seen:
-			raise ResolutionError(f"Cyclic import while resolving {reference}")
-		seen = seen | {reference}
+	def resolve(self, reference: str, seen=frozenset()) -> Symbol:
 		parts = reference.split(".")
 		if not all(part.isidentifier() for part in parts):
 			raise ResolutionError(f"Invalid dotted Python reference: {reference!r}")
@@ -393,48 +399,192 @@ class SourceResolver:
 				remaining = parts[end:]
 				if not remaining:
 					continue
-				declarations = scope_bindings(module.tree.body)
-				if "*" in declarations:
-					raise ResolutionError(
-						f"Cannot resolve {reference} in {path}: wildcard imports may rebind symbols; use explicit imports"
-					)
-				node = find_definition(module.tree, ".".join(remaining))
-				if node is not None:
-					return Symbol(module, ".".join(remaining), node)
-				bindings = declarations.get(remaining[0], [])
-				if (
-					remaining[0] in module.imports
-					and len(bindings) == 1
-					and isinstance(bindings[0], ast.alias)
-				):
-					return self.resolve(".".join([module.imports[remaining[0]], *remaining[1:]]), seen)
-				raise ResolutionError(
+				value = self.qualified(module, ".".join(remaining), seen=seen)
+				if value is not None:
+					return value
+				raise MissingSymbol(
 					f"Upstream symbol {reference} not found in {path}; it may have been removed or renamed"
 				)
-		raise ResolutionError(
+		raise MissingSymbol(
 			f"Cannot resolve {reference}: source file not found; check --apps-root and upstream renames"
 		)
+
+	def import_module_name(self, module, statement):
+		if not statement.level:
+			return statement.module or ""
+		package = module.name.split(".") if module.path.name == "__init__.py" else module.name.split(".")[:-1]
+		if statement.level > len(package):
+			raise ResolutionError(f"Invalid relative import in {module.path}:{statement.lineno}")
+		return ".".join(
+			package[: len(package) - statement.level + 1] + ([statement.module] if statement.module else [])
+		)
+
+	def imported_module(self, name):
+		parts = name.split(".")
+		app = self.apps.get(parts[0])
+		if app is None:
+			raise ResolutionError(f"No source checkout for imported module {name}")
+		stem = app.package.joinpath(*parts[1:])
+		for path in (stem.with_suffix(".py"), stem / "__init__.py"):
+			if path.is_file():
+				return self.module(app, name, path)
+		raise ResolutionError(f"Source not found for imported module {name}")
+
+	def module_body(self, module, before=None):
+		limits = self.import_limits.get(module.name, [])
+		limit = min([*limits, *([before] if before is not None else [])], default=None)
+		body = [node for node in module.tree.body if limit is None or node.lineno < limit]
+		return list(runtime_body(body)), limit
+
+	def wildcard(self, module, statement, name, seen):
+		imported_name = self.import_module_name(module, statement)
+		limits = self.import_limits.setdefault(module.name, [])
+		limits.append(statement.lineno)
+		try:
+			imported = self.imported_module(imported_name)
+			body, _ = self.module_body(imported)
+			for node in (child for item in body for child in executable_nodes(item)):
+				if (
+					isinstance(node, ast.Call)
+					and isinstance(node.func, ast.Name)
+					and node.func.id in {"globals", "locals", "vars", "exec", "eval"}
+				):
+					raise AmbiguousBinding(f"dynamic namespace in {imported.path}:{node.lineno}")
+			exports = self.exported_names(imported, body, seen)
+			if (exports is not None and name not in exports) or (exports is None and name.startswith("_")):
+				return None
+			if exports is None and "__getattr__" in scope_bindings(body):
+				raise AmbiguousBinding(f"dynamic exports via __getattr__ in {imported.path}")
+			value = self.qualified(imported, name, seen=seen)
+			if value is None and exports is not None:
+				raise AmbiguousBinding(f"__all__ exports missing symbol {name} in {imported.path}")
+			return value
+		except (ResolutionError, AmbiguousBinding) as exc:
+			raise ResolutionError(
+				f"Ambiguous resolution of {name}: wildcard import from {imported_name} "
+				f"at {module.path}:{statement.lineno}: {exc}"
+			) from exc
+		finally:
+			limits.pop()
+
+	def exported_names(self, module, body, seen):
+		def transfers_all(statement):
+			limits = self.import_limits.setdefault(module.name, [])
+			limits.append(statement.lineno)
+			try:
+				imported = self.imported_module(self.import_module_name(module, statement))
+				imported_body, limit = self.module_body(imported)
+				key = (imported.name, "__all__", limit)
+				if key in seen:
+					raise AmbiguousBinding(f"cyclic __all__ exports in {imported.path}")
+				exports = self.exported_names(imported, imported_body, seen | {key})
+				return exports is not None and "__all__" in exports
+			finally:
+				limits.pop()
+
+		return static_exports(body, wildcard=transfers_all)
+
+	def qualified(self, module, qualname, *, seen=frozenset(), before=None, allow_standard=False):
+		body, limit = self.module_body(module, before)
+		key = (module.name, qualname, limit)
+		if key in seen:
+			raise ResolutionError(f"Ambiguous cyclic import while resolving {module.name}.{qualname}")
+		seen = seen | {key}
+		parts = qualname.split(".")
+		prefix = ""
+		decorators = overload_names(body)
+		for index, name in enumerate(parts):
+			try:
+				binding = select_binding(
+					body,
+					name,
+					wildcard=lambda statement, target: self.wildcard(module, statement, target, seen),
+					overloads=decorators,
+				)
+			except AmbiguousBinding as exc:
+				raise ResolutionError(
+					f"Ambiguous resolution of {module.name}.{qualname} at {module.path}: {exc}"
+				) from exc
+			if binding is None:
+				if allow_standard and name == "object" and index == 0:
+					return "builtins.object"
+				if self.import_limits.get(module.name):
+					raise ResolutionError(
+						f"Ambiguous cyclic import: {module.name}.{name} is not yet bound before line {limit}"
+					)
+				return None
+			if not isinstance(binding, Binding):
+				value = binding
+			elif isinstance(binding.node, ast.alias):
+				statement = binding.statement
+				alias = binding.node
+				if isinstance(statement, ast.ImportFrom):
+					reference = f"{self.import_module_name(module, statement)}.{alias.name}"
+				else:
+					reference = alias.name if alias.asname else alias.name.split(".")[0]
+				reference = ".".join([reference, *parts[index + 1 :]])
+				if allow_standard and reference in {
+					"abc.ABC",
+					"typing.Protocol",
+					"typing_extensions.Protocol",
+					"builtins.object",
+				}:
+					return reference
+				limits = self.import_limits.setdefault(module.name, [])
+				limits.append(statement.lineno)
+				try:
+					return self.resolve(reference, seen)
+				finally:
+					limits.pop()
+			elif isinstance(binding.node, (ast.ClassDef, *FUNCTION_NODES)):
+				value = Symbol(module, prefix + name, binding.node)
+			else:
+				raise ResolutionError(
+					f"Ambiguous binding of {module.name}.{qualname} at {module.path}:{binding.node.lineno}; unsupported assignment or deletion"
+				)
+			if index == len(parts) - 1:
+				return value
+			if not isinstance(value.node, ast.ClassDef):
+				return None
+			module = value.module
+			prefix = value.qualname + "."
+			body = list(runtime_body(value.node.body))
+			decorators.update(overload_names(body))
+		return None
 
 	def base_classes(self, symbol: Symbol) -> list[Symbol]:
 		result = []
 		for base in symbol.node.bases:
 			name = dotted_name(base)
-			first, *rest = name.split(".")
-			bindings = scope_bindings(symbol.module.tree.body).get(first, [])
-			if name == "object" and not bindings:
+			resolved = self.qualified(symbol.module, name, before=symbol.node.lineno, allow_standard=True)
+			if isinstance(resolved, str):
 				continue
-			if first in symbol.module.imports and (
-				len(bindings) != 1 or not isinstance(bindings[0], ast.alias)
-			):
-				raise ResolutionError(f"Cannot resolve rebound base {name!r} in {symbol.module.path}")
-			reference = ".".join([symbol.module.imports.get(first, f"{symbol.module.name}.{first}"), *rest])
-			if reference in {"abc.ABC", "typing.Protocol", "typing_extensions.Protocol", "builtins.object"}:
-				continue
-			resolved = self.resolve(reference)
-			if not isinstance(resolved.node, ast.ClassDef):
-				raise ResolutionError(f"Base {reference} is not a class")
+			if resolved is None and name == symbol.node.name:
+				raise ResolutionError(f"Cyclic inheritance or unbound self-reference at {symbol.reference}")
+			if resolved is None or not isinstance(resolved.node, ast.ClassDef):
+				raise ResolutionError(f"Base {name} is not a class in {symbol.module.path}")
 			result.append(resolved)
 		return result
+
+	def function_node(self, module, name):
+		value = self.qualified(module, name)
+		if value is not None:
+			return value.node if isinstance(value.node, FUNCTION_NODES) else None
+		if "." in name:
+			return None
+		candidates = []
+
+		def collect(owner, prefix=""):
+			for node in scope_statements(list(runtime_body(owner.body))):
+				if isinstance(node, ast.ClassDef):
+					qualified = f"{prefix}{node.name}.{name}"
+					value = self.qualified(module, qualified)
+					if value is not None and isinstance(value.node, FUNCTION_NODES):
+						candidates.append(value.node)
+					collect(node, f"{prefix}{node.name}.")
+
+		collect(module.tree)
+		return candidates[0] if len(candidates) == 1 else None
 
 	def hierarchy(self, symbol: Symbol, seen: frozenset[str] = frozenset()) -> list[Symbol]:
 		"""Python C3 linearization, so multiple inheritance resolves the real owner."""
@@ -487,12 +637,12 @@ class SourceResolver:
 				module_name = ".".join([app.name, *path.relative_to(app.package).with_suffix("").parts])
 				module = self.module(app, module_name, path)
 				class_name = doctype.replace(" ", "").replace("-", "")
-				node = find_definition(module.tree, class_name)
-				if not isinstance(node, ast.ClassDef):
+				value = self.qualified(module, class_name)
+				if value is None or not isinstance(value.node, ast.ClassDef):
 					raise ResolutionError(
 						f"Controller {module_name}.{class_name} not found; it may have been renamed"
 					)
-				found.append(Symbol(module, class_name, node))
+				found.append(value)
 		if len(found) > 1:
 			raise ResolutionError(
 				f"Ambiguous upstream controller for {doctype}: {', '.join(s.reference for s in found)}"
@@ -561,7 +711,10 @@ class AnnotationValidator:
 			# Legacy leaf names are valid only when they identify this callable uniquely.
 			valid = method == upstream.qualname
 			if not valid and method == upstream.node.name:
-				valid = find_function(upstream.module.tree, method) is upstream.node
+				try:
+					valid = self.resolver.function_node(upstream.module, method) is upstream.node
+				except ResolutionError as exc:
+					self.error(custom, upstream.reference, str(exc))
 			if not valid:
 				self.error(
 					custom,
@@ -616,11 +769,16 @@ class AnnotationValidator:
 					continue
 				original = None
 				upstream_owner = None
+				resolution_error = None
 				for owner in upstream_classes:
 					if name not in class_bindings[owner.reference]:
 						continue
 					upstream_owner = owner
-					node = find_function(owner.module.tree, f"{owner.qualname}.{name}")
+					try:
+						node = self.resolver.function_node(owner.module, f"{owner.qualname}.{name}")
+					except ResolutionError as exc:
+						resolution_error = exc
+						node = None
 					if isinstance(node, FUNCTION_NODES):
 						original = Symbol(owner.module, f"{owner.qualname}.{name}", node)
 					# A descriptor or assignment shadows the same name on every ancestor.
@@ -642,12 +800,17 @@ class AnnotationValidator:
 					# Ordinary data attributes do not become method overrides merely
 					# because both the controller and customization declare them.
 					continue
-				concrete = find_function(method.module.tree, method.qualname)
+				try:
+					concrete = self.resolver.function_node(method.module, method.qualname)
+				except ResolutionError as exc:
+					resolution_error = exc
+					concrete = None
 				if concrete is None or (original is None and upstream_owner is not None):
 					self.error(
 						method,
 						f"{upstream_owner.reference}.{name}" if upstream_owner else f"DocType {doctype}",
-						f"Cannot resolve concrete implementation of overriding method {method.reference}",
+						f"Cannot resolve concrete implementation of overriding method {method.reference}"
+						+ (f": {resolution_error}" if resolution_error else ""),
 					)
 					continue
 				method = Symbol(method.module, method.qualname, concrete)

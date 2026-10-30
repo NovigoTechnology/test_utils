@@ -37,6 +37,12 @@ by prose. HTTPS, SSH and SCP GitHub URLs, including .git suffixes, are normalize
 calling the API. Legacy complete annotations in comment blocks remain supported by tracking. Removed or
 unresolvable methods are reported for review.
 
+AST extraction respects declaration order: an earlier wildcard import does not hide a later
+explicit definition. A later wildcard requires its exports to be known; source-only tracking
+reports an unresolved symbol when that context is unavailable. The local annotation validator
+can inspect dependency checkouts to resolve static exports and re-exports (including the
+circular re-export of Frappe's `File` class) without executing application modules.
+
 Use [`validate_override_annotations`](../validate_override_annotations.md) alongside tracking
 to discover new Frappe overrides whose annotations are missing or invalid.
 

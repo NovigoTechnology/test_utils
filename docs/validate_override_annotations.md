@@ -80,10 +80,22 @@ when they replace an upstream method. Define the overriding method explicitly wi
 `async def` and put its metadata on that definition. A registered function that is rebound
 after its definition cannot reuse the old definition's metadata.
 Plain literal data attributes redeclared in both classes do not require method annotations.
-Modules containing wildcard imports are conservatively unresolved, including imports inside
-conditional branches. This applies to direct definitions, explicit re-exports, and qualified
-or legacy method names; unknown exports cannot be assumed to preserve an earlier binding.
-Use explicit imports so validation and historical tracking can resolve the implementation.
+Wildcard imports are resolved in declaration order. An explicit unconditional definition
+after a wildcard import establishes the active binding. For a later wildcard, local source
+checkouts supply static `__all__` exports or public declarations/re-exports when `__all__`
+is absent. An import that excludes the name preserves its earlier definition; an import that
+replaces it follows the actual defining module for `PATH` and `METHOD` validation.
+
+Circular re-exports can resolve an already defined class from the partially initialized
+module, as with Frappe's `File` controller and `frappe.core.api.file`. Proven
+`typing.TYPE_CHECKING` imports do not become runtime exports. Dynamic exports, unavailable
+source, conditional replacements, and unresolved cycles produce an **ambiguous resolution**
+diagnostic naming the responsible import and location, rather than claiming a controller
+was removed. This analysis never imports or executes application modules.
+
+The source-only extractor used by historical tracking has no checkout context for imported
+modules. It can resolve definitions after earlier wildcards; a later wildcard whose exports
+cannot be inspected remains unresolved and is reported for review.
 Imported aliases for `abc.ABC`, `typing.Protocol`,
 `typing_extensions.Protocol`, and `builtins.object` do not require application checkouts.
 Application classes imported or declared under names such as `ABC` or `Protocol` remain part
