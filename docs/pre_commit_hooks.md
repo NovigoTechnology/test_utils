@@ -48,7 +48,32 @@ Examine package.json across the installed apps on the site to detect any version
 
 ### Validate python dependencies - `validate_python_dependencies`
 
-Examine pyproject.toml across the installed apps on the site to detect any version mismatches
+Compare declared Python version constraints across the apps listed in the Bench's
+`sites/apps.txt`. Run from an app repository under `apps/`.
+
+Standard `[project].dependencies` requirements are parsed independently of the build backend.
+Package names and specifier ordering are normalized, extras are compared under the base
+package name, and environment markers are evaluated for the hook's current Python/platform.
+Multiple applicable requirements for one package are combined. Marker expressions such as
+`sys_platform == 'linux'` are not treated as package version pins.
+
+Legacy `[tool.poetry.dependencies]` strings and inline `version` tables are also supported;
+the interpreter's `python` constraint is excluded. Poetry-specific caret/tilde/union syntax
+is compared as declared. Unsupported declaration shapes and malformed metadata produce an
+actionable error and exit 1 instead of a traceback.
+
+Inline Poetry applicability selectors `python` and `platform` are explicitly unsupported:
+the hook reports the app, dependency, and selector rather than treating the dependency as
+unconditional. Express the condition using `markers`, for example
+`requests = {version = ">=3", markers = "sys_platform == 'win32'"}`, or use standard
+`[project].dependencies` requirements. Invalid marker values and malformed `project`, `tool`,
+or `tool.poetry` parent tables also produce contextual errors.
+TOML syntax, decoding, and read failures include the affected file's absolute path; parser
+line/column details are retained so multi-app scans identify the metadata that needs fixing.
+
+This hook compares declared constraints; it does not solve compatibility between different
+ranges or inspect installed versions. Direct source references without version specifiers
+are treated as unconstrained; their URLs/revisions are not compared.
 
 ```
   - repo: https://github.com/NovigoTechnology/test_utils

@@ -46,6 +46,7 @@ packages = [{include = "test_utils"}]
 python = ">=3.14,<3.15"
 mypy = "^1.19.0"
 toml = "^0.10.2"
+packaging = ">=24.2"
 requests = "^2.32.3"
 sqlglot = ">=30.12,<31"
 asttokens = ">=2.4.0"
