@@ -62,6 +62,13 @@ the interpreter's `python` constraint is excluded. Poetry-specific caret/tilde/u
 is compared as declared. Unsupported declaration shapes and malformed metadata produce an
 actionable error and exit 1 instead of a traceback.
 
+Inline Poetry applicability selectors `python` and `platform` are explicitly unsupported:
+the hook reports the app, dependency, and selector rather than treating the dependency as
+unconditional. Express the condition using `markers`, for example
+`requests = {version = ">=3", markers = "sys_platform == 'win32'"}`, or use standard
+`[project].dependencies` requirements. Invalid marker values and malformed `project`, `tool`,
+or `tool.poetry` parent tables also produce contextual errors.
+
 This hook compares declared constraints; it does not solve compatibility between different
 ranges or inspect installed versions. Direct source references without version specifiers
 are treated as unconstrained; their URLs/revisions are not compared.

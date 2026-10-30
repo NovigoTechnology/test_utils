@@ -25,8 +25,24 @@ def poetry_versions(app, dependencies):
 		if package == "python":
 			continue
 		if isinstance(declaration, dict):
-			if declaration.get("markers") and not Marker(declaration["markers"]).evaluate():
-				continue
+			selectors = sorted({"python", "platform"}.intersection(declaration))
+			if selectors:
+				raise ValueError(
+					f"{app}/pyproject.toml: unsupported Poetry selectors {', '.join(selectors)} for {package}; "
+					"express the condition with markers or standard project.dependencies requirements"
+				)
+			if "markers" in declaration:
+				marker = declaration["markers"]
+				try:
+					if not isinstance(marker, str):
+						raise ValueError("markers must be a string")
+					applies = Marker(marker).evaluate()
+				except ValueError:
+					raise ValueError(
+						f"{app}/pyproject.toml: invalid Poetry markers for {package}; expected a PEP 508 marker string"
+					) from None
+				if not applies:
+					continue
 			declaration = declaration.get("version", "*")
 		if not isinstance(declaration, str):
 			raise ValueError(f"{app}/pyproject.toml: unsupported Poetry dependency declaration for {package}")
@@ -44,14 +60,25 @@ def poetry_versions(app, dependencies):
 	return versions
 
 
+def metadata_table(document, name, app, location):
+	value = document.get(name, {})
+	if not isinstance(value, dict):
+		raise ValueError(f"{app}/pyproject.toml: {location} must be a table")
+	return value
+
+
 def get_versions(app):
 	pyproject_toml = get_dependencies(app)
-	if not pyproject_toml:
+	if pyproject_toml is None:
 		return {}
+	if not isinstance(pyproject_toml, dict):
+		raise ValueError(f"{app}/pyproject.toml: project metadata must be a table")
 
-	project = pyproject_toml.get("project", {})
+	project = metadata_table(pyproject_toml, "project", app, "project")
+	tool = metadata_table(pyproject_toml, "tool", app, "tool")
+	poetry = metadata_table(tool, "poetry", app, "tool.poetry")
 	if "dependencies" not in project:
-		return poetry_versions(app, pyproject_toml.get("tool", {}).get("poetry", {}).get("dependencies", {}))
+		return poetry_versions(app, poetry.get("dependencies", {}))
 	dependencies = project["dependencies"]
 	if not isinstance(dependencies, list):
 		raise ValueError(f"{app}/pyproject.toml: project.dependencies must be a list of requirement strings")
