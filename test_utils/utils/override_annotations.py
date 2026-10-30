@@ -484,15 +484,18 @@ class SourceResolver:
 
 		return static_exports(body, wildcard=transfers_all)
 
-	def qualified(self, module, qualname, *, seen=frozenset(), before=None, allow_standard=False):
+	def qualified(self, module, qualname, *, seen=frozenset(), before=None, allow_standard=False, owner=None):
 		body, limit = self.module_body(module, before)
-		key = (module.name, qualname, limit)
+		key = (module.name, qualname, limit, id(owner.node) if owner else None)
 		if key in seen:
 			raise ResolutionError(f"Ambiguous cyclic import while resolving {module.name}.{qualname}")
 		seen = seen | {key}
 		parts = qualname.split(".")
-		prefix = ""
+		prefix = f"{owner.qualname}." if owner else ""
 		decorators = overload_names(body)
+		if owner is not None:
+			body = list(runtime_body(owner.node.body))
+			decorators.update(overload_names(body))
 		for index, name in enumerate(parts):
 			try:
 				binding = select_binding(
@@ -566,10 +569,14 @@ class SourceResolver:
 			result.append(resolved)
 		return result
 
-	def function_node(self, module, name):
+	def member(self, owner, name):
+		"""Resolve against the selected class, preserving imported member provenance."""
+		return self.qualified(owner.module, name, owner=owner)
+
+	def function_symbol(self, module, name):
 		value = self.qualified(module, name)
 		if value is not None:
-			return value.node if isinstance(value.node, FUNCTION_NODES) else None
+			return value if isinstance(value.node, FUNCTION_NODES) else None
 		if "." in name:
 			return None
 		candidates = []
@@ -578,13 +585,18 @@ class SourceResolver:
 			for node in scope_statements(list(runtime_body(owner.body))):
 				if isinstance(node, ast.ClassDef):
 					qualified = f"{prefix}{node.name}.{name}"
-					value = self.qualified(module, qualified)
-					if value is not None and isinstance(value.node, FUNCTION_NODES):
-						candidates.append(value.node)
+					if name in scope_bindings(list(runtime_body(node.body))):
+						value = self.qualified(module, qualified)
+						if value is not None and isinstance(value.node, FUNCTION_NODES):
+							candidates.append(value)
 					collect(node, f"{prefix}{node.name}.")
 
 		collect(module.tree)
 		return candidates[0] if len(candidates) == 1 else None
+
+	def function_node(self, module, name):
+		value = self.function_symbol(module, name)
+		return value.node if value is not None else None
 
 	def hierarchy(self, symbol: Symbol, seen: frozenset[str] = frozenset()) -> list[Symbol]:
 		"""Python C3 linearization, so multiple inheritance resolves the real owner."""
@@ -775,12 +787,12 @@ class AnnotationValidator:
 						continue
 					upstream_owner = owner
 					try:
-						node = self.resolver.function_node(owner.module, f"{owner.qualname}.{name}")
+						value = self.resolver.member(owner, name)
 					except ResolutionError as exc:
 						resolution_error = exc
-						node = None
-					if isinstance(node, FUNCTION_NODES):
-						original = Symbol(owner.module, f"{owner.qualname}.{name}", node)
+						value = None
+					if value is not None and isinstance(value.node, FUNCTION_NODES):
+						original = value
 					# A descriptor or assignment shadows the same name on every ancestor.
 					break
 				definitions = [
@@ -801,7 +813,9 @@ class AnnotationValidator:
 					# because both the controller and customization declare them.
 					continue
 				try:
-					concrete = self.resolver.function_node(method.module, method.qualname)
+					concrete = self.resolver.member(method_owner, name)
+					if concrete is not None and not isinstance(concrete.node, FUNCTION_NODES):
+						concrete = None
 				except ResolutionError as exc:
 					resolution_error = exc
 					concrete = None
@@ -813,7 +827,7 @@ class AnnotationValidator:
 						+ (f": {resolution_error}" if resolution_error else ""),
 					)
 					continue
-				method = Symbol(method.module, method.qualname, concrete)
+				method = concrete
 				if original:
 					self.validate_annotation(method, original)
 				elif annotated:

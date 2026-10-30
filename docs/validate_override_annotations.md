@@ -85,10 +85,19 @@ after a wildcard import establishes the active binding. For a later wildcard, lo
 checkouts supply static `__all__` exports or public declarations/re-exports when `__all__`
 is absent. An import that excludes the name preserves its earlier definition; an import that
 replaces it follows the actual defining module for `PATH` and `METHOD` validation.
+Imported class members also retain their defining module and callable name. Inherited
+methods use the class selected when the subclass was defined, even if a later import
+replaces that class's name in the module.
 
 Circular re-exports can resolve an already defined class from the partially initialized
 module, as with Frappe's `File` controller and `frappe.core.api.file`. Proven
-`typing.TYPE_CHECKING` imports do not become runtime exports. Dynamic exports, unavailable
+`typing.TYPE_CHECKING` imports do not become runtime exports. This requires an absolute
+standard typing import whose binding has not subsequently changed; a relative `.typing`
+import or an intervening wildcard cannot prove the guard false.
+Mutations or rebindings of export lists inside called local helpers, and unsupported
+unpacking assignments to `__all__` or its constant aliases, make exports ambiguous.
+Uncalled function bodies do not change the export list.
+Dynamic exports, unavailable
 source, conditional replacements, and unresolved cycles produce an **ambiguous resolution**
 diagnostic naming the responsible import and location, rather than claiming a controller
 was removed. This analysis never imports or executes application modules.

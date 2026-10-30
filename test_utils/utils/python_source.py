@@ -149,25 +149,10 @@ class Binding:
 
 def runtime_body(body):
 	"""Exclude proven typing.TYPE_CHECKING blocks, whose imports are not runtime exports."""
-	bindings = scope_bindings(body)
 	typing_names = set()
 	checking_names = set()
 	for statement in body:
-		if isinstance(statement, (ast.Import, ast.ImportFrom)):
-			for alias in statement.names:
-				name = alias.asname or alias.name
-				if len(bindings.get(name, [])) != 1:
-					continue
-				if isinstance(statement, ast.Import) and alias.name in {"typing", "typing_extensions"}:
-					typing_names.add(name)
-				elif (
-					isinstance(statement, ast.ImportFrom)
-					and statement.module in {"typing", "typing_extensions"}
-					and alias.name == "TYPE_CHECKING"
-				):
-					checking_names.add(name)
-	for statement in body:
-		if isinstance(statement, ast.If) and (
+		guard = isinstance(statement, ast.If) and (
 			(isinstance(statement.test, ast.Name) and statement.test.id in checking_names)
 			or (
 				isinstance(statement.test, ast.Attribute)
@@ -175,10 +160,34 @@ def runtime_body(body):
 				and statement.test.value.id in typing_names
 				and statement.test.attr == "TYPE_CHECKING"
 			)
-		):
-			yield from statement.orelse
-		else:
-			yield statement
+		)
+		statements = statement.orelse if guard else [statement]
+		for active in statements:
+			bindings = scope_bindings([active])
+			if "*" in bindings:
+				typing_names.clear()
+				checking_names.clear()
+			typing_names.difference_update(bindings)
+			checking_names.difference_update(bindings)
+			if isinstance(active, ast.Import):
+				for alias in active.names:
+					name = alias.asname or alias.name.split(".")[0]
+					typing_names.discard(name)
+					checking_names.discard(name)
+					if alias.name in {"typing", "typing_extensions"}:
+						typing_names.add(name)
+			elif (
+				isinstance(active, ast.ImportFrom)
+				and active.level == 0
+				and active.module in {"typing", "typing_extensions"}
+			):
+				for alias in active.names:
+					name = alias.asname or alias.name
+					typing_names.discard(name)
+					checking_names.discard(name)
+					if alias.name == "TYPE_CHECKING":
+						checking_names.add(name)
+			yield active
 
 
 def ordered_bindings(body, name):
@@ -228,11 +237,25 @@ def select_binding(body, name, *, wildcard=None, overloads=()):
 	return None
 
 
+def called_export_effects(node, functions, seen=frozenset(), *, indirect=False):
+	"""Inspect executed helpers without treating every deferred body as executed."""
+	for child in executable_nodes(node):
+		yield child, indirect
+		if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
+			function = functions.get(child.func.id)
+			if function is not None and id(function) not in seen:
+				for statement in function.body:
+					yield from called_export_effects(
+						statement, functions, seen | {id(function)}, indirect=True
+					)
+
+
 def static_exports(body, *, wildcard=None):
 	"""Return a proven __all__, or None for ordinary public-name exports."""
 	unknown = object()
 	values = {}
 	invalid = set()
+	functions = {}
 	last_reset = max(
 		(
 			statement.lineno
@@ -270,7 +293,9 @@ def static_exports(body, *, wildcard=None):
 			if wildcard is None or wildcard(statement):
 				values["__all__"] = unknown
 			continue
-		for node in executable_nodes(statement):
+		for node, indirect in called_export_effects(statement, functions):
+			if indirect and isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+				values[node.id] = unknown
 			if isinstance(node, ast.Call) or (
 				isinstance(node, (ast.Subscript, ast.Attribute))
 				and isinstance(node.ctx, (ast.Store, ast.Del))
@@ -286,6 +311,8 @@ def static_exports(body, *, wildcard=None):
 			except ValueError, TypeError, KeyError, SyntaxError:
 				value = unknown
 			values.update(dict.fromkeys(names, value))
+			for name in scope_bindings([statement]).keys() - set(names):
+				values[name] = unknown
 		elif isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name):
 			name = statement.target.id
 			try:
@@ -299,9 +326,22 @@ def static_exports(body, *, wildcard=None):
 					values[name] = value + addition
 			except ValueError, TypeError, KeyError:
 				values[name] = unknown
-		elif not isinstance(statement, DEFINITION_NODES):
+		else:
 			for name in scope_bindings([statement]):
 				values[name] = unknown
+		alias = (
+			functions.get(statement.value.id)
+			if (isinstance(statement, ast.Assign) and isinstance(statement.value, ast.Name))
+			else None
+		)
+		for name in scope_bindings([statement]):
+			functions.pop(name, None)
+		if isinstance(statement, FUNCTION_NODES):
+			functions[statement.name] = statement
+		elif alias is not None:
+			for target in statement.targets:
+				if isinstance(target, ast.Name):
+					functions[target.id] = alias
 	if "__all__" not in values:
 		return None
 	value = values["__all__"]
