@@ -94,9 +94,19 @@ module, as with Frappe's `File` controller and `frappe.core.api.file`. Proven
 `typing.TYPE_CHECKING` imports do not become runtime exports. This requires an absolute
 standard typing import whose binding has not subsequently changed; a relative `.typing`
 import or an intervening wildcard cannot prove the guard false.
+Writes or deletions of the typing module's `TYPE_CHECKING` attribute also invalidate the
+proof through its known module aliases. Importing that same module again does not reset
+the attribute; an already copied false `TYPE_CHECKING` constant keeps its value.
 Mutations or rebindings of export lists inside called local helpers, and unsupported
 unpacking assignments to `__all__` or its constant aliases, make exports ambiguous.
-Uncalled function bodies do not change the export list.
+The analysis includes bare local decorators, conditional wildcard imports, and mutations
+through nested container aliases. Annotation-only declarations such as
+`__all__: list[str]` do not rebind an existing export list.
+Executed helpers that rebind public names declared `global` also make those names
+ambiguous, even without `__all__`; a later explicit definition establishes a new binding.
+Dynamic namespace operations reached through helpers are rejected. `vars(SomeClass)`
+inspects that object's attributes and does not replace its module binding.
+Uncalled function bodies and ordinary helper-local assignments do not rebind public names.
 Dynamic exports, unavailable
 source, conditional replacements, and unresolved cycles produce an **ambiguous resolution**
 diagnostic naming the responsible import and location, rather than claiming a controller

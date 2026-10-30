@@ -20,6 +20,7 @@ from test_utils.utils.python_source import (
 	Binding,
 	definition_expressions,
 	executable_nodes,
+	mutable_objects,
 	overload_names,
 	runtime_body,
 	scope_bindings,
@@ -53,19 +54,6 @@ def dotted_name(node: ast.expr) -> str:
 	if isinstance(node, ast.Attribute):
 		return f"{dotted_name(node.value)}.{node.attr}"
 	raise ResolutionError(f"Unsupported dynamic reference at line {node.lineno}")
-
-
-def mutable_objects(value, seen=None):
-	"""Keep identity across aliases, including containers nested inside other values."""
-	seen = set() if seen is None else seen
-	if not isinstance(value, (dict, list, tuple, set)) or id(value) in seen:
-		return {}
-	seen.add(id(value))
-	result = {id(value): value}
-	children = [*value.keys(), *value.values()] if isinstance(value, dict) else value
-	for child in children:
-		result.update(mutable_objects(child, seen))
-	return result
 
 
 def literal(node: ast.expr, values: dict, invalid=None):
@@ -443,13 +431,6 @@ class SourceResolver:
 		try:
 			imported = self.imported_module(imported_name)
 			body, _ = self.module_body(imported)
-			for node in (child for item in body for child in executable_nodes(item)):
-				if (
-					isinstance(node, ast.Call)
-					and isinstance(node.func, ast.Name)
-					and node.func.id in {"globals", "locals", "vars", "exec", "eval"}
-				):
-					raise AmbiguousBinding(f"dynamic namespace in {imported.path}:{node.lineno}")
 			exports = self.exported_names(imported, body, seen)
 			if (exports is not None and name not in exports) or (exports is None and name.startswith("_")):
 				return None
@@ -482,7 +463,10 @@ class SourceResolver:
 			finally:
 				limits.pop()
 
-		return static_exports(body, wildcard=transfers_all)
+		try:
+			return static_exports(body, wildcard=transfers_all)
+		except AmbiguousBinding as exc:
+			raise AmbiguousBinding(f"{module.path}: {exc}") from exc
 
 	def qualified(self, module, qualname, *, seen=frozenset(), before=None, allow_standard=False, owner=None):
 		body, limit = self.module_body(module, before)
