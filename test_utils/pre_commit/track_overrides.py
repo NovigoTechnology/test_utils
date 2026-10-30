@@ -6,6 +6,7 @@ from collections.abc import Sequence
 
 import requests
 
+from test_utils.utils.local_overrides import LocalUpstreamSources, repository_root
 from test_utils.utils.override_metadata import github_repository, iter_annotations
 from test_utils.utils.track_overrides import (
 	UpstreamFetchError,
@@ -17,7 +18,12 @@ from test_utils.utils.track_overrides import (
 
 def get_all_python_files(repo_path):
 	"""Yield (file_path, content) for all .py files in repo_path. file_path is relative to repo_path."""
-	for root, _, files in os.walk(repo_path):
+	for root, directories, files in os.walk(repo_path):
+		directories[:] = [
+			name
+			for name in directories
+			if name not in {".git", ".venv", "env", "venv", "node_modules", "__pycache__"}
+		]
 		for file_name in files:
 			if not file_name.endswith(".py"):
 				continue
@@ -41,7 +47,7 @@ def get_last_commit_hash_for_file_in_branch(repo_url, file_path, base_branch):
 	headers = {}
 	if token := os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
 		headers["Authorization"] = f"token {token}"
-	response = requests.get(api_url, params=params, headers=headers or None)
+	response = requests.get(api_url, params=params, headers=headers or None, timeout=30)
 
 	if response.status_code != 200:
 		raise UpstreamFetchError(
@@ -69,9 +75,10 @@ def print_diff(diff_text, color=True):
 			print("\033[37m" + line)
 
 
-def check_tracked_methods(repo_directory, base_branch, apps_filter=None):
+def check_tracked_methods(repo_directory, base_branch=None, apps_filter=None, *, apps_root=None):
 	changed_methods = []
 	unverified = []
+	local = LocalUpstreamSources(repo_directory, apps_root) if base_branch is None else None
 	for file_path, source_code in get_all_python_files(repo_directory):
 		for annotation in iter_annotations(source_code):
 			app_name = annotation.get("APP")
@@ -85,19 +92,30 @@ def check_tracked_methods(repo_directory, base_branch, apps_filter=None):
 				app_name = parts[1] if parts[0] == "apps" and len(parts) > 1 else parts[0]
 			elif not app_name:
 				app_name = os.path.basename(repo_directory) if repo_directory else ""
+			if apps_filter is not None and app_name not in apps_filter:
+				continue
 
 			try:
-				latest_commit_hash = get_last_commit_hash_for_file_in_branch(
-					repo_url, original_file_path, base_branch
-				)
-				if not latest_commit_hash or latest_commit_hash == commit_hash:
-					continue
-
-				old_file_content = download_file_from_commit(repo_url, commit_hash, original_file_path)
-				new_file_content = download_file_from_commit(repo_url, latest_commit_hash, original_file_path)
-			except UpstreamFetchError as e:
-				if apps_filter is None or app_name in apps_filter:
-					unverified.append(str(e))
+				if local is not None:
+					old_file_content, new_file_content = local.compare_sources(
+						repo_url, commit_hash, original_file_path
+					)
+				else:
+					latest_commit_hash = get_last_commit_hash_for_file_in_branch(
+						repo_url, original_file_path, base_branch
+					)
+					if not latest_commit_hash:
+						raise UpstreamFetchError(
+							f"Cannot resolve upstream revision for {original_file_path} on {base_branch}"
+						)
+					if latest_commit_hash == commit_hash:
+						continue
+					old_file_content = download_file_from_commit(repo_url, commit_hash, original_file_path)
+					new_file_content = download_file_from_commit(
+						repo_url, latest_commit_hash, original_file_path
+					)
+			except (UpstreamFetchError, requests.RequestException, OSError) as e:
+				unverified.append(f"{file_path}: {method_name}: {e}")
 				continue
 
 			method_at_hash = extract_method(old_file_content, method_name)
@@ -105,13 +123,12 @@ def check_tracked_methods(repo_directory, base_branch, apps_filter=None):
 
 			diff = compare_method_diff(method_at_hash, latest_method)
 			if diff:
-				if apps_filter is None or app_name in apps_filter:
-					changed_methods.append(
-						{
-							"title": f"{app_name}: `{method_name}` in `{original_file_path}` has changed:",
-							"diff": diff,
-						}
-					)
+				changed_methods.append(
+					{
+						"title": f"{app_name}: `{method_name}` in `{original_file_path}` has changed:",
+						"diff": diff,
+					}
+				)
 
 	return changed_methods, unverified
 
@@ -123,16 +140,23 @@ def main(argv: Sequence[str] | None = None):
 		"--directory",
 		help="Directory to scan (e.g. workspace root); overrides --app when set. Use for monorepos to match GHA behavior.",
 	)
-	parser.add_argument("--base-branch", action="append", help="Base branch to compare against")
+	parser.add_argument(
+		"--base-branch",
+		action="append",
+		help="Compare against this remote branch/ref instead of local upstream HEAD",
+	)
+	parser.add_argument(
+		"--apps-root",
+		type=pathlib.Path,
+		help="Directory containing local dependency checkouts (default: discover sibling apps)",
+	)
 	parser.add_argument(
 		"--no-color",
 		action="store_true",
 	)
 	args = parser.parse_args(argv)
 
-	if not args.base_branch:
-		sys.exit(0)
-	base_branch = args.base_branch[0]
+	base_branch = args.base_branch[0] if args.base_branch else None
 
 	if args.directory:
 		# Scan entire directory (like GHA with github.workspace)
@@ -140,17 +164,43 @@ def main(argv: Sequence[str] | None = None):
 		apps_filter = set(args.app) if args.app else None
 	elif args.app:
 		# Scan app directory(ies); supports multiple apps for monorepos
-		directories = [str(pathlib.Path(app).resolve().parent) for app in args.app]
+		directories = []
+		for app in args.app:
+			path = pathlib.Path(app)
+			if not path.is_dir():
+				path = pathlib.Path.cwd().parent / app
+			if not path.is_dir():
+				parser.error(f"App directory not found: {app}")
+			root = repository_root(path)
+			if root is not None and path.resolve().parent == root.resolve():
+				path = root
+			elif (path / "hooks.py").is_file():
+				path = path.parent
+			directories.append(str(path.resolve()))
 		apps_filter = None  # Already scoped by directory
 	else:
-		sys.exit(0)
+		try:
+			path = repository_root(pathlib.Path.cwd()) or pathlib.Path.cwd()
+		except UpstreamFetchError as exc:
+			print(str(exc), file=sys.stderr)
+			sys.exit(2)
+		directories = [str(path)]
+		apps_filter = None
 
-	if base_branch:
+	for directory in directories:
+		if not pathlib.Path(directory).is_dir():
+			parser.error(f"Directory not found: {directory}")
+	if args.apps_root is not None and not args.apps_root.is_dir():
+		parser.error(f"Dependency directory not found: {args.apps_root}")
+	if directories:
 		changed_methods = []
 		unverified = []
 		for repo_directory in directories:
+			print(
+				f"track_overrides: scanning {repo_directory}; comparing upstream against {base_branch or 'local Git HEAD'}"
+			)
 			changed, could_not_check = check_tracked_methods(
-				repo_directory, base_branch, apps_filter=apps_filter
+				repo_directory, base_branch, apps_filter=apps_filter, apps_root=args.apps_root
 			)
 			changed_methods.extend(changed)
 			unverified.extend(could_not_check)
@@ -168,10 +218,14 @@ def main(argv: Sequence[str] | None = None):
 				print(f"  {message}")
 			print("")
 
-		# Exit 2 says nothing about drift, only that upstream could not be reached. Callers
+		# Exit 2 says nothing about drift, only that upstream could not be verified. Callers
 		# must not read it as a clean run.
 		if changed_methods:
 			sys.exit(1)
 		if unverified:
 			sys.exit(2)
 	sys.exit(0)
+
+
+if __name__ == "__main__":
+	main()

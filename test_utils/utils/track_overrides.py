@@ -10,7 +10,7 @@ from test_utils.utils.python_source import extract_function
 
 
 class UpstreamFetchError(Exception):
-	"""GitHub could not be reached. Distinct from an override actually having changed."""
+	"""Upstream source could not be verified, distinct from an override actually changing."""
 
 
 def download_file_from_commit(repo_url, commit_hash, file_path):
@@ -30,10 +30,12 @@ def download_file_from_commit(repo_url, commit_hash, file_path):
 				"Authorization": f"token {token}",
 				"Accept": "application/vnd.github.raw",
 			},
+			timeout=30,
 		)
 	else:
 		response = requests.get(
-			f"https://raw.githubusercontent.com/{username}/{repo_name}/{commit_hash}/{file_path}"
+			f"https://raw.githubusercontent.com/{username}/{repo_name}/{commit_hash}/{file_path}",
+			timeout=30,
 		)
 
 	if response.status_code == 200:
