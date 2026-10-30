@@ -68,6 +68,8 @@ unconditional. Express the condition using `markers`, for example
 `requests = {version = ">=3", markers = "sys_platform == 'win32'"}`, or use standard
 `[project].dependencies` requirements. Invalid marker values and malformed `project`, `tool`,
 or `tool.poetry` parent tables also produce contextual errors.
+TOML syntax, decoding, and read failures include the affected file's absolute path; parser
+line/column details are retained so multi-app scans identify the metadata that needs fixing.
 
 This hook compares declared constraints; it does not solve compatibility between different
 ranges or inspect installed versions. Direct source references without version specifiers

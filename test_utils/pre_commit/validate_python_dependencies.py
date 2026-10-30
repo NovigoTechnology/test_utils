@@ -12,9 +12,13 @@ from packaging.utils import canonicalize_name
 
 def get_dependencies(app):
 	apps_dir = pathlib.Path().resolve().parent
-	if pathlib.Path.exists(apps_dir / app / "pyproject.toml"):
-		with open(apps_dir / app / "pyproject.toml", "rb") as f:
-			return tomllib.load(f)
+	path = apps_dir / app / "pyproject.toml"
+	try:
+		if path.exists():
+			with open(path, "rb") as f:
+				return tomllib.load(f)
+	except (tomllib.TOMLDecodeError, UnicodeError, OSError) as exc:
+		raise ValueError(f"{path}: {exc}") from exc
 
 
 def poetry_versions(app, dependencies):

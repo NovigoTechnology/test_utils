@@ -87,3 +87,41 @@ def test_supported_markers_retain_environment_filtering(monkeypatch, applies):
 	metadata = {"tool": {"poetry": {"dependencies": {"requests": {"version": ">=3", "markers": marker}}}}}
 	monkeypatch.setattr(validator, "get_dependencies", lambda app: metadata)
 	assert validator.get_versions("custom") == ({"requests": ">=3"} if applies else {})
+
+
+@pytest.mark.parametrize("app", ["frappe", "custom"])
+def test_toml_parse_errors_identify_the_failing_app_in_multi_app_scans(tmp_path, monkeypatch, capsys, app):
+	bench(tmp_path, monkeypatch, {"frappe": "requests", "custom": "requests"})
+	path = tmp_path / "apps" / app / "pyproject.toml"
+	path.write_text("[project]\ndependencies = [invalid]\n")
+	assert validator.main([]) == 1
+	output = capsys.readouterr()
+	assert str(path) in output.err
+	assert "line 2" in output.err
+	assert "Invalid value" in output.err
+	assert "Traceback" not in output.err
+
+
+def test_invalid_utf8_metadata_identifies_its_file_without_a_traceback(tmp_path, monkeypatch, capsys):
+	bench(tmp_path, monkeypatch, {"custom": "requests"})
+	path = tmp_path / "apps/custom/pyproject.toml"
+	path.write_bytes(b"[project]\nname = '\xff'\n")
+	assert validator.main([]) == 1
+	output = capsys.readouterr()
+	assert str(path) in output.err
+	assert "Traceback" not in output.err
+
+
+def test_read_errors_include_the_metadata_file_even_without_an_os_filename(tmp_path, monkeypatch, capsys):
+	bench(tmp_path, monkeypatch, {"custom": "requests"})
+	path = tmp_path / "apps/custom/pyproject.toml"
+
+	def denied(*args, **kwargs):
+		raise PermissionError("permission denied")
+
+	monkeypatch.setattr(validator, "open", denied, raising=False)
+	assert validator.main([]) == 1
+	output = capsys.readouterr()
+	assert str(path) in output.err
+	assert "permission denied" in output.err
+	assert "Traceback" not in output.err
