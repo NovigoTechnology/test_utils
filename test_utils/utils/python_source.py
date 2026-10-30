@@ -219,6 +219,7 @@ def static_exports(body, *, wildcard=None):
 	unknown = object()
 	values = {}
 	invalid = {}
+	objects = {}
 	analyzer = EffectAnalyzer()
 	last_reset = max(
 		(
@@ -264,17 +265,9 @@ def static_exports(body, *, wildcard=None):
 				raise AmbiguousBinding(f"dynamic namespace at line {node.lineno}")
 			for name in effect.bindings:
 				values[name] = unknown
-			if (
-				effect.mutation
-				or isinstance(node, ast.Call)
-				or (
-					isinstance(node, (ast.Subscript, ast.Attribute))
-					and isinstance(node.ctx, (ast.Store, ast.Del))
-				)
-			):
-				for child in ast.walk(node):
-					if isinstance(child, ast.Name) and child.id in values:
-						invalid.update(mutable_objects(values[child.id]))
+			for origin in effect.origins:
+				if origin in objects:
+					invalid.update(mutable_objects(objects[origin]))
 		if isinstance(statement, (ast.Assign, ast.AnnAssign)):
 			targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
 			names = [target.id for target in targets if isinstance(target, ast.Name)]
@@ -283,6 +276,10 @@ def static_exports(body, *, wildcard=None):
 			except ValueError, TypeError, KeyError, SyntaxError:
 				value = unknown
 			values.update(dict.fromkeys(names, value))
+			if value is not unknown:
+				for name in names:
+					for origin in analyzer.scope.get(name).origins:
+						objects.setdefault(origin, value)
 			for name in scope_bindings([statement]).keys() - set(names):
 				values[name] = unknown
 		elif isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name):
@@ -315,17 +312,23 @@ def static_exports(body, *, wildcard=None):
 
 def find_definition(tree: ast.Module | ast.ClassDef, qualified_name: str):
 	parts = qualified_name.split(".")
+	analyzer = EffectAnalyzer()
+	for statement in runtime_body(tree.body):
+		analyzer.scan(statement)
 	node = tree
 	decorators = set()
 	for part in parts:
 		if not isinstance(node, (ast.Module, ast.ClassDef)):
 			return None
-		decorators.update(overload_names(node.body))
+		body = analyzer.runtime_bodies.get(node, node.body)
+		decorators.update(overload_names(body))
 		try:
-			binding = select_binding(node.body, part, overloads=decorators)
+			binding = select_binding(body, part, overloads=decorators)
 		except AmbiguousBinding:
 			return None
 		if binding is None or not isinstance(binding.node, DEFINITION_NODES):
+			return None
+		if binding.node in analyzer.invalid_definitions:
 			return None
 		node = binding.node
 	return node

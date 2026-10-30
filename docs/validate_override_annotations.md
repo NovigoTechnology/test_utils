@@ -91,6 +91,10 @@ replaces that class's name in the module.
 Inheritance and method ownership distinguish separate class definitions even when they
 share a qualified name. A redefinition such as `class Base(Base)` therefore keeps its
 earlier base rather than being mistaken for a cycle.
+Member resolution retains findings from the enclosing module, including local decorators
+that replace methods. The method inventory uses the same runtime-filtered class body as
+member lookup: a method declared only under a proven false `TYPE_CHECKING` guard does not
+become an override. Nested class lookup skips enclosing class namespaces, as Python does.
 
 Circular re-exports can resolve an already defined class from the partially initialized
 module, as with Frappe's `File` controller and `frappe.core.api.file`. Proven
@@ -112,13 +116,26 @@ ambiguous, even without `__all__`; a later explicit definition establishes a new
 Class bodies also honor their `global` declarations. Container aliases follow lexical
 scope through parameters, closures, `nonlocal` assignments, branches and loops. A helper
 that creates its own local `__all__` does not mutate the module's export list.
+Container identity is retained across conditional alias rebindings and captured defaults.
+Positional and keyword-only defaults capture their values when the function is defined;
+reassigning a name later does not change an earlier default or make mutations of an old
+export list affect its replacement.
 Dynamic namespace operations reached through helpers or builtin aliases are rejected.
 `vars(value)` is exempt only when the value is proven to be a declared class, including
 known class aliases. `vars(sys.modules[__name__])` and unknown objects remain ambiguous.
 Known local decorators that replace or modify their argument make the decorated
 definition ambiguous; merely writing `return cls` is insufficient when `cls` is rebound
-or its attributes are assigned. Uncalled function bodies and ordinary helper-local
+or its attributes are assigned through an alias. Every reachable successful exit must
+return the unchanged argument; an implicit `None` return is not an identity decorator.
+Reading the argument's `__name__`, `__qualname__` or `__module__` metadata does not modify it.
+Uncalled function bodies and ordinary helper-local
 assignments do not rebind public names.
+
+Creating a coroutine, generator function result, or generator expression defers its body.
+A generator expression's outermost iterable is evaluated at creation. Effects are analyzed
+at awaits, iteration, `yield from`, known consumers such as `list`/`next`/`asyncio.run`,
+and iterator advancement. Passing a deferred value to an unknown callable conservatively
+includes possible consumption; merely storing it or applying `iter` does not consume it.
 Dynamic exports, unavailable
 source, conditional replacements, and unresolved cycles produce an **ambiguous resolution**
 diagnostic naming the responsible import and location, rather than claiming a controller

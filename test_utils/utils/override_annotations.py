@@ -14,6 +14,7 @@ from test_utils.utils.override_metadata import (
 	parse_annotation,
 	repository_identity,
 )
+from test_utils.utils.python_scope import EffectAnalyzer
 from test_utils.utils.python_source import (
 	FUNCTION_NODES,
 	AmbiguousBinding,
@@ -367,6 +368,7 @@ class SourceResolver:
 		self.apps = {app.name: app for app in apps}
 		self.modules: dict[Path, Module] = {}
 		self.import_limits: dict[str, list[int]] = {}
+		self.analyses = {}
 
 	def module(self, app: App, name: str, path: Path) -> Module:
 		if path not in self.modules:
@@ -422,11 +424,28 @@ class SourceResolver:
 				return self.module(app, name, path)
 		raise ResolutionError(f"Source not found for imported module {name}")
 
-	def module_body(self, module, before=None):
+	def module_limit(self, module, before=None):
 		limits = self.import_limits.get(module.name, [])
-		limit = min([*limits, *([before] if before is not None else [])], default=None)
+		return min([*limits, *([before] if before is not None else [])], default=None)
+
+	def module_body(self, module, before=None):
+		limit = self.module_limit(module, before)
 		body = [node for node in module.tree.body if limit is None or node.lineno < limit]
 		return list(runtime_body(body)), limit
+
+	def analysis(self, module, before=None):
+		key = module.path, self.module_limit(module, before)
+		if key not in self.analyses:
+			body, _ = self.module_body(module, before)
+			analyzer = EffectAnalyzer()
+			for statement in body:
+				analyzer.scan(statement)
+			self.analyses[key] = analyzer
+		return self.analyses[key]
+
+	def class_body(self, owner):
+		bodies = self.analysis(owner.module).runtime_bodies
+		return bodies[owner.node] if owner.node in bodies else list(runtime_body(owner.node.body))
 
 	def wildcard(self, module, statement, name, seen):
 		imported_name = self.import_module_name(module, statement)
@@ -482,7 +501,7 @@ class SourceResolver:
 		prefix = f"{owner.qualname}." if owner else ""
 		decorators = overload_names(body)
 		if owner is not None:
-			body = list(runtime_body(owner.node.body))
+			body = self.class_body(owner)
 			decorators.update(overload_names(body))
 		for index, name in enumerate(parts):
 			try:
@@ -528,6 +547,10 @@ class SourceResolver:
 				finally:
 					limits.pop()
 			elif isinstance(binding.node, (ast.ClassDef, *FUNCTION_NODES)):
+				if binding.node in self.analysis(module, before).invalid_definitions:
+					raise ResolutionError(
+						f"Ambiguous decorated definition {module.name}.{qualname} at {module.path}:{binding.node.lineno}"
+					)
 				value = Symbol(module, prefix + name, binding.node)
 			else:
 				raise ResolutionError(
@@ -539,7 +562,7 @@ class SourceResolver:
 				return None
 			module = value.module
 			prefix = value.qualname + "."
-			body = list(runtime_body(value.node.body))
+			body = self.class_body(value)
 			decorators.update(overload_names(body))
 		return None
 
@@ -756,7 +779,9 @@ class AnnotationValidator:
 				)
 			# Include inherited methods from local mixins, not just the registered class.
 			methods = {}
-			class_bindings = {owner.identity: scope_bindings(owner.node.body) for owner in hierarchy}
+			class_bindings = {
+				owner.identity: scope_bindings(self.resolver.class_body(owner)) for owner in hierarchy
+			}
 			for owner in hierarchy:
 				for name, declarations in class_bindings[owner.identity].items():
 					if name not in methods:

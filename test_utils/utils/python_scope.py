@@ -22,6 +22,29 @@ class SourceValue:
 	helpers: tuple = ()
 	is_class: bool = False
 	items: dict | None = None
+	origins: frozenset = frozenset()
+	deferred: tuple = ()
+	false_constant: bool = False
+	uncertain: bool = False
+
+
+@dataclass(eq=False)
+class SourceFunction:
+	node: ast.AST
+	closure: object
+	defaults: dict
+	deferred: bool = False
+
+
+@dataclass(eq=False)
+class DeferredExecution:
+	helper: SourceFunction | None
+	arguments: list
+	keywords: dict
+	expression: ast.GeneratorExp | None = None
+	scope: object = None
+	outer_iterable: SourceValue | None = None
+	advance: SourceValue | None = None
 
 
 @dataclass
@@ -32,6 +55,7 @@ class SourceEffect:
 	typing_modules: frozenset[str] = frozenset()
 	replaced_definition: str | None = None
 	mutation: bool = False
+	origins: frozenset = frozenset()
 
 
 class SourceScope:
@@ -72,8 +96,11 @@ class SourceScope:
 		owner = self.binding_scope(name)
 		if name in owner.values:
 			return owner.values[name]
-		if owner.parent:
-			return owner.parent.get(name)
+		parent = owner.parent
+		while parent and parent.kind == "class":
+			parent = parent.parent
+		if parent:
+			return parent.get(name)
 		return SourceValue(ast.Name(id=name, ctx=ast.Load()))
 
 	def set(self, name, value, *, anchor=True):
@@ -87,7 +114,34 @@ class SourceScope:
 class EffectAnalyzer:
 	"""Conservative lexical analysis of executed syntax, never importing an app."""
 
-	BUILTINS = ("vars", "globals", "locals", "exec", "eval", "setattr", "delattr")
+	ASYNC_ADVANCES = ("__anext__", "asend", "athrow")  # codespell:ignore asend
+
+	BUILTINS = (
+		"vars",
+		"globals",
+		"locals",
+		"exec",
+		"eval",
+		"setattr",
+		"delattr",
+		"list",
+		"tuple",
+		"set",
+		"dict",
+		"next",
+		"sum",
+		"any",
+		"all",
+		"sorted",
+		"iter",
+		"print",
+		"id",
+		"type",
+		"repr",
+		"str",
+		"bool",
+		"len",
+	)
 
 	def __init__(self):
 		self.scope = SourceScope()
@@ -96,8 +150,29 @@ class EffectAnalyzer:
 				ast.Name(id=name, ctx=ast.Load()), modules=frozenset({f"builtins.{name}"})
 			)
 		self.effects = []
+		self.call_values = {}
+		self.invalid_definitions = set()
+		self.runtime_bodies = {}
+		self.changed_typing = set()
+		self.return_values = []
+
+	def emit(self, effect):
+		self.effects.append(effect)
+		self.changed_typing.update(effect.typing_modules)
+		if effect.namespace:
+			self.changed_typing.update({"typing", "typing_extensions"})
+
+	@staticmethod
+	def reachable(value, seen=frozenset()):
+		if id(value) in seen:
+			return frozenset()
+		return value.origins | frozenset().union(
+			*(EffectAnalyzer.reachable(item, seen | {id(value)}) for item in (value.items or {}).values())
+		)
 
 	def value(self, node, scope):
+		if node in self.call_values:
+			return self.call_values[node]
 		if isinstance(node, ast.Name):
 			return scope.get(node.id)
 		if isinstance(node, ast.Attribute):
@@ -106,11 +181,23 @@ class EffectAnalyzer:
 			return SourceValue(
 				ast.copy_location(ast.Attribute(value=base.expression, attr=node.attr, ctx=node.ctx), node),
 				modules=modules,
+				origins=frozenset()
+				if node.attr in {"__name__", "__qualname__", "__module__"}
+				and (
+					base.is_class
+					or base.helpers
+					or any(isinstance(origin, DEFINITION_NODES) for origin in base.origins)
+				)
+				else self.reachable(base),
+				false_constant=node.attr == "TYPE_CHECKING"
+				and bool(base.modules & {"typing", "typing_extensions"})
+				and not base.uncertain
+				and not (base.modules & self.changed_typing),
 			)
 		if isinstance(node, (ast.List, ast.Tuple)):
 			items = {i: self.value(item, scope) for i, item in enumerate(node.elts)}
 			expression = type(node)(elts=[value.expression for value in items.values()], ctx=ast.Load())
-			return SourceValue(ast.copy_location(expression, node), items=items)
+			return SourceValue(ast.copy_location(expression, node), items=items, origins=frozenset({node}))
 		if isinstance(node, ast.Dict) and all(isinstance(key, ast.Constant) for key in node.keys):
 			items = {
 				key.value: self.value(item, scope) for key, item in zip(node.keys, node.values, strict=True)
@@ -120,6 +207,7 @@ class EffectAnalyzer:
 					ast.Dict(keys=node.keys, values=[item.expression for item in items.values()]), node
 				),
 				items=items,
+				origins=frozenset({node}),
 			)
 		if isinstance(node, ast.NamedExpr):
 			return self.value(node.value, scope)
@@ -158,10 +246,30 @@ class EffectAnalyzer:
 		return self.effects
 
 	def expression(self, node, scope, seen):
+		if isinstance(node, ast.YieldFrom):
+			self.expression(node.value, scope, seen)
+			self.consume(self.value(node.value, scope), seen)
+			return
 		if isinstance(node, ast.NamedExpr):
 			self.visit(node, scope, seen)
 			return
-		if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+		if isinstance(node, ast.Await):
+			self.expression(node.value, scope, seen)
+			self.consume(self.value(node.value, scope), seen)
+			return
+		if isinstance(node, ast.GeneratorExp):
+			self.expression(node.generators[0].iter, scope, seen)
+			deferred = DeferredExecution(
+				None,
+				[],
+				{},
+				expression=node,
+				scope=scope,
+				outer_iterable=self.value(node.generators[0].iter, scope),
+			)
+			self.call_values[node] = SourceValue(node, deferred=(deferred,))
+			return
+		if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp)):
 			local = SourceScope(scope, kind="function")
 			for generator in node.generators:
 				self.expression(generator.iter, local, seen)
@@ -209,30 +317,101 @@ class EffectAnalyzer:
 			attribute = node.args[1] if len(node.args) > 1 else None
 			if not isinstance(attribute, ast.Constant) or attribute.value == "TYPE_CHECKING":
 				changed.update(arguments[0].modules & {"typing", "typing_extensions"})
-		self.effects.append(
+		references = self.reachable(callee)
+		consumers = {
+			f"builtins.{name}"
+			for name in ("list", "tuple", "set", "dict", "next", "sum", "any", "all", "sorted")
+		} | {"asyncio.run"}
+		readers = {
+			f"builtins.{name}" for name in ("iter", "print", "id", "type", "repr", "str", "bool", "len")
+		}
+		if not callee.helpers and not (callee.modules & (consumers | readers)):
+			references |= frozenset().union(
+				*(self.reachable(item) for item in [*arguments, *keywords.values()] if not item.deferred)
+			)
+		# Reading vars(cls) does not itself mutate the class; calls on its result may.
+		if "builtins.vars" in callee.modules and not namespace:
+			references = frozenset()
+		self.emit(
 			SourceEffect(
-				self.value(node, scope).expression, namespace=namespace, typing_modules=frozenset(changed)
+				self.value(node, scope).expression,
+				namespace=namespace,
+				typing_modules=frozenset(changed),
+				origins=references,
 			)
 		)
-		for function, closure in callee.helpers:
-			self.invoke(function, closure, arguments, keywords, seen)
+		results = []
+		for helper in callee.helpers:
+			if helper.deferred:
+				results.append(SourceValue(node, deferred=(DeferredExecution(helper, arguments, keywords),)))
+			else:
+				results.append(self.invoke(helper, arguments, keywords, seen))
+		if callee.modules & consumers or (not callee.helpers and not callee.modules & readers):
+			for argument in arguments:
+				self.consume(argument, seen)
+		if "builtins.iter" in callee.modules and arguments:
+			results.append(arguments[0])
+		if "builtins.vars" in callee.modules and arguments:
+			results.append(SourceValue(node, origins=self.reachable(arguments[0])))
+		if isinstance(node.func, ast.Attribute):
+			iterator = self.value(node.func.value, scope)
+			if node.func.attr in {"__next__", "send", "throw"}:
+				self.consume(iterator, seen)
+			elif node.func.attr in self.ASYNC_ADVANCES and iterator.deferred:
+				results.append(
+					SourceValue(node, deferred=(DeferredExecution(None, [], {}, advance=iterator),))
+				)
+		if results:
+			self.call_values[node] = self.merge(results)
 
-	def invoke(self, function, closure, arguments, keywords, seen):
+	def consume(self, value, seen):
+		for deferred in value.deferred:
+			if id(deferred) in seen:
+				continue
+			if deferred.advance is not None:
+				self.consume(deferred.advance, seen | {id(deferred)})
+			elif deferred.helper:
+				self.invoke(deferred.helper, deferred.arguments, deferred.keywords, seen | {id(deferred)})
+			else:
+				local = SourceScope(deferred.scope, kind="function")
+				for index, generator in enumerate(deferred.expression.generators):
+					if index:
+						self.expression(generator.iter, local, seen)
+					iterable = self.value(generator.iter, local) if index else deferred.outer_iterable
+					self.consume(iterable, seen | {id(deferred)})
+					values = list(iterable.items.values()) if iterable.items else []
+					self.bind(
+						generator.target,
+						self.merge(values) if values else SourceValue(ast.Constant(None)),
+						local,
+						seen,
+					)
+					for condition in generator.ifs:
+						self.expression(condition, local, seen)
+				self.expression(deferred.expression.elt, local, seen)
+
+	@staticmethod
+	def always_returns(body):
+		for statement in body:
+			if isinstance(statement, (ast.Return, ast.Raise)):
+				return True
+			if (
+				isinstance(statement, ast.If)
+				and EffectAnalyzer.always_returns(statement.body)
+				and EffectAnalyzer.always_returns(statement.orelse)
+			):
+				return True
+		return False
+
+	def invoke(self, helper, arguments, keywords, seen):
+		function, closure = helper.node, helper.closure
 		if id(function) in seen:
-			return
+			return SourceValue(ast.Constant(None))
 		local = SourceScope(closure, kind="function", body=function.body)
 		params = [*function.args.posonlyargs, *function.args.args]
 		for parameter in [*params, *function.args.kwonlyargs]:
 			local.values[parameter.arg] = SourceValue(ast.Constant(None))
-		for parameter, default in zip(
-			params[-len(function.args.defaults) :] if function.args.defaults else [],
-			function.args.defaults,
-			strict=True,
-		):
-			local.values[parameter.arg] = self.value(default, closure)
-		for parameter, default in zip(function.args.kwonlyargs, function.args.kw_defaults, strict=True):
-			if default is not None:
-				local.values[parameter.arg] = self.value(default, closure)
+		local.values.update(helper.defaults)
 		for parameter, argument in zip(params, arguments, strict=False):
 			local.values[parameter.arg] = argument
 		local.values.update({name: value for name, value in keywords.items() if name in local.values})
@@ -250,14 +429,19 @@ class EffectAnalyzer:
 				),
 				items=items,
 			)
+		self.return_values.append([])
 		for statement in function.body:
 			if self.visit(statement, local, seen | {id(function)}):
 				break
+		results = self.return_values.pop()
+		if not self.always_returns(function.body) or not results:
+			results.append(SourceValue(ast.Constant(None)))
+		return self.merge(results)
 
 	def bind(self, target, value, scope, seen=frozenset(), *, anchor=True):
 		if isinstance(target, ast.Name):
 			if scope.set(target.id, value, anchor=anchor):
-				self.effects.append(SourceEffect(target, bindings=frozenset({target.id})))
+				self.emit(SourceEffect(target, bindings=frozenset({target.id})))
 		elif isinstance(target, (ast.Tuple, ast.List)):
 			for index, item in enumerate(target.elts):
 				self.bind(
@@ -276,21 +460,23 @@ class EffectAnalyzer:
 				if isinstance(target, ast.Attribute) and target.attr == "TYPE_CHECKING"
 				else frozenset()
 			)
-			self.effects.append(
+			self.emit(
 				SourceEffect(
 					self.value(target, scope).expression,
 					typing_modules=modules & {"typing", "typing_extensions"},
+					origins=self.reachable(self.value(target.value, scope)),
+					mutation=True,
 				)
 			)
 
-	def branches(self, blocks, scope, seen):
+	def branches(self, blocks, scope, seen, *, include_initial=True):
 		scopes = []
 		owner = scope
 		while owner:
 			scopes.append(owner)
 			owner = owner.parent
 		before = [item.values.copy() for item in scopes]
-		outcomes = [before]
+		outcomes = [before] if include_initial else []
 		for block in blocks:
 			for item, values in zip(scopes, before, strict=True):
 				item.values = values.copy()
@@ -311,13 +497,26 @@ class EffectAnalyzer:
 		return SourceValue(
 			ast.Tuple(elts=[value.expression for value in values], ctx=ast.Load()),
 			modules=frozenset().union(*(value.modules for value in values)),
-			helpers=tuple(
-				{
-					(id(fn), id(closure)): (fn, closure) for value in values for fn, closure in value.helpers
-				}.values()
+			helpers=tuple({id(helper): helper for value in values for helper in value.helpers}.values()),
+			origins=frozenset().union(*(value.origins for value in values)),
+			deferred=tuple({id(item): item for value in values for item in value.deferred}.values()),
+			false_constant=all(value.false_constant for value in values),
+			uncertain=any(value.uncertain for value in values)
+			or any(
+				value.modules != values[0].modules or value.origins != values[0].origins for value in values
 			),
 			is_class=all(value.is_class for value in values),
 		)
+
+	@staticmethod
+	def expression_nodes(node):
+		if isinstance(node, (*DEFINITION_NODES, ast.Lambda)):
+			for expression in definition_expressions(node):
+				yield from EffectAnalyzer.expression_nodes(expression)
+			return
+		yield node
+		for child in ast.iter_child_nodes(node):
+			yield from EffectAnalyzer.expression_nodes(child)
 
 	def visit(self, node, scope, seen):
 		if isinstance(node, ast.AnnAssign) and node.value is None:
@@ -326,56 +525,79 @@ class EffectAnalyzer:
 			for expression in definition_expressions(node):
 				self.expression(expression, scope, seen)
 			replaced = False
+			argument = SourceValue(
+				ast.Constant(None), is_class=isinstance(node, ast.ClassDef), origins=frozenset({node})
+			)
 			for decorator in node.decorator_list:
 				callee = self.value(decorator.func if isinstance(decorator, ast.Call) else decorator, scope)
-				for function, closure in callee.helpers:
-					params = [*function.args.posonlyargs, *function.args.args]
-					returns = [
-						item for item in scope_statements(function.body) if isinstance(item, ast.Return)
-					]
-					identity = bool(params and returns) and all(
-						isinstance(item.value, ast.Name) and item.value.id == params[0].arg
-						for item in returns
-					)
-					if identity:
-						parameter = params[0].arg
-						identity = parameter not in scope_bindings(function.body)
-						for item in ast.walk(function):
-							if isinstance(item, (ast.Attribute, ast.Subscript)) and isinstance(
-								item.ctx, (ast.Store, ast.Del)
-							):
-								identity &= not any(
-									isinstance(child, ast.Name) and child.id == parameter
-									for child in ast.walk(item)
-								)
-							elif isinstance(item, ast.Call):
-								identity &= not any(
-									isinstance(arg, ast.Name) and arg.id == parameter for arg in item.args
-								)
-					replaced |= not identity or isinstance(decorator, ast.Call)
-					if not isinstance(decorator, ast.Call):
-						self.invoke(
-							function,
-							closure,
-							[SourceValue(ast.Constant(None), is_class=isinstance(node, ast.ClassDef))],
-							{},
-							seen,
+				for helper in callee.helpers:
+					function = helper.node
+					identity = False
+					start = len(self.effects)
+					if not isinstance(decorator, ast.Call) and not helper.deferred:
+						result = self.invoke(helper, [argument], {}, seen)
+						identity = (
+							self.always_returns(function.body)
+							and not result.uncertain
+							and result.origins == argument.origins
 						)
+					replaced |= (
+						not identity
+						or isinstance(decorator, ast.Call)
+						or helper.deferred
+						or any(node in effect.origins for effect in self.effects[start:])
+					)
 			if isinstance(node, ast.ClassDef):
 				local = SourceScope(scope, kind="class", body=node.body)
+				active = []
 				for statement in node.body:
-					self.visit(statement, local, seen)
+					statements = (
+						statement.orelse
+						if isinstance(statement, ast.If) and self.value(statement.test, local).false_constant
+						else [statement]
+					)
+					for statement in statements:
+						active.append(statement)
+						self.visit(statement, local, seen)
+				self.runtime_bodies[node] = active
 			closure = scope
 			while closure.kind == "class":
 				closure = closure.parent
+			helpers = ()
+			if isinstance(node, FUNCTION_NODES) and not replaced:
+				params = [*node.args.posonlyargs, *node.args.args]
+				defaults = {
+					parameter.arg: self.value(default, scope)
+					for parameter, default in zip(
+						params[-len(node.args.defaults) :] if node.args.defaults else [],
+						node.args.defaults,
+						strict=True,
+					)
+				}
+				defaults.update(
+					{
+						parameter.arg: self.value(default, scope)
+						for parameter, default in zip(
+							node.args.kwonlyargs, node.args.kw_defaults, strict=True
+						)
+						if default is not None
+					}
+				)
+				deferred = isinstance(node, ast.AsyncFunctionDef) or any(
+					isinstance(child, (ast.Yield, ast.YieldFrom))
+					for statement in scope_statements(node.body)
+					for child in self.expression_nodes(statement)
+				)
+				helpers = (SourceFunction(node, closure, defaults, deferred),)
 			value = SourceValue(
 				ast.Constant(None),
-				helpers=((node, closure),) if isinstance(node, FUNCTION_NODES) and not replaced else (),
+				helpers=helpers,
 				is_class=isinstance(node, ast.ClassDef) and not replaced,
 			)
 			self.bind(ast.copy_location(ast.Name(id=node.name, ctx=ast.Store()), node), value, scope)
 			if replaced:
-				self.effects.append(SourceEffect(node, replaced_definition=node.name))
+				self.invalid_definitions.add(node)
+				self.emit(SourceEffect(node, replaced_definition=node.name))
 		elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
 			self.expression(node.value, scope, seen)
 			value = self.value(node.value, scope)
@@ -386,10 +608,13 @@ class EffectAnalyzer:
 				self.expression(node.value, scope, seen)
 			for target in node.targets if isinstance(node, ast.Delete) else [node.target]:
 				if isinstance(target, ast.Name):
-					self.effects.append(
+					self.emit(
 						SourceEffect(
 							self.value(target, scope).expression,
 							mutation=isinstance(node, ast.AugAssign) and scope is not scope.root,
+							origins=self.reachable(self.value(target, scope))
+							if isinstance(node, ast.AugAssign) and scope is not scope.root
+							else frozenset(),
 						)
 					)
 				self.bind(target, SourceValue(ast.Constant(None)), scope, seen)
@@ -397,7 +622,7 @@ class EffectAnalyzer:
 			if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
 				# A wildcard may replace an earlier class with a module or another object.
 				for name, value in scope.values.items():
-					scope.values[name] = replace(value, is_class=False)
+					scope.values[name] = replace(value, is_class=False, false_constant=False, uncertain=True)
 			for alias in node.names:
 				name = alias.asname or (
 					alias.name.split(".")[0] if isinstance(node, ast.Import) else alias.name
@@ -411,15 +636,26 @@ class EffectAnalyzer:
 				)
 				self.bind(
 					ast.copy_location(ast.Name(id=name, ctx=ast.Store()), node),
-					SourceValue(ast.Constant(None), modules=frozenset({module}) if module else frozenset()),
+					SourceValue(
+						ast.Constant(None),
+						modules=frozenset({module}) if module else frozenset(),
+						false_constant=module in {"typing.TYPE_CHECKING", "typing_extensions.TYPE_CHECKING"}
+						and node.module not in self.changed_typing,
+					),
 					scope,
 				)
 		elif isinstance(node, ast.If):
 			self.expression(node.test, scope, seen)
-			self.branches([node.body, node.orelse], scope, seen)
+			if self.value(node.test, scope).false_constant:
+				for statement in node.orelse:
+					if self.visit(statement, scope, seen):
+						return True
+			else:
+				self.branches([node.body, node.orelse], scope, seen, include_initial=False)
 		elif isinstance(node, (ast.For, ast.AsyncFor)):
 			self.expression(node.iter, scope, seen)
 			iterable = self.value(node.iter, scope)
+			self.consume(iterable, seen)
 			values = list(iterable.items.values()) if iterable.items else []
 			self.bind(
 				node.target,
@@ -431,6 +667,13 @@ class EffectAnalyzer:
 			self.branches([node.body], scope, seen)
 			for statement in node.orelse:
 				self.visit(statement, scope, seen)
+		elif isinstance(node, ast.Return):
+			if node.value:
+				self.expression(node.value, scope, seen)
+			if self.return_values:
+				self.return_values[-1].append(
+					self.value(node.value, scope) if node.value else SourceValue(ast.Constant(None))
+				)
 		elif isinstance(node, (ast.Global, ast.Nonlocal)):
 			pass
 		else:
