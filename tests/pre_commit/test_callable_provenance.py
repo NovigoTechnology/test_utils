@@ -100,6 +100,27 @@ def test_copied_overload_retains_its_identity_after_typing_module_mutation(bench
 	assert "return 'runtime'" in extract_function(source, "target")
 
 
+@pytest.mark.parametrize(
+	"rebind",
+	[
+		"    typing.overload = identity\n    return identity",
+		"    return (typing.__dict__.update(overload=identity), identity)[1]",
+	],
+	ids=["attribute-write", "dictionary-write-in-return"],
+)
+def test_overload_classification_uses_the_already_evaluated_decorator_values(bench, rebind):
+	# Inspect syntax only: the test must not mutate the interpreter's typing module.
+	source = (
+		"import typing\ndef identity(function): return function\ndef rebind():\n"
+		+ rebind
+		+ "\ndef target(): return 'old'\n@rebind()\n@typing.overload\ndef target(): return 'new'"
+	)
+	module(bench, "api", source)
+	with pytest.raises(ResolutionError, match="Ambiguous"):
+		resolver(bench).resolve("erpnext.api.target")
+	assert extract_function(source, "target") is None
+
+
 def test_uncertain_typing_receiver_cannot_hide_a_replacement_definition(bench):
 	setup = "if enabled:\n    t = CustomTyping"
 	decorator = "t.overload"
@@ -259,3 +280,18 @@ def test_mutating_one_methods_default_metadata_keeps_a_sibling_proven(bench):
 	module(bench, "api", source)
 	assert resolver(bench).resolve("erpnext.api.File.target").node.lineno == 2
 	assert "return 'original'" in extract_function(source, "File.target")
+
+
+def test_metaclass_preparation_keywords_keep_the_exposed_imported_function(bench):
+	operation = "class Meta(type):\n    @classmethod\n    def __prepare__(mcls, name, bases, *, target):\n        target.__doc__ = 'changed'\n        return {}\n    def __new__(mcls, name, bases, namespace, **kwargs):\n        return type.__new__(mcls, name, bases, namespace)\nclass Guard(metaclass=Meta, target=target): pass"
+
+	def target():
+		pass
+
+	namespace = {"target": target}
+	exec(compile(operation, "<prepared-keyword-exposure>", "exec"), namespace)
+	assert target.__doc__ == "changed"
+	module(bench, "api", "def target(): pass")
+	module(bench, "consumer", "from .api import target\n" + operation)
+	with pytest.raises(ResolutionError, match="Ambiguous imported binding"):
+		resolver(bench).resolve("erpnext.consumer.target")

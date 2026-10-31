@@ -31,6 +31,13 @@ def check_exports(operation, *, changed=True):
 	assert_export_contract(operation, changed=changed)
 
 
+def test_native_dictionary_entries_are_not_protocol_declarations():
+	check_exports(
+		"def configure(*args):\n    __all__.append('File')\nvalue = {'__bool__': configure}\nbool(value)",
+		changed=False,
+	)
+
+
 def test_generator_creation_acquires_the_outer_iterator_immediately():
 	assert_export_contract(
 		"class Configure:\n    def __iter__(self):\n        __all__.append('File')\n        return iter([])\npending = (item for item in Configure())",
@@ -346,3 +353,69 @@ def test_pure_object_protocols_keep_exports_provable():
 		"class Descriptor:\n    def __get__(self, instance, owner): return 1\n    def __set_name__(self, owner, name): pass\nclass Guard:\n    value = Descriptor()\n    def __init__(self): self.items = []\n    def __init_subclass__(cls): pass\n    def __enter__(self): return self\n    def __exit__(self, *args): return None\n    def __str__(self): return 'guard'\n    def __hash__(self): return 1\nclass Child(Guard): pass\ninstance = Child()\nvalue = instance.value\nwith instance:\n    snapshot = set([instance])\n    text = str(instance)",
 		changed=False,
 	)
+
+
+def test_existing_instances_read_replaced_inherited_protocols_from_live_c3():
+	assert_export_contract(
+		"class Base:\n    def __bool__(self): return True\nclass Child(Base): pass\ninstance = Child()\ndef replacement(self):\n    __all__.append('File')\n    return True\nBase.__bool__ = replacement\nbool(instance)",
+		changed=True,
+	)
+
+
+def test_a_child_override_still_shadows_a_replaced_parent_protocol():
+	assert_export_contract(
+		"class Base:\n    def __bool__(self): return True\nclass Child(Base):\n    def __bool__(self): return True\ndef replacement(self):\n    __all__.append('File')\n    return True\nBase.__bool__ = replacement\nbool(Child())",
+		changed=False,
+	)
+
+
+def test_function_decorators_apply_inner_before_outer():
+	assert_export_contract(
+		"alias = []\ndef outer(function):\n    alias.append('File')\n    return function\ndef inner(function):\n    global alias\n    alias = __all__\n    return function\n@outer\n@inner\ndef target(): pass",
+		changed=True,
+	)
+
+
+def test_class_body_runs_before_its_decorator_is_applied():
+	assert_export_contract(
+		"alias = []\ndef decorate(cls):\n    alias.append('File')\n    return cls\n@decorate\nclass Guard:\n    global alias\n    alias = __all__",
+		changed=True,
+	)
+
+
+def test_an_outer_decorator_does_not_retroactively_change_the_inner_argument():
+	assert_export_contract(
+		"alias = []\ndef outer(function):\n    global alias\n    alias = __all__\n    return function\ndef inner(function):\n    alias.append('File')\n    return function\n@outer\n@inner\ndef target(): pass",
+		changed=False,
+	)
+
+
+def test_decorator_expression_is_captured_before_the_class_body_rebinds_it():
+	assert_export_contract(
+		"def decorate(cls): return cls\ndef replacement(cls):\n    __all__.append('File')\n    return cls\n@decorate\nclass Guard:\n    global decorate\n    decorate = replacement",
+		changed=False,
+	)
+
+
+def test_metaclass_preparation_executes_before_the_class_body():
+	assert_export_contract(
+		"class Meta(type):\n    @classmethod\n    def __prepare__(mcls, name, bases):\n        __all__.append('File')\n        return {}\nclass Guard(metaclass=Meta): pass",
+		changed=True,
+	)
+
+
+def test_native_prepared_namespaces_are_available_to_inherited_class_bodies():
+	assert_export_contract(
+		"class Meta(type):\n    @classmethod\n    def __prepare__(mcls, name, bases): return {'items': []}\nclass Base(metaclass=Meta): pass\nclass Child(Base):\n    items.append('File')",
+		changed=False,
+	)
+
+
+def test_a_custom_prepared_mapping_has_an_explicit_uncertainty_boundary():
+	source = "__all__ = ['helper']\nclass Namespace(dict): pass\nclass Meta(type):\n    @classmethod\n    def __prepare__(mcls, name, bases): return Namespace()\nclass Guard(metaclass=Meta): pass"
+	namespace = {}
+	exec(compile(source, "<custom-class-namespace>", "exec"), namespace)
+	assert namespace["__all__"] == ["helper"]
+	# Custom namespace lookup and write callbacks are outside the native-dict model.
+	with pytest.raises(AmbiguousBinding):
+		static_exports(ast.parse(source).body)

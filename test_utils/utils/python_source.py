@@ -32,7 +32,10 @@ class SourceAnalyzer(EffectAnalyzer):
 	def value(self, node, scope):
 		value = super().value(node, scope)
 		if isinstance(node, ast.Attribute) and node.attr == "overload":
-			if self.value(node.value, scope).modules & self.changed_overload_modules:
+			modules = self.value(node.value, scope).modules
+			if modules & self.changed_overload_modules or any(
+				self.module_writes.get(module, set()) & {"overload", None} for module in modules
+			):
 				value = replace(value, uncertain=True)
 		return value
 
@@ -55,20 +58,21 @@ class SourceAnalyzer(EffectAnalyzer):
 				)
 		return super().expression(node, scope, seen)
 
+	def captured_decorators(self, node, values):
+		if isinstance(node, FUNCTION_NODES):
+			for value in values:
+				if value.modules & {"typing.overload", "typing_extensions.overload"}:
+					if value.uncertain:
+						self.invalid_definitions.add(node)
+					else:
+						self.overload_definitions.add(node)
+
 	def visit(self, node, scope, seen):
 		self.changed_overload_modules.update(
 			module
 			for module, attributes in self.module_writes.items()
 			if "overload" in attributes or None in attributes
 		)
-		if isinstance(node, FUNCTION_NODES):
-			for decorator in node.decorator_list:
-				value = self.value(decorator, scope)
-				if value.modules & {"typing.overload", "typing_extensions.overload"}:
-					if value.uncertain:
-						self.invalid_definitions.add(node)
-					else:
-						self.overload_definitions.add(node)
 		result = super().visit(node, scope, seen)
 		if (
 			isinstance(node, ast.ImportFrom)

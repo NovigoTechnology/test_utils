@@ -98,8 +98,10 @@ Clearing or removing an entry from the copy changes its own structure, not the s
 Ownership is recorded when a default is captured: mutations through the original alias or
 a called helper also invalidate the function. Reassigning that alias, modifying an independent
 copy, or mutating a value before capture does not invalidate the captured implementation.
-Dictionary lookups with unproven keys may execute hash/equality callbacks and therefore
-cannot establish that a captured default was only read.
+Dictionary access supports primitive keys and native tuples of primitive keys. An abstract
+union of primitive values is safe to hash but does not prove which entry was selected.
+Application-defined keys, or stored keys with unproven hash/equality behavior, make the
+operation ambiguous; the analyzer does not partially simulate reentrant dictionary callbacks.
 An overload declaration is skipped only when its decorator is proven to be the current
 absolute `typing.overload` or `typing_extensions.overload` binding at definition time.
 Local decorators with those names, rebound aliases and modified typing attributes cannot
@@ -189,6 +191,14 @@ Protocol calls use the same invalidation checks as explicit calls. Truth testing
 each link of chained comparisons, augmented assignments and exception handler type
 expressions contribute their executed effects. Conditional dictionary updates retain aliases
 that remain reachable on another branch.
+Boolean operands are evaluated and truth-tested in order, preserving short circuits and
+joining possible states when a choice is unknown. Calls and subscriptions keep their
+evaluated callable or receiver while argument/key effects run. `setdefault` returns the
+selected existing value and `pop` removes the entry before subsequent operations.
+Inherited protocol lookup reads current C3 declarations. Decorator expressions are captured
+before definition creation and applied from the innermost outward afterward; overload
+classification uses those same captures. Metaclass preparation runs before the class body,
+and an unproven custom namespace is reported as ambiguous.
 Known local constructors, methods and protocol callbacks are inspected, including callbacks
 passed to operations such as `sorted(key=...)`. An opaque callback executed while a known
 `__all__` exists makes the export list ambiguous, even when the call has no arguments.

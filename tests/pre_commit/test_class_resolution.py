@@ -98,6 +98,63 @@ def test_metadata_for_a_later_redefined_base_cannot_validate_a_new_custom_helper
 	assert any("no longer exists" in error for error in validate(bench).errors)
 
 
+def test_captured_method_metadata_reports_ambiguous_active_lookup(bench):
+	module(
+		bench,
+		"api",
+		"class Base:\n    def validate(self): pass\nclass Ledger(Base): pass\nif enabled:\n    class Base:\n        def validate(self): pass",
+	)
+	register_class(
+		bench,
+		"from erpnext.api import Ledger\nclass CustomLedger(Ledger):\n"
+		+ function_source(
+			annotation(method="Base.validate", path="erpnext/api.py"), name="validate", indent="    "
+		),
+	)
+	result = validate(bench)
+	assert result.checked == 1
+	assert any("Ambiguous METHOD 'Base.validate'" in error for error in result.errors)
+	assert any("conditional declaration of Base" in error for error in result.errors)
+
+
+def test_captured_method_metadata_distinguishes_missing_reexport_from_ambiguous_lookup(bench):
+	module(
+		bench,
+		"api",
+		"class Base:\n    def validate(self): pass\nclass Ledger(Base): pass\nfrom .replacement import Base",
+	)
+	module(bench, "replacement", "class Base: pass")
+	register_class(
+		bench,
+		"from erpnext.api import Ledger\nclass CustomLedger(Ledger):\n"
+		+ function_source(
+			annotation(method="Base.validate", path="erpnext/api.py"), name="validate", indent="    "
+		),
+	)
+	result = validate(bench)
+	assert result.checked == 1
+	assert not result.errors
+
+
+def test_captured_method_metadata_rejects_an_unavailable_active_import_source(bench):
+	module(
+		bench,
+		"api",
+		"class Base:\n    def validate(self): pass\nclass Ledger(Base): pass\nfrom .unavailable import Base",
+	)
+	register_class(
+		bench,
+		"from erpnext.api import Ledger\nclass CustomLedger(Ledger):\n"
+		+ function_source(
+			annotation(method="Base.validate", path="erpnext/api.py"), name="validate", indent="    "
+		),
+	)
+	result = validate(bench)
+	assert result.checked == 1
+	assert any("Ambiguous METHOD 'Base.validate'" in error for error in result.errors)
+	assert any("Source not found for imported module erpnext.unavailable" in error for error in result.errors)
+
+
 def test_circular_snapshot_keeps_transitive_bases_and_c3_precedence(bench):
 	import_style = "wildcard"
 	statement = "from .api import File" if import_style == "explicit" else "from .api import *"

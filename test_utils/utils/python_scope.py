@@ -33,6 +33,7 @@ class SourceValue:
 	uncertain: bool = False
 	declared: dict | None = None
 	class_order: tuple = ()
+	metaclass: object = None
 
 
 @dataclass(eq=False)
@@ -119,7 +120,7 @@ class SourceScope:
 
 	def set(self, name, value, *, anchor=True):
 		owner = self.binding_scope(name)
-		if owner is owner.root and anchor:
+		if owner is owner.root and anchor and not value.scalar:
 			value = replace(value, expression=ast.Name(id=name, ctx=ast.Load()))
 		owner.values[name] = value
 		return owner is self.root and self is not self.root
@@ -176,6 +177,7 @@ class EffectAnalyzer:
 		)
 		self.effects = []
 		self.call_values = {}
+		self.access_values = {}
 		self.invalid_definitions = set()
 		self.default_owners = {}
 		self.runtime_bodies = {}
@@ -280,6 +282,33 @@ class EffectAnalyzer:
 				return None
 		return next(iter(kinds)) if len(kinds) == 1 and kinds <= {ast.List, ast.Tuple} else None
 
+	def literal_key(self, value):
+		if value.uncertain:
+			raise ValueError("abstract alternatives are not a literal key")
+		if self.sequence_kind(value) is ast.Tuple and None not in value.items:
+			return tuple(self.literal_key(item) for item in value.items.values())
+		if value.scalar:
+			return ast.literal_eval(value.expression)
+		raise ValueError("key value is not proven")
+
+	def pure_hash_key(self, value):
+		return value.scalar or (
+			not value.uncertain
+			and self.sequence_kind(value) is ast.Tuple
+			and all(self.pure_hash_key(item) for item in value.items.values())
+		)
+
+	@staticmethod
+	def unknown_entry(base):
+		key = (base.key_values or {}).get(None)
+		return None in (base.items or {}) and not (
+			key is not None
+			and key.scalar
+			and not key.uncertain
+			and isinstance(key.expression, ast.Constant)
+			and key.expression.value is None
+		)
+
 	def value(self, node, scope):
 		if node in self.call_values:
 			return self.call_values[node]
@@ -288,7 +317,9 @@ class EffectAnalyzer:
 		if isinstance(node, ast.Constant):
 			return SourceValue(node, scalar=True)
 		if isinstance(node, ast.Attribute):
-			base = self.value(node.value, scope)
+			base = (
+				self.access_values[node][0] if node in self.access_values else self.value(node.value, scope)
+			)
 			if node.attr in {"__kwdefaults__", "__defaults__"}:
 				owners = frozenset(
 					(origin, node.attr) for origin in base.origins if isinstance(origin, FUNCTION_NODES)
@@ -316,8 +347,9 @@ class EffectAnalyzer:
 						else None,
 					)
 
-			if base.items is not None and node.attr in base.items and (base.is_class or base.instance):
-				member = base.items[node.attr]
+			members = self.live_members(base)
+			if node.attr in members and (base.is_class or base.instance):
+				member = members[node.attr]
 				bound = (
 					(base,)
 					if any(
@@ -374,12 +406,22 @@ class EffectAnalyzer:
 					possible.append(value)
 				else:
 					try:
-						index = ast.literal_eval(key)
-						items[index] = value
-						key_values[index] = self.value(key, scope)
+						index = self.literal_key(self.value(key, scope))
+						key_value = self.value(key, scope)
+						if index is None and self.unknown_entry(
+							SourceValue(node, items=items, key_values=key_values)
+						):
+							items[None] = self.merge([items[None], value])
+							key_values[None] = self.merge([key_values[None], key_value])
+						else:
+							items[index] = value
+							key_values[index] = key_value
 					except ValueError, TypeError:
 						items[None] = self.merge([items[None], value]) if None in items else value
-						key_values[None] = self.value(key, scope)
+						key_value = self.value(key, scope)
+						key_values[None] = (
+							self.merge([key_values[None], key_value]) if None in key_values else key_value
+						)
 						possible.append(value)
 			return SourceValue(
 				node,
@@ -390,32 +432,10 @@ class EffectAnalyzer:
 		if isinstance(node, ast.NamedExpr):
 			return self.value(node.value, scope)
 		if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load):
-			base = self.value(node.value, scope)
-			try:
-				if isinstance(node.slice, ast.Slice) and base.items is not None:
-					index = slice(
-						*(
-							ast.literal_eval(item) if item is not None else None
-							for item in (node.slice.lower, node.slice.upper, node.slice.step)
-						)
-					)
-					selected = [self.default_alias(value, base) for value in list(base.items.values())[index]]
-					return SourceValue(node, items=dict(enumerate(selected)), origins=frozenset({node}))
-				index = ast.literal_eval(node.slice)
-				if base.items is not None and index in base.items:
-					return self.default_alias(
-						(
-							self.merge([base.items[index], base.items[None]])
-							if None in base.items and index is not None
-							else base.items[index]
-						),
-						base,
-					)
-			except ValueError, TypeError:
-				pass
-			possible = list((base.items or {}).values())
-			result = self.merge(possible) if possible else SourceValue(node)
-			return replace(result, origins=result.origins | self.reachable(base), uncertain=True)
+			base, key = self.access_values.get(node, (None, None))
+			if base is None:
+				base, key = self.value(node.value, scope), self.value(node.slice, scope)
+			return self.subscript_value(node, base, key)
 		if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
 			left, right = self.value(node.left, scope), self.value(node.right, scope)
 			kind = self.sequence_kind(left)
@@ -460,7 +480,133 @@ class EffectAnalyzer:
 		self.visit(statement, self.scope, frozenset())
 		return self.effects
 
+	def subscript_value(self, node, base, key):
+		"""Select from the container captured before key evaluation and callbacks."""
+		try:
+			if isinstance(key.expression, ast.Slice) and base.items is not None:
+				index = slice(
+					*(
+						ast.literal_eval(item) if item is not None else None
+						for item in (key.expression.lower, key.expression.upper, key.expression.step)
+					)
+				)
+				selected = [self.default_alias(value, base) for value in list(base.items.values())[index]]
+				return SourceValue(node, items=dict(enumerate(selected)), origins=frozenset({node}))
+			index = self.literal_key(key)
+			if base.items is not None and index in base.items:
+				selected = (
+					self.merge([base.items[index], base.items[None]])
+					if self.unknown_entry(base) and index is not None
+					else base.items[index]
+				)
+				return self.default_alias(selected, base)
+		except ValueError, TypeError:
+			pass
+		possible = list((base.items or {}).values())
+		result = self.merge(possible) if possible else SourceValue(node)
+		return replace(result, origins=result.origins | self.reachable(base), uncertain=True)
+
+	def native_key_effects(self, base, key, node, seen, *, mapping=None):
+		if base.items is None or base.instance or base.is_class:
+			return
+		if isinstance(key.expression, ast.Slice):
+			for bound in (key.expression.lower, key.expression.upper, key.expression.step):
+				if bound is not None:
+					self.native_key_effects(base, self.value(bound, self.scope), node, seen, mapping=False)
+			return
+		if mapping is None:
+			mapping = (
+				True
+				if base.key_values is not None
+				else False
+				if self.sequence_kind(base) is not None
+				else None
+			)
+		stored = list((base.key_values or {}).values()) if mapping else []
+		if self.pure_hash_key(key) and all(self.pure_hash_key(value) for value in stored):
+			return
+		# Application keys may run arbitrary, reentrant hash/equality/index code.
+		# Preserve uncertainty instead of simulating part of the dictionary probe.
+		values = [key, *stored]
+		self.emit(
+			SourceEffect(
+				node,
+				namespace=True,
+				opaque=True,
+				origins=self.reachable(base)
+				| frozenset().union(*(self.reachable(value) for value in values)),
+				argument_origins=self.exposed_origins(base)
+				| frozenset().union(*(self.exposed_origins(value) for value in values)),
+			)
+		)
+
 	def expression(self, node, scope, seen):
+		if isinstance(node, ast.Subscript):
+			self.call_values.pop(node, None)
+			self.expression(node.value, scope, seen)
+			base = self.value(node.value, scope)
+			if isinstance(node.slice, ast.Slice):
+				bounds = []
+				for bound in (node.slice.lower, node.slice.upper, node.slice.step):
+					if bound is not None:
+						self.expression(bound, scope, seen)
+					bounds.append(self.value(bound, scope).expression if bound is not None else None)
+				key = SourceValue(ast.Slice(lower=bounds[0], upper=bounds[1], step=bounds[2]))
+			else:
+				self.expression(node.slice, scope, seen)
+				key = self.value(node.slice, scope)
+			self.access_values[node] = base, key
+			if isinstance(node.ctx, ast.Load):
+				if base.instance:
+					self.call_values[node] = self.protocol(base, ("__getitem__",), [key], seen)
+				else:
+					self.native_key_effects(base, key, node, seen)
+					self.call_values[node] = self.subscript_value(node, base, key)
+			return
+		if isinstance(node, ast.BoolOp):
+			for index, operand in enumerate(node.values):
+				self.expression(operand, scope, seen)
+				value = self.value(operand, scope)
+				self.call_values[node] = value
+				if index == len(node.values) - 1:
+					return
+				truth = self.truth(value, seen)
+				known = self.literal_truth(truth)
+				if known is None:
+					known = self.literal_truth(value)
+				if known is None:
+					rest = ast.copy_location(ast.BoolOp(op=node.op, values=node.values[index + 1 :]), node)
+					self.branches([[ast.copy_location(ast.Expr(value=rest), node)]], scope, seen)
+					self.call_values[node] = self.merge([value, self.value(rest, scope)])
+					return
+				if known == isinstance(node.op, ast.Or):
+					return
+			return
+		if isinstance(node, ast.IfExp):
+			self.expression(node.test, scope, seen)
+			value = self.value(node.test, scope)
+			truth = self.truth(value, seen)
+			known = self.literal_truth(truth)
+			if known is None:
+				known = self.literal_truth(value)
+			if known is not None:
+				selected = node.body if known else node.orelse
+				self.expression(selected, scope, seen)
+				self.call_values[node] = self.value(selected, scope)
+			else:
+				self.branches(
+					[
+						[ast.copy_location(ast.Expr(value=selected), selected)]
+						for selected in (node.body, node.orelse)
+					],
+					scope,
+					seen,
+					include_initial=False,
+				)
+				self.call_values[node] = self.merge(
+					[self.value(node.body, scope), self.value(node.orelse, scope)]
+				)
+			return
 		if isinstance(node, (ast.Yield, ast.YieldFrom)):
 			if node.value is not None:
 				self.expression(node.value, scope, seen)
@@ -549,20 +695,32 @@ class EffectAnalyzer:
 						break
 				left = right
 			return
-		for child in ast.iter_child_nodes(node):
+		callee = None
+		if isinstance(node, ast.Call):
+			self.call_values.pop(node, None)
+			self.expression(node.func, scope, seen)
+			callee = self.value(node.func, scope)
+			children = [*node.args, *node.keywords]
+		else:
+			children = ast.iter_child_nodes(node)
+		for child in children:
 			if isinstance(child, ast.expr):
 				self.expression(child, scope, seen)
 			elif isinstance(child, ast.keyword):
 				self.expression(child.value, scope, seen)
 		if isinstance(node, (ast.Set, ast.Dict)):
-			for key in node.elts if isinstance(node, ast.Set) else node.keys:
+			probe = SourceValue(node, items={}, key_values={}, origins=frozenset({node}))
+			for index, key in enumerate(node.elts if isinstance(node, ast.Set) else node.keys):
 				if key is not None:
 					value = self.value(key, scope)
-					self.protocol(value, ("__hash__", "__eq__"), [value], seen)
-		if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+					self.native_key_effects(probe, value, node, seen, mapping=True)
+					probe.key_values[index] = value
+		if isinstance(node, ast.Attribute):
 			base = self.value(node.value, scope)
-			member = (base.items or {}).get(node.attr)
-			if base.instance:
+			self.access_values[node] = base, None
+			self.call_values.pop(node, None)
+			member = self.live_members(base).get(node.attr)
+			if base.instance and isinstance(node.ctx, ast.Load):
 				self.protocol(base, ("__getattribute__",), [SourceValue(ast.Constant(node.attr))], seen)
 				getters = (
 					[helper for helper in member.helpers if helper.descriptor == "property"] if member else []
@@ -572,18 +730,14 @@ class EffectAnalyzer:
 					results.append(
 						self.protocol(member, ("__get__",), [base, SourceValue(ast.Constant(None))], seen)
 					)
-				if not member and "__getattr__" in (base.items or {}):
+				if not member and "__getattr__" in self.live_members(base, special=True):
 					results.append(
 						self.protocol(base, ("__getattr__",), [SourceValue(ast.Constant(node.attr))], seen)
 					)
 				if results:
 					self.call_values[node] = self.merge(results)
-		if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load):
-			base = self.value(node.value, scope)
-			if base.instance:
-				self.call_values[node] = self.protocol(
-					base, ("__getitem__",), [self.value(node.slice, scope)], seen
-				)
+			if isinstance(node.ctx, ast.Load) and node not in self.call_values:
+				self.call_values[node] = self.value(node, scope)
 		if isinstance(node, ast.BinOp):
 			left, right = self.value(node.left, scope), self.value(node.right, scope)
 			result = self.arithmetic(left, right, node.op, seen)
@@ -608,11 +762,6 @@ class EffectAnalyzer:
 					scalar=True,
 					uncertain=known is None,
 				)
-		if isinstance(node, ast.IfExp):
-			self.truth(self.value(node.test, scope), seen)
-		if isinstance(node, ast.BoolOp):
-			for operand in node.values[:-1]:
-				self.truth(self.value(operand, scope), seen)
 		if isinstance(node, ast.FormattedValue):
 			value = self.value(node.value, scope)
 			if node.conversion in {ord("r"), ord("a")}:
@@ -624,13 +773,13 @@ class EffectAnalyzer:
 				if node.format_spec
 				else SourceValue(ast.Constant(""), scalar=True)
 			)
-			if "__format__" in (value.items or {}):
+			if "__format__" in self.live_members(value, special=True):
 				self.protocol(value, ("__format__",), [specification], seen)
 			elif value.instance:
 				self.stringify(value, seen)
 		if not isinstance(node, ast.Call):
 			return
-		callee = self.value(node.func, scope)
+		callee = callee if callee is not None else self.value(node.func, scope)
 		if any(helper.node in self.invalid_definitions for helper in callee.helpers):
 			callee = replace(callee, uncertain=True)
 		arguments = []
@@ -647,7 +796,11 @@ class EffectAnalyzer:
 			elif item.arg:
 				keywords[item.arg] = value
 		if isinstance(node.func, ast.Attribute):
-			base = self.value(node.func.value, scope)
+			base = (
+				self.access_values[node.func][0]
+				if node.func in self.access_values
+				else self.value(node.func.value, scope)
+			)
 			result = self.container_call(node, base, arguments, keywords, seen)
 			if result is not None:
 				self.call_values[node] = result
@@ -777,6 +930,7 @@ class EffectAnalyzer:
 					argument_origins=frozenset().union(*(self.exposed_origins(item) for item in produced)),
 				)
 			)
+		native_result = None
 		if callee.modules & {
 			"builtins.list",
 			"builtins.tuple",
@@ -787,14 +941,54 @@ class EffectAnalyzer:
 			items = dict(arguments[0].items) if arguments and arguments[0].items is not None else {}
 			keys = None
 			if "builtins.dict" in callee.modules:
+				if arguments and arguments[0].key_values is None:
+					original = arguments[0]
+					items = {}
+					keys = {}
+					for pair in (
+						original.items.values()
+						if original.items is not None and not original.instance
+						else []
+					):
+						if pair.items is None or set(pair.items) != {0, 1}:
+							items[None] = SourceValue(node, origins=self.reachable(original), uncertain=True)
+							break
+						key, entry = pair.items[0], pair.items[1]
+						try:
+							index = self.literal_key(key)
+							exact = True
+						except ValueError, TypeError:
+							index = None
+							exact = False
+						unknown = self.unknown_entry(SourceValue(node, items=items, key_values=keys))
+						if not exact or (index is None and unknown):
+							items[None] = self.merge([*items.values(), entry])
+							keys[None] = self.merge([keys[None], key]) if None in keys else key
+						else:
+							items[index] = entry
+							keys[index] = key
+					if original.items is None or original.instance:
+						items[None] = SourceValue(node, origins=self.reachable(original), uncertain=True)
+					if original.instance:
+						self.emit(
+							SourceEffect(
+								node,
+								namespace=True,
+								opaque=True,
+								origins=self.reachable(original),
+								argument_origins=self.exposed_origins(original),
+							)
+						)
+				else:
+					keys = dict(arguments[0].key_values or {}) if arguments else {}
 				items.update(keywords)
-				keys = dict(arguments[0].key_values or {}) if arguments else {}
 				keys.update({name: SourceValue(ast.Constant(name), scalar=True) for name in keywords})
 			elif arguments and arguments[0].key_values is not None:
 				items = dict(enumerate(arguments[0].key_values.values()))
 			elif produced and not items:
 				items[None] = self.merge(produced)
-			results.append(SourceValue(node, items=items, key_values=keys, origins=frozenset({node})))
+			native_result = SourceValue(node, items=items, key_values=keys, origins=frozenset({node}))
+			results.append(native_result)
 		elif "builtins.next" in callee.modules and produced:
 			results.append(self.merge(produced))
 		if callee.instance:
@@ -808,8 +1002,9 @@ class EffectAnalyzer:
 				instance=True,
 				uncertain=callee.uncertain,
 				class_order=callee.class_order,
+				declared={},
 			)
-			initializer = (callee.items or {}).get("__init__")
+			initializer = self.live_members(callee, special=True).get("__init__")
 			for helper in initializer.helpers if initializer else ():
 				self.invoke(helper, [instance, *arguments], keywords, seen)
 			results.append(instance)
@@ -846,10 +1041,20 @@ class EffectAnalyzer:
 			self.protocol(
 				arguments[0], ("__format__",), arguments[1:] or [SourceValue(ast.Constant(""))], seen
 			)
-		if callee.modules & {"builtins.set", "builtins.frozenset", "builtins.dict"}:
-			for item in produced:
-				key = (item.items or {}).get(0, item) if "builtins.dict" in callee.modules else item
-				self.protocol(key, ("__hash__", "__eq__"), [key], seen)
+		if "builtins.dict" in callee.modules and native_result is not None:
+			probe = SourceValue(node, items={}, key_values={}, origins=frozenset({node}))
+			for key in (native_result.key_values or {}).values():
+				self.native_key_effects(probe, key, node, seen, mapping=True)
+				probe.key_values[len(probe.key_values)] = key
+		if callee.modules & {"builtins.set", "builtins.frozenset"}:
+			previous = []
+			for key in produced:
+				self.protocol(key, ("__hash__",), [], seen)
+				for existing in previous:
+					result = self.ordered_protocols(existing, key, "__eq__", "__eq__", seen)
+					if self.protocol_result(result) != "fallback":
+						self.truth(result, seen)
+				previous.append(key)
 		if "builtins.sorted" in callee.modules:
 			for item in produced:
 				key = keywords.get("key")
@@ -872,9 +1077,9 @@ class EffectAnalyzer:
 		"""Obtain the iterator without advancing a generator or awaiting its next item."""
 		value = self.project_view(value)
 		name = "__aiter__" if asynchronous else "__iter__"
-		if value.instance and name in (value.items or {}):
+		if value.instance and name in self.live_members(value, special=True):
 			return self.protocol(value, (name,), [], seen)
-		if value.instance and not asynchronous and "__getitem__" in (value.items or {}):
+		if value.instance and not asynchronous and "__getitem__" in self.live_members(value, special=True):
 			return SourceValue(value.expression, deferred=(DeferredExecution(None, [], {}, sequence=value),))
 		if (
 			not value.deferred
@@ -960,7 +1165,7 @@ class EffectAnalyzer:
 				produced.append(self.value(deferred.expression.elt, local))
 		if not value.deferred and value.instance and id(value) not in seen:
 			name = "__await__" if awaiting else "__next__"
-			method = (value.items or {}).get(name)
+			method = self.live_members(value, special=True).get(name)
 			for helper in method.helpers if method else ():
 				item = self.invoke(helper, [value], {}, seen | {id(value)}, yielding=not awaiting)
 				produced.append(item)
@@ -1071,20 +1276,20 @@ class EffectAnalyzer:
 					self.bind(item, selected, scope, seen, anchor=anchor)
 		else:
 			self.expression(target, scope, seen)
-			base = self.value(target.value, scope)
+			base, key = self.access_values.get(target, (self.value(target.value, scope), None))
 			if isinstance(target, ast.Subscript):
 				if base.instance:
-					arguments = [self.value(target.slice, scope)] + (
-						[] if isinstance(target.ctx, ast.Del) else [value]
-					)
+					arguments = [key] + ([] if isinstance(target.ctx, ast.Del) else [value])
 					self.protocol(
 						base,
 						("__delitem__",) if isinstance(target.ctx, ast.Del) else ("__setitem__",),
 						arguments,
 						seen,
 					)
+				else:
+					self.native_key_effects(base, key, target, seen)
 				try:
-					attribute = ast.literal_eval(target.slice)
+					attribute = self.literal_key(key)
 				except ValueError, TypeError:
 					attribute = None
 				self.mark_members(base, attribute if isinstance(attribute, str) else None)
@@ -1096,19 +1301,37 @@ class EffectAnalyzer:
 							self.emit(SourceEffect(target, typing_modules=frozenset({name})))
 			if isinstance(target, ast.Subscript) and base.items is not None:
 				try:
-					index = ast.literal_eval(target.slice)
+					index = self.literal_key(key)
+					exact = True
 				except ValueError, TypeError:
 					index = None
-				if base.key_values is not None:
-					base.key_values[index] = self.value(target.slice, scope)
+					exact = False
 				previous = base.items.get(index)
-				base.items[index] = (
-					self.merge([*base.items.values(), value])
-					if index is None
-					else self.merge([previous, value])
-					if self.branch_depth and previous is not None
-					else value
-				)
+				unknown_entry = self.unknown_entry(base)
+				if (
+					isinstance(target.ctx, ast.Del)
+					and exact
+					and not (index is None and unknown_entry)
+					and not self.branch_depth
+				):
+					base.items.pop(index, None)
+					if base.key_values is not None:
+						base.key_values.pop(index, None)
+				else:
+					if base.key_values is not None:
+						previous_key = base.key_values.get(index)
+						base.key_values[index] = (
+							self.merge([previous_key, key])
+							if index is None and previous_key is not None and (not exact or unknown_entry)
+							else key
+						)
+					base.items[index] = (
+						self.merge([*base.items.values(), value])
+						if not exact or (index is None and unknown_entry)
+						else self.merge([previous, value])
+						if self.branch_depth and previous is not None
+						else value
+					)
 			if isinstance(target, ast.Attribute):
 				for module in base.modules:
 					self.module_writes.setdefault(module, set()).add(target.attr)
@@ -1122,7 +1345,7 @@ class EffectAnalyzer:
 				self.mark_members(base, target.attr)
 				if base.items is not None:
 					base.items[target.attr] = value
-				if base.is_class and base.declared is not None:
+				if (base.is_class or base.instance) and base.declared is not None:
 					base.declared[target.attr] = value
 			modules = (
 				self.value(target.value, scope).modules
@@ -1165,6 +1388,15 @@ class EffectAnalyzer:
 	@staticmethod
 	def merge(values, seen=frozenset()):
 		if all(value is values[0] for value in values):
+			return values[0]
+		if all(
+			value.scalar
+			and not value.uncertain
+			and isinstance(value.expression, ast.Constant)
+			and type(value.expression.value) is type(values[0].expression.value)
+			and value.expression.value == values[0].expression.value
+			for value in values
+		) and isinstance(values[0].expression, ast.Constant):
 			return values[0]
 		group = tuple(sorted(id(value) for value in values))
 		if group in seen:
@@ -1216,12 +1448,33 @@ class EffectAnalyzer:
 			origins=frozenset().union(*(value.origins for value in values)),
 			deferred=tuple({id(item): item for value in values for item in value.deferred}.values()),
 			false_constant=all(value.false_constant for value in values),
-			uncertain=any(value.uncertain for value in values)
-			or any(len(value.bound) != len(values[0].bound) for value in values)
-			or any(
-				value.modules != values[0].modules or value.origins != values[0].origins for value in values
-			),
+			uncertain=True,
 			is_class=all(value.is_class for value in values),
+			class_order=values[0].class_order
+			if all(
+				value.class_order
+				and values[0].class_order
+				and EffectAnalyzer.class_identity(value.class_order[0])
+				== EffectAnalyzer.class_identity(values[0].class_order[0])
+				for value in values
+			)
+			else (),
+			declared={
+				key: EffectAnalyzer.merge(
+					[
+						value.declared[key]
+						for value in values
+						if value.declared is not None and key in value.declared
+					],
+					seen,
+				)
+				for key in set().union(*(value.declared or {} for value in values))
+			}
+			if all(value.instance for value in values)
+			else None,
+			metaclass=values[0].metaclass
+			if all(value.metaclass is values[0].metaclass for value in values)
+			else None,
 		)
 
 	@staticmethod
@@ -1238,6 +1491,39 @@ class EffectAnalyzer:
 		name = node.func.attr
 		if base.items is None or base.instance or base.is_class:
 			return None
+		if name == "setdefault":
+			key = arguments[0] if arguments else SourceValue(ast.Constant(None), uncertain=True)
+			default = arguments[1] if len(arguments) > 1 else SourceValue(ast.Constant(None), scalar=True)
+			self.native_key_effects(base, key, node, seen, mapping=True)
+			try:
+				index = self.literal_key(key)
+				exact = True
+			except ValueError, TypeError:
+				index = None
+				exact = False
+			unknown_entry = self.unknown_entry(base)
+			if exact and index in base.items and (index is not None or not unknown_entry):
+				selected = base.items[index]
+				if selected.uncertain:
+					selected = self.merge([selected, default])
+				if unknown_entry and index is not None:
+					selected = self.merge([selected, base.items[None]])
+				return self.default_alias(selected, base)
+			if not exact or unknown_entry:
+				selected = self.merge([*base.items.values(), default])
+				base.items[None] = selected
+				if base.key_values is not None:
+					previous_key = base.key_values.get(None)
+					base.key_values[None] = (
+						self.merge([previous_key, key]) if previous_key is not None else key
+					)
+			else:
+				selected = default
+				base.items[index] = selected
+				if base.key_values is not None:
+					base.key_values[index] = key
+			self.emit(SourceEffect(node, origins=base.origins, mutation=True, shallow=True))
+			return self.default_alias(selected, base)
 		if name in {"clear", "popitem"}:
 			# These native operations change the container's structure, not its values.
 			# A shallow copy can therefore be changed without mutating shared defaults.
@@ -1258,7 +1544,9 @@ class EffectAnalyzer:
 				if base.key_values is not None:
 					base.key_values.clear()
 			return SourceValue(ast.Constant(None), scalar=True)
-		if name in {"append", "extend", "insert", "update", "setdefault", "__setitem__"}:
+		if name in {"append", "extend", "insert", "update", "__setitem__"}:
+			if name == "__setitem__" and arguments:
+				self.native_key_effects(base, arguments[0], node, seen, mapping=base.key_values is not None)
 			values = list(arguments)
 			if name in {"extend", "update"} and arguments:
 				produced = self.consume(arguments[0], seen)
@@ -1279,47 +1567,49 @@ class EffectAnalyzer:
 					)
 			else:
 				value = values[-1] if values else SourceValue(ast.Constant(None))
-				if name == "setdefault" and len(arguments) > 1:
-					try:
-						key = ast.literal_eval(arguments[0].expression)
-					except TypeError, ValueError:
-						key = None
-					base.items[key] = self.merge([base.items[key], value]) if key in base.items else value
-				elif name == "extend":
+				if name == "extend":
 					for value in values:
 						base.items[len(base.items)] = value
 				else:
 					key = len(base.items) if name == "append" else None
 					base.items[key] = self.merge([base.items[key], value]) if key in base.items else value
 			self.emit(SourceEffect(node, origins=base.origins, mutation=True, shallow=True))
-			return value if name == "setdefault" else SourceValue(ast.Constant(None))
+			return SourceValue(ast.Constant(None))
 		if name in {"get", "pop", "__getitem__"}:
-			if base.key_values is not None and arguments and not arguments[0].scalar:
-				# A mapping lookup may execute application-defined hash/equality code.
-				# Unknown key behavior cannot prove that captured values stay unchanged.
-				self.emit(
-					SourceEffect(
-						node,
-						opaque=True,
-						origins=self.reachable(base) | self.reachable(arguments[0]),
-						argument_origins=self.exposed_origins(base) | self.exposed_origins(arguments[0]),
-					)
+			if arguments:
+				self.native_key_effects(
+					base, arguments[0], node, seen, mapping=True if name == "get" else None
 				)
 			try:
 				key = (
-					ast.literal_eval(arguments[0].expression)
+					self.literal_key(arguments[0])
 					if arguments
 					else max((key for key in base.items if isinstance(key, int)), default=None)
 				)
+				exact = True
 			except ValueError, TypeError:
 				key = None
-			values = [base.items[key]] if key in base.items and key is not None else list(base.items.values())
-			if None in base.items:
+				exact = False
+			unknown_entry = self.unknown_entry(base)
+			values = (
+				[base.items[key]]
+				if exact and key in base.items and (key is not None or not unknown_entry)
+				else list(base.items.values())
+			)
+			if unknown_entry and key is not None:
 				values.append(base.items[None])
 			if name == "get" and len(arguments) > 1:
 				values.append(arguments[1])
 			if name == "pop":
 				self.emit(SourceEffect(node, origins=base.origins, mutation=True, shallow=True))
+				if exact and not self.branch_depth and (key is not None or not unknown_entry):
+					base.items.pop(key, None)
+					if base.key_values is not None:
+						base.key_values.pop(key, None)
+				else:
+					base.items.update(
+						{index: replace(value, uncertain=True) for index, value in base.items.items()}
+					)
 			return self.default_alias(self.merge(values), base) if values else SourceValue(ast.Constant(None))
 		if name == "copy":
 			return SourceValue(
@@ -1350,7 +1640,7 @@ class EffectAnalyzer:
 			)
 		return replace(value, items=dict(enumerate(entries)))
 
-	def callback(self, callee, arguments, node, seen):
+	def callback(self, callee, arguments, node, seen, *, keywords=None):
 		# Indirect callbacks use exactly the same dispatch and uncertainty rules as calls.
 		function = ast.copy_location(ast.Name(id="_callback", ctx=ast.Load()), node)
 		self.call_values[function] = callee
@@ -1359,7 +1649,12 @@ class EffectAnalyzer:
 			parameter = ast.copy_location(ast.Name(id=f"_argument_{index}", ctx=ast.Load()), node)
 			self.call_values[parameter] = value
 			parameters.append(parameter)
-		call = ast.copy_location(ast.Call(func=function, args=parameters, keywords=[]), node)
+		keyword_nodes = []
+		for index, (name, value) in enumerate((keywords or {}).items()):
+			parameter = ast.copy_location(ast.Name(id=f"_keyword_{index}", ctx=ast.Load()), node)
+			self.call_values[parameter] = value
+			keyword_nodes.append(ast.keyword(arg=name, value=parameter))
+		call = ast.copy_location(ast.Call(func=function, args=parameters, keywords=keyword_nodes), node)
 		self.expression(call, self.scope, seen)
 		return self.call_values.get(call, SourceValue(call, uncertain=True))
 
@@ -1368,16 +1663,46 @@ class EffectAnalyzer:
 			return SourceValue(helper.node, deferred=(DeferredExecution(helper, arguments, keywords),))
 		return self.invoke(helper, arguments, keywords, seen)
 
+	@staticmethod
+	def live_members(value, *, special=False):
+		if not value.is_class and not value.instance:
+			return {}
+		if not value.class_order:
+			return value.items or {}
+		members = {}
+		for owner in reversed(value.class_order):
+			members.update(owner.declared if owner.declared is not None else owner.items or {})
+		if value.instance and not special:
+			members.update(value.declared or {})
+		return members
+
 	def truth(self, value, seen):
-		name = "__bool__" if "__bool__" in (value.items or {}) else "__len__"
+		if value.false_constant and not value.uncertain:
+			return SourceValue(ast.Constant(False), scalar=True)
+		if value.deferred and not value.uncertain:
+			return SourceValue(ast.Constant(True), scalar=True)
+		if not value.scalar and value.items is None and not value.instance and not value.is_class:
+			self.emit(
+				SourceEffect(
+					value.expression,
+					opaque=True,
+					origins=self.reachable(value),
+					argument_origins=self.exposed_origins(value),
+				)
+			)
+		name = "__bool__" if "__bool__" in self.live_members(value, special=True) else "__len__"
 		return self.protocol(value, (name,), [], seen)
 
 	def stringify(self, value, seen, *, representation=False):
-		name = "__repr__" if representation or "__str__" not in (value.items or {}) else "__str__"
+		name = (
+			"__repr__"
+			if representation or "__str__" not in self.live_members(value, special=True)
+			else "__str__"
+		)
 		return (
 			self.protocol(value, (name,), [], seen)
-			if name in (value.items or {})
-			else SourceValue(ast.Constant(""), scalar=True)
+			if name in self.live_members(value, special=True)
+			else SourceValue(ast.Constant(""), scalar=True, uncertain=True)
 		)
 
 	@staticmethod
@@ -1428,8 +1753,8 @@ class EffectAnalyzer:
 			and self.class_identity(left.class_order[0]) == self.class_identity(right.class_order[0])
 		):
 			candidates.pop()
-		left_reflected = (left.items or {}).get(reflected)
-		right_reflected = (right.items or {}).get(reflected)
+		left_reflected = self.live_members(left, special=True).get(reflected)
+		right_reflected = self.live_members(right, special=True).get(reflected)
 		same_reflected = left_reflected is right_reflected or bool(
 			left_reflected
 			and right_reflected
@@ -1450,7 +1775,7 @@ class EffectAnalyzer:
 			candidates.reverse()
 		possible = []
 		for receiver, name, argument in candidates:
-			if name not in (receiver.items or {}):
+			if name not in self.live_members(receiver, special=True):
 				continue
 			result = self.protocol(receiver, (name,), [argument], seen)
 			status = self.protocol_result(result)
@@ -1473,7 +1798,7 @@ class EffectAnalyzer:
 		stem = self.operator_stem(operator)
 		if not stem:
 			return SourceValue(ast.Constant(None), uncertain=True)
-		if inplace and f"__i{stem}__" in (left.items or {}):
+		if inplace and f"__i{stem}__" in self.live_members(left, special=True):
 			result = self.protocol(left, (f"__i{stem}__",), [right], seen)
 			status = self.protocol_result(result)
 			if status == "handled":
@@ -1484,7 +1809,7 @@ class EffectAnalyzer:
 
 	def comparison(self, left, right, operator, seen):
 		if isinstance(operator, (ast.In, ast.NotIn)):
-			if "__contains__" in (right.items or {}):
+			if "__contains__" in self.live_members(right, special=True):
 				result = self.protocol(right, ("__contains__",), [left], seen)
 			else:
 				item = self.consume(right, seen)
@@ -1513,10 +1838,10 @@ class EffectAnalyzer:
 		result = self.ordered_protocols(left, right, *methods[type(operator)], seen)
 		return replace(result, uncertain=True) if self.protocol_result(result) == "fallback" else result
 
-	def protocol(self, value, names, arguments, seen):
+	def protocol(self, value, names, arguments, seen, *, keywords=None):
 		results = []
 		for name in names:
-			method = (value.items or {}).get(name)
+			method = self.live_members(value, special=True).get(name)
 			if method is None:
 				continue
 			location = next((helper.node for helper in method.helpers), value.expression)
@@ -1527,13 +1852,22 @@ class EffectAnalyzer:
 					receiver = (
 						value.class_order[0] if helper.descriptor == "class" and value.class_order else value
 					)
-					bound = () if helper.descriptor == "static" and name != "__new__" else (receiver,)
+					bound = (
+						()
+						if (helper.descriptor == "static" and name != "__new__")
+						or (name == "__prepare__" and helper.descriptor != "class")
+						else (receiver,)
+					)
 					callee = replace(
 						method, helpers=(helper,), bound=bound, uncertain=method.uncertain or value.uncertain
 					)
-					results.append(self.callback(callee, arguments, location, seen))
+					results.append(self.callback(callee, arguments, location, seen, keywords=keywords))
 			else:
-				results.append(self.callback(replace(method, uncertain=True), arguments, location, seen))
+				results.append(
+					self.callback(
+						replace(method, uncertain=True), arguments, location, seen, keywords=keywords
+					)
+				)
 		return self.merge(results) if results else SourceValue(ast.Constant(None))
 
 	@staticmethod
@@ -1579,7 +1913,7 @@ class EffectAnalyzer:
 			):
 				self.invalid_definitions.add(origin)
 
-	def function(self, node, scope):
+	def function(self, node, scope, decorators=None):
 		closure = scope
 		while closure.kind == "class":
 			closure = closure.parent
@@ -1612,12 +1946,13 @@ class EffectAnalyzer:
 		)
 		descriptor = None
 		if scope.kind == "class":
+			decorator_values = (
+				decorators
+				if decorators is not None
+				else [self.value(item, scope) for item in node.decorator_list]
+			)
 			decorators = frozenset().union(
-				*(
-					self.value(item, scope).modules
-					for item in node.decorator_list
-					if not self.value(item, scope).uncertain
-				)
+				*(value.modules for value in decorator_values if not value.uncertain)
 			)
 			descriptor = (
 				"static"
@@ -1630,39 +1965,131 @@ class EffectAnalyzer:
 			)
 		return SourceFunction(node, closure, defaults, deferred, descriptor)
 
+	def captured_decorators(self, node, values):
+		"""Let source inspectors classify the decorator identities already evaluated."""
+
+	def decorate(self, node, value, decorators, seen):
+		replaced = False
+		for callee in reversed(decorators):
+			if not callee.helpers:
+				continue
+			start = len(self.effects)
+			result = self.callback(callee, [value], node, seen)
+			identity = (
+				not callee.uncertain
+				and all(
+					not helper.deferred and self.always_returns(helper.node.body) for helper in callee.helpers
+				)
+				and not result.uncertain
+				and result.origins == value.origins
+			)
+			replaced |= not identity or any(node in effect.origins for effect in self.effects[start:])
+			value = result
+		return replaced
+
+	def class_metaclass(self, explicit, bases):
+		winner = explicit
+		for candidate in [base.metaclass for base in bases if base.metaclass is not None]:
+			if winner is None or winner.modules == frozenset({"builtins.type"}):
+				winner = candidate
+			elif candidate.modules == frozenset({"builtins.type"}) or self.class_identity(
+				winner
+			) == self.class_identity(candidate):
+				continue
+			elif any(
+				self.class_identity(winner) == self.class_identity(owner)
+				for owner in candidate.class_order[1:]
+			):
+				winner = candidate
+			elif not any(
+				self.class_identity(candidate) == self.class_identity(owner)
+				for owner in winner.class_order[1:]
+			):
+				return self.merge([winner, candidate]), True
+		return winner, False
+
 	def visit(self, node, scope, seen):
 		if isinstance(node, ast.AnnAssign) and node.value is None:
 			return False
 		if isinstance(node, DEFINITION_NODES):
-			for expression in definition_expressions(node):
+			decorators = []
+			for expression in node.decorator_list:
 				self.expression(expression, scope, seen)
-			base_values = (
-				[self.value(base, scope) for base in node.bases] if isinstance(node, ast.ClassDef) else []
-			)
-			replaced = False
-			argument = SourceValue(
-				ast.Constant(None), is_class=isinstance(node, ast.ClassDef), origins=frozenset({node})
-			)
-			for decorator in node.decorator_list:
-				callee = self.value(decorator, scope)
-				for helper in callee.helpers:
-					function = helper.node
-					identity = False
-					start = len(self.effects)
-					if not helper.deferred:
-						result = self.invoke(helper, [argument], {}, seen)
-						identity = (
-							self.always_returns(function.body)
-							and not result.uncertain
-							and result.origins == argument.origins
-						)
-					replaced |= (
-						not identity
-						or helper.deferred
-						or any(node in effect.origins for effect in self.effects[start:])
-					)
+				decorators.append(self.value(expression, scope))
+			self.captured_decorators(node, decorators)
+			base_values = []
+			keywords = {}
 			if isinstance(node, ast.ClassDef):
+				for expression in node.bases:
+					self.expression(expression, scope, seen)
+					base_values.append(self.value(expression, scope))
+				for keyword in node.keywords:
+					self.expression(keyword.value, scope, seen)
+					value = self.value(keyword.value, scope)
+					if keyword.arg is None and value.items is not None:
+						keywords.update(value.items)
+					else:
+						keywords[keyword.arg] = value
+			else:
+				for expression in definition_expressions(node):
+					if expression not in node.decorator_list:
+						self.expression(expression, scope, seen)
+			metaclass, uncertain_namespace = self.class_metaclass(keywords.get("metaclass"), base_values)
+			class_keywords = {name: value for name, value in keywords.items() if name != "metaclass"}
+			uncertain_namespace |= any(not isinstance(name, str) for name in class_keywords)
+			if isinstance(node, ast.ClassDef):
+				for base_value in base_values:
+					self.protocol(
+						base_value,
+						("__mro_entries__",),
+						[SourceValue(ast.Tuple(elts=[], ctx=ast.Load()))],
+						seen,
+					)
+				prepared = None
+				if metaclass is not None:
+					if "__prepare__" in self.live_members(metaclass, special=True):
+						prepared = self.protocol(
+							metaclass,
+							("__prepare__",),
+							[
+								SourceValue(ast.Constant(node.name), scalar=True),
+								SourceValue(
+									ast.Tuple(elts=[], ctx=ast.Load()), items=dict(enumerate(base_values))
+								),
+							],
+							seen,
+							keywords=class_keywords,
+						)
+						uncertain_namespace |= (
+							prepared.items is None
+							or prepared.key_values is None
+							or prepared.instance
+							or prepared.uncertain
+							or any(not isinstance(key, str) for key in prepared.items)
+						)
+					elif metaclass.uncertain or not (
+						metaclass.is_class or "builtins.type" in metaclass.modules
+					):
+						uncertain_namespace = True
 				local = SourceScope(scope, kind="class", body=node.body)
+				if prepared is not None and not uncertain_namespace:
+					local.values.update(prepared.items)
+				if uncertain_namespace:
+					visible = [
+						*base_values,
+						*class_keywords.values(),
+						*([metaclass] if metaclass is not None else []),
+					]
+					self.emit(
+						SourceEffect(
+							node,
+							opaque=True,
+							origins=frozenset().union(*(self.reachable(value) for value in visible)),
+							argument_origins=frozenset().union(
+								*(self.exposed_origins(value) for value in visible)
+							),
+						)
+					)
 				active = []
 				for statement in node.body:
 					statements = (
@@ -1674,16 +2101,15 @@ class EffectAnalyzer:
 						active.append(statement)
 						self.visit(statement, local, seen)
 				self.runtime_bodies[node] = active
-			helpers = (
-				(self.function(node, scope),) if isinstance(node, FUNCTION_NODES) and not replaced else ()
-			)
+			helpers = (self.function(node, scope, decorators),) if isinstance(node, FUNCTION_NODES) else ()
 			value = SourceValue(
 				ast.Constant(None),
 				helpers=helpers,
-				is_class=isinstance(node, ast.ClassDef) and not replaced,
+				is_class=isinstance(node, ast.ClassDef),
 				origins=frozenset({node}),
 				declared=local.values.copy() if isinstance(node, ast.ClassDef) else None,
 				uncertain=any(base.uncertain for base in base_values),
+				metaclass=metaclass,
 			)
 			if isinstance(node, ast.ClassDef):
 				value.class_order = self.linearize(value, base_values)
@@ -1691,35 +2117,27 @@ class EffectAnalyzer:
 				for owner in reversed(value.class_order):
 					value.items.update(owner.declared if owner.declared is not None else owner.items or {})
 			if isinstance(node, ast.ClassDef):
-				for base_value in base_values:
-					method = (base_value.items or {}).get("__init_subclass__")
-					for helper in method.helpers if method else ():
-						self.call_helper(helper, [value], {}, seen)
-					self.protocol(
-						base_value,
-						("__mro_entries__",),
-						[SourceValue(ast.Tuple(elts=[], ctx=ast.Load()))],
-						seen,
-					)
-				for keyword in node.keywords:
-					if keyword.arg == "metaclass":
-						self.protocol(
-							self.value(keyword.value, scope),
-							("__new__", "__init__"),
-							[
-								SourceValue(ast.Constant(node.name)),
-								SourceValue(ast.Tuple(elts=[], ctx=ast.Load())),
-								SourceValue(
-									ast.Constant(None), items=local.values, origins=frozenset({node})
-								),
-							],
-							seen,
-						)
+				creation_arguments = [
+					SourceValue(ast.Constant(node.name), scalar=True),
+					SourceValue(ast.Tuple(elts=[], ctx=ast.Load()), items=dict(enumerate(base_values))),
+					SourceValue(ast.Constant(None), items=local.values, origins=frozenset({node})),
+				]
+				if metaclass is not None:
+					self.protocol(metaclass, ("__new__",), creation_arguments, seen, keywords=class_keywords)
 				for name, descriptor in local.values.items():
 					if descriptor.instance:
 						self.protocol(
 							descriptor, ("__set_name__",), [value, SourceValue(ast.Constant(name))], seen
 						)
+				for base_value in base_values:
+					method = self.live_members(base_value, special=True).get("__init_subclass__")
+					for helper in method.helpers if method else ():
+						self.call_helper(helper, [value], class_keywords, seen)
+				if metaclass is not None:
+					self.protocol(metaclass, ("__init__",), creation_arguments, seen, keywords=class_keywords)
+			replaced = self.decorate(node, value, decorators, seen) or uncertain_namespace
+			if replaced:
+				value = replace(value, helpers=(), is_class=False, uncertain=True)
 			self.bind(ast.copy_location(ast.Name(id=node.name, ctx=ast.Store()), node), value, scope)
 			if replaced:
 				self.invalid_definitions.add(node)
@@ -1853,9 +2271,12 @@ class EffectAnalyzer:
 				self.branches([node.body, node.orelse], scope, seen)
 		elif isinstance(node, ast.If):
 			self.expression(node.test, scope, seen)
-			self.truth(self.value(node.test, scope), seen)
-			if self.value(node.test, scope).false_constant:
-				for statement in node.orelse:
+			value = self.value(node.test, scope)
+			known = self.literal_truth(self.truth(value, seen))
+			if known is None:
+				known = self.literal_truth(value)
+			if known is not None:
+				for statement in node.body if known else node.orelse:
 					if self.visit(statement, scope, seen):
 						return True
 			else:

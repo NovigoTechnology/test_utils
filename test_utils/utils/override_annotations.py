@@ -560,7 +560,7 @@ class SourceResolver:
 				raise MissingSymbol(
 					f"Upstream symbol {reference} not found in {path}; it may have been removed or renamed"
 				)
-		raise MissingSymbol(
+		raise ResolutionError(
 			f"Cannot resolve {reference}: source file not found; check --apps-root and upstream renames"
 		)
 
@@ -783,6 +783,16 @@ class SourceResolver:
 					"builtins.object",
 				}:
 					return reference
+				if isinstance(statement, ast.ImportFrom):
+					imported_name = self.import_module_name(module, statement)
+					parts_from = imported_name.split(".")
+					app_from = self.apps.get(parts_from[0])
+					if app_from is not None:
+						stem_from = app_from.package.joinpath(*parts_from[1:])
+						if not stem_from.with_suffix(".py").is_file() and not stem_from.is_dir():
+							raise ResolutionError(
+								f"Source not found for imported module {imported_name} while resolving {reference} at {module.path}:{statement.lineno}"
+							)
 				limits = self.import_limits.setdefault(module.name, [])
 				importer = self.analysis(module, None if complete_importer else before)
 				limits.append(statement.lineno)
@@ -790,7 +800,8 @@ class SourceResolver:
 					value = self.resolve(reference, seen)
 				finally:
 					limits.pop()
-				return self.check_imported_mutations(module, reference, value, importer)
+				value = self.check_imported_mutations(module, reference, value, importer)
+				return self.apply_member_effects(current_owner, ".".join(parts[index:]), value)
 			elif isinstance(binding.node, (ast.ClassDef, *FUNCTION_NODES)):
 				if binding.node in self.analysis(module, before).invalid_definitions:
 					raise ResolutionError(
@@ -808,11 +819,7 @@ class SourceResolver:
 				raise ResolutionError(
 					f"Ambiguous binding of {module.name}.{qualname} at {module.path}:{binding.node.lineno}; unsupported assignment or deletion"
 				)
-			if current_owner is not None:
-				for importer, _reference, analyzer in current_owner.import_effects:
-					value = self.check_imported_mutations(
-						importer, f"{current_owner.reference}.{name}", value, analyzer
-					)
+			value = self.apply_member_effects(current_owner, name, value)
 			if index == len(parts) - 1:
 				return value
 			if not isinstance(value.node, ast.ClassDef):
@@ -824,6 +831,12 @@ class SourceResolver:
 			prefix = value.qualname + "."
 			body = self.class_body(value)
 		return None
+
+	def apply_member_effects(self, owner, name, value):
+		if owner is not None:
+			for importer, _reference, analyzer in owner.import_effects:
+				value = self.check_imported_mutations(importer, f"{owner.reference}.{name}", value, analyzer)
+		return value
 
 	def check_imported_mutations(self, module, reference, value, analyzer):
 		"""An importer cannot reuse metadata after changing its imported object."""
@@ -1118,8 +1131,11 @@ class AnnotationValidator:
 			if valid:
 				try:
 					active = self.resolver.function_symbol(upstream.module, method)
-				except ResolutionError:
+				except MissingSymbol:
 					active = None
+				except ResolutionError as exc:
+					self.error(custom, upstream.reference, f"Ambiguous METHOD {method!r}: {exc}")
+					return
 				if (
 					active is not None
 					and active.module.path == upstream.module.path

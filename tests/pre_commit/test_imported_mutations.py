@@ -340,3 +340,18 @@ def test_opaque_helper_receives_imported_objects_produced_by_a_deferred_argument
 	)
 	with pytest.raises(ResolutionError, match="Ambiguous imported binding"):
 		resolver(bench).resolve("erpnext.consumer.target")
+
+
+def test_imported_class_member_retains_owner_mutations_when_its_implementation_is_imported(bench):
+	module(bench, "implementation", "def implementation(self): pass\ndef spare(self): pass")
+	module(
+		bench,
+		"api",
+		"class Base:\n    from .implementation import implementation as target, spare as other",
+	)
+	module(bench, "consumer", "from .api import Base\nBase.target.__doc__ = 'changed'")
+	source_resolver = resolver(bench)
+	base = source_resolver.resolve("erpnext.consumer.Base")
+	with pytest.raises(ResolutionError, match="Ambiguous imported binding"):
+		source_resolver.member(base, "target")
+	assert source_resolver.member(base, "other").reference == "erpnext.implementation.spare"
