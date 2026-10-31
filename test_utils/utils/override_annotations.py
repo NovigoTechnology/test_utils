@@ -562,18 +562,18 @@ class SourceResolver:
 					prefix = binding.node.name.split(".")
 					# Dotted imports can bind a reexported attribute or the loaded
 					# child module. Loading order is outside declaration analysis.
-					for end in range(1, len(prefix)):
-						parent, _ = self.source_module(".".join(prefix[:end]))
-						if (
-							self.binding(parent, self.module_body(parent, limits), prefix[end], limits, seen)
-							is not None
-						):
-							raise ResolutionError(
-								f"Ambiguous dotted import at {module.path}:{binding.statement.lineno}: {binding.node.name}"
-							)
-					if not binding.node.asname and parts[: len(prefix)] == prefix:
-						reference = binding.node.name
-						tail = parts[len(prefix) :]
+					if binding.node.asname or parts[: len(prefix)] == prefix:
+						for end in range(1, len(prefix)):
+							parent, _ = self.source_module(".".join(prefix[:end]))
+							if (
+								self.binding(
+									parent, self.module_body(parent, limits), prefix[end], limits, seen
+								)
+								is not None
+							):
+								raise ResolutionError(
+									f"Ambiguous dotted import at {module.path}:{binding.statement.lineno}: {binding.node.name}"
+								)
 				try:
 					imported, _ = self.source_module(reference)
 					return self.resolve_in(
@@ -581,6 +581,7 @@ class SourceResolver:
 						tail,
 						(*limits, (module.path, (binding.statement.lineno, binding.statement.col_offset))),
 						seen,
+						dotted_path=isinstance(binding.statement, ast.Import) and not binding.node.asname,
 					)
 				except ResolutionError as exc:
 					raise ResolutionError(

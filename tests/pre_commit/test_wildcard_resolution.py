@@ -568,6 +568,24 @@ def test_dotted_import_collision_is_ambiguous_while_explicit_from_selects_class(
 	assert resolver.resolve("nagus.bindings.ExplicitClient.save").qualname == "Client.save"
 
 
+def test_unaliased_import_checks_only_the_requested_root_package_path(bench, resolver):
+	write(bench / "nagus/nagus/pkg/Client.py", "class Client: pass\n")
+	write(
+		bench / "nagus/nagus/pkg/__init__.py",
+		"from .Client import Client\nclass Other:\n    def save(self): pass\n",
+	)
+	write(
+		bench / "nagus/nagus/overrides.py",
+		"import nagus.pkg.Client\nclass Derived(nagus.pkg.Other): pass\n",
+	)
+	other = resolver.resolve_from("nagus.pkg", "Other")
+	derived = resolver.resolve("nagus.overrides.Derived")
+	assert resolver.base_classes(derived)[0].node is other.node
+	assert resolver.resolve("nagus.overrides.nagus.pkg.Other.save").node is resolver.method(other, "save")
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve_from("nagus.overrides", "nagus.pkg.Client")
+
+
 def test_typing_only_overload_alias_does_not_hide_an_ordinary_runtime_decorator(bench, resolver):
 	source = (
 		"from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from typing import overload as signature\n"
