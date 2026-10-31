@@ -507,9 +507,24 @@ class SourceResolver:
 
 	def resolve(self, reference: str) -> Symbol:
 		module, parts = self.source_module(reference, require_symbol=True)
+		return self.resolve_in(module, parts, (), frozenset(), dotted_path=True)
+
+	def resolve_from(self, module_reference: str, qualified_name: str) -> Symbol:
+		"""Resolve a name from an explicitly identified source provider."""
+		parts = qualified_name.split(".")
+		if not all(part.isidentifier() for part in parts):
+			raise ResolutionError(f"Invalid qualified Python name: {qualified_name!r}")
+		module, _ = self.source_module(module_reference)
 		return self.resolve_in(module, parts, (), frozenset())
 
-	def resolve_in(self, module, parts, limits, seen):
+	def resolve_registration(self, reference: str) -> Symbol:
+		"""Frappe hook paths specify a module and its final attribute."""
+		provider, separator, name = reference.rpartition(".")
+		if not separator:
+			raise ResolutionError(f"Invalid dotted Python reference: {reference!r}")
+		return self.resolve_from(provider, name)
+
+	def resolve_in(self, module, parts, limits, seen, *, dotted_path=False):
 		body = self.module_body(module, limits)
 		key = (module.path, ".".join(parts), len(body), "resolve")
 		if key in seen:
@@ -517,28 +532,18 @@ class SourceResolver:
 		seen = seen | {key}
 		decorators = overload_names(body)
 		for index, name in enumerate(parts):
-			binding = None
-			# An explicit package binding can name a class; otherwise a dotted
-			# child-module path is resolved without inspecting unrelated exports.
-			if (
-				index == 0
-				and len(parts) > 1
-				and module.path.name == "__init__.py"
-				and name not in scope_bindings(body)
-			):
+			binding = self.binding(module, body, name, limits, seen, decorators)
+			if index == 0 and len(parts) > 1 and module.path.name == "__init__.py":
 				prefix = f"{module.name}.{name}"
 				stem = module.app.package.joinpath(*prefix.split(".")[1:])
 				if stem.is_dir() or stem.with_suffix(".py").is_file():
-					try:
-						binding = self.binding(module, body, name, limits, seen, decorators)
-					except ResolutionError:
-						# Unresolved wildcard exports do not block an explicit child-module path.
-						pass
 					if binding is None:
 						child, _ = self.source_module(prefix)
-						return self.resolve_in(child, parts[1:], limits, seen)
-			if binding is None:
-				binding = self.binding(module, body, name, limits, seen, decorators)
+						return self.resolve_in(child, parts[1:], limits, seen, dotted_path=dotted_path)
+					if dotted_path:
+						raise ResolutionError(
+							f"Ambiguous package attribute and child module {prefix}; identify the source provider explicitly"
+						)
 			if binding is None:
 				if any(path == module.path for path, _ in limits):
 					raise ResolutionError(
@@ -555,6 +560,17 @@ class SourceResolver:
 					reference = module.import_reference(binding.statement, binding.node)
 					tail = parts[1:]
 					prefix = binding.node.name.split(".")
+					# Dotted imports can bind a reexported attribute or the loaded
+					# child module. Loading order is outside declaration analysis.
+					for end in range(1, len(prefix)):
+						parent, _ = self.source_module(".".join(prefix[:end]))
+						if (
+							self.binding(parent, self.module_body(parent, limits), prefix[end], limits, seen)
+							is not None
+						):
+							raise ResolutionError(
+								f"Ambiguous dotted import at {module.path}:{binding.statement.lineno}: {binding.node.name}"
+							)
 					if not binding.node.asname and parts[: len(prefix)] == prefix:
 						reference = binding.node.name
 						tail = parts[len(prefix) :]
@@ -618,7 +634,7 @@ class SourceResolver:
 			binding = select_binding(
 				runtime_body(owner.module.tree, owner.node),
 				name,
-				decorators=overload_names(owner.module.tree.body),
+				decorators=overload_names(runtime_body(owner.module.tree)),
 			)
 		except AmbiguousBinding:
 			return None
@@ -674,7 +690,7 @@ class SourceResolver:
 						raise ResolutionError(f"Cannot read {metadata}: {exc}") from exc
 				module_name = ".".join([app.name, *path.relative_to(app.package).with_suffix("").parts])
 				class_name = doctype.replace(" ", "").replace("-", "")
-				symbol = self.resolve(f"{module_name}.{class_name}")
+				symbol = self.resolve_from(module_name, class_name)
 				if not isinstance(symbol.node, ast.ClassDef):
 					raise ResolutionError(
 						f"Controller {module_name}.{class_name} not found; it may have been renamed"
@@ -760,11 +776,11 @@ class AnnotationValidator:
 				)
 
 	def function(self, original: str, replacement: str):
-		custom = self.resolver.resolve(replacement)
+		custom = self.resolver.resolve_registration(replacement)
 		try:
 			if custom.module.app.name != self.app.name or not isinstance(custom.node, FUNCTION_NODES):
 				raise ResolutionError("Override must resolve to a function in the custom app")
-			upstream = self.resolver.resolve(original)
+			upstream = self.resolver.resolve_registration(original)
 			if upstream.module.app.name == self.app.name or not isinstance(upstream.node, FUNCTION_NODES):
 				raise ResolutionError("Original must resolve to a function in a required app or frappe")
 			self.validate_annotation(custom, upstream)
@@ -772,7 +788,7 @@ class AnnotationValidator:
 			self.error(custom, original, str(exc))
 
 	def doctype(self, doctype: str, replacement: str, *, extension: bool | None = None):
-		custom = self.resolver.resolve(replacement)
+		custom = self.resolver.resolve_registration(replacement)
 		try:
 			if custom.module.app.name != self.app.name or not isinstance(custom.node, ast.ClassDef):
 				raise ResolutionError("DocType override must resolve to a class in the custom app")
@@ -876,11 +892,13 @@ class AnnotationValidator:
 			raise ResolutionError(
 				f"Unresolved extension composition for {doctype}: installed dependency app order is unavailable"
 			)
-		mixins = [self.resolver.resolve(path) for path in reversed(paths)]
+		mixins = [self.resolver.resolve_registration(path) for path in reversed(paths)]
 		if not any(mixin.identity == custom.identity for mixin in mixins):
 			raise ResolutionError(f"Extension {custom.reference} is not registered for DocType {doctype!r}")
 		if dependency_extensions:
-			mixins.extend(self.resolver.resolve(path) for path in reversed(dependency_extensions[0]))
+			mixins.extend(
+				self.resolver.resolve_registration(path) for path in reversed(dependency_extensions[0])
+			)
 		if any(not isinstance(mixin.node, ast.ClassDef) for mixin in mixins):
 			raise ResolutionError(f"Extensions for {doctype} must resolve to classes")
 		return self.resolver.compose([*mixins, controller])
@@ -908,7 +926,7 @@ class AnnotationValidator:
 					f"Ambiguous replacement controller for {doctype}: installed app order is unavailable"
 				)
 		if replacements:
-			controller = self.resolver.resolve(replacements[-1])
+			controller = self.resolver.resolve_registration(replacements[-1])
 			if not isinstance(controller.node, ast.ClassDef):
 				raise ResolutionError(f"Replacement controller for {doctype} must resolve to a class")
 			return controller

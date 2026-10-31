@@ -2,7 +2,7 @@
 
 import ast
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 FUNCTION_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
 DEFINITION_NODES = (*FUNCTION_NODES, ast.ClassDef)
@@ -148,104 +148,85 @@ class AmbiguousBinding(ValueError):
 		super().__init__(reason)
 
 
-@dataclass
-class _TypingGuards:
-	false: set[str] = field(default_factory=set)
-	modules: dict[str, str] = field(default_factory=dict)
-	mutated: set[str] = field(default_factory=set)
-
-	def copy(self):
-		return _TypingGuards(self.false.copy(), self.modules.copy(), self.mutated.copy())
-
-	def invalidate(self, names):
-		self.false.difference_update(
-			guard for guard in list(self.false) if "*" in names or guard.split(".", 1)[0] in names
-		)
-		for local in list(self.modules):
-			if "*" in names or local in names:
-				self.modules.pop(local)
-
-
 def runtime_body(tree: ast.Module | ast.ClassDef, owner=None) -> list[ast.stmt]:
-	"""Filter typing-only declarations using the module state at each class declaration."""
+	"""Prune proven typing-only branches; mutation makes further guard proofs unsupported."""
 	bodies = {}
-	module_guards = _TypingGuards()
+	module_guards = set()
+	unsupported = False
 
-	def synchronize(guards):
-		guards.mutated.update(module_guards.mutated)
-		guards.false.difference_update(
-			guard
-			for guard in list(guards.false)
-			if "." in guard and guards.modules.get(guard.split(".", 1)[0]) in guards.mutated
+	def globals_in(statements):
+		return {
+			name
+			for node in scope_statements(statements)
+			if isinstance(node, ast.Global)
+			for name in node.names
+		}
+
+	def forget(guards, names):
+		guards.difference_update(
+			guard for guard in list(guards) if "*" in names or guard.split(".", 1)[0] in names
 		)
 
-	def collect(statements, guards, parents=()):
-		if guards is not module_guards:
-			# Global declarations apply to the whole class, even in skipped branches.
-			global_names = {
-				name
-				for node in scope_statements(statements)
-				if isinstance(node, ast.Global)
-				for name in node.names
-			}
-			for context in (module_guards, guards, *parents):
-				context.invalidate(global_names)
+	def collect(statements, guards, global_names=frozenset()):
+		nonlocal unsupported
 		result = []
 		for statement in statements:
-			synchronize(guards)
-			if isinstance(statement, ast.If) and decorator_name(statement.test) in guards.false:
-				result.extend(collect(statement.orelse, guards, parents))
+			if unsupported:
+				guards.clear()
+			if isinstance(statement, ast.If) and decorator_name(statement.test) in guards:
+				result.extend(collect(statement.orelse, guards, global_names))
 				continue
 			result.append(statement)
-			# Unknown owners of a direct guard write cannot prove either provider unchanged.
+			bindings = scope_bindings([statement])
 			expressions = (
 				definition_expressions(statement) if isinstance(statement, ast.ClassDef) else [statement]
 			)
-			for expression in expressions:
-				for node in executable_nodes(expression):
-					if (
-						isinstance(node, ast.Attribute)
-						and isinstance(node.ctx, (ast.Store, ast.Del))
-						and node.attr == "TYPE_CHECKING"
-					):
-						module = (
-							guards.modules.get(node.value.id) if isinstance(node.value, ast.Name) else None
-						)
-						module_guards.mutated.update({module} if module else {"typing", "typing_extensions"})
-			bindings = scope_bindings([statement])
+			nodes = [node for expression in expressions for node in executable_nodes(expression)]
+			possible_globals = global_names & bindings.keys()
+			# Compound statements remain opaque; collect only their possible global writes.
+			for node in nodes:
+				if isinstance(node, ast.ClassDef):
+					possible_globals |= globals_in(node.body) & scope_bindings(node.body).keys()
+			if any(
+				isinstance(node, ast.Attribute)
+				and isinstance(node.ctx, (ast.Store, ast.Del))
+				and node.attr == "TYPE_CHECKING"
+				for node in nodes
+			) or any(guard.split(".", 1)[0] in possible_globals for guard in module_guards | guards):
+				unsupported = True
+				module_guards.clear()
+				guards.clear()
 			# A class name is bound after its body; expressions may bind names first.
-			guards.invalidate(
+			forget(
+				guards,
 				{name for name, nodes in bindings.items() if any(node is not statement for node in nodes)}
 				if isinstance(statement, ast.ClassDef)
-				else bindings
+				else bindings,
 			)
-			synchronize(guards)
 			if isinstance(statement, ast.ClassDef):
-				synchronize(module_guards)
 				# Enclosing class locals are not globals of a nested class body.
-				bodies[statement] = collect(statement.body, module_guards.copy(), (*parents, guards))
-				guards.invalidate({statement.name})
-			elif isinstance(statement, (ast.Import, ast.ImportFrom)):
+				bodies[statement] = collect(statement.body, module_guards.copy(), globals_in(statement.body))
+				forget(guards, {statement.name})
+			elif isinstance(statement, (ast.Import, ast.ImportFrom)) and not unsupported:
 				for alias in statement.names:
 					local = alias.asname or (
 						alias.name.split(".")[0] if isinstance(statement, ast.Import) else alias.name
 					)
-					guards.invalidate({local})
+					forget(guards, {local})
 					if isinstance(statement, ast.Import) and alias.name in {"typing", "typing_extensions"}:
-						guards.modules[local] = alias.name
-						if alias.name not in guards.mutated:
-							guards.false.add(f"{local}.TYPE_CHECKING")
+						guards.add(f"{local}.TYPE_CHECKING")
 					elif (
 						isinstance(statement, ast.ImportFrom)
 						and not statement.level
 						and statement.module in {"typing", "typing_extensions"}
 						and alias.name == "TYPE_CHECKING"
-						and statement.module not in guards.mutated
 					):
-						guards.false.add(local)
+						guards.add(local)
 		return result
 
-	bodies[tree] = collect(tree.body, module_guards if isinstance(tree, ast.Module) else _TypingGuards())
+	bodies[tree] = collect(
+		tree.body, module_guards if isinstance(tree, ast.Module) else set(), globals_in(tree.body)
+	)
 	return bodies.get(owner or tree, (owner or tree).body)
 
 

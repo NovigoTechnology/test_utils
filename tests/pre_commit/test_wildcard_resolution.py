@@ -501,7 +501,9 @@ def test_package_class_reexport_method_and_base_use_the_same_class(bench, resolv
 	write(bench / "nagus/nagus/pkg/__init__.py", reexport + "\n")
 	write(bench / "nagus/nagus/overrides.py", "from .pkg import Client\nclass Derived(Client): pass\n")
 	client = resolver.resolve("nagus.pkg.Client")
-	method = resolver.resolve("nagus.pkg.Client.save")
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("nagus.pkg.Client.save")
+	method = resolver.resolve_from("nagus.pkg.Client", "Client.save")
 	assert isinstance(client.node, ast.ClassDef)
 	assert method.node is client.node.body[0]
 	assert method.qualname == "Client.save"
@@ -512,14 +514,16 @@ def test_package_class_reexport_method_and_base_use_the_same_class(bench, resolv
 	write(
 		bench / "nagus/nagus/bindings.py",
 		"import nagus.pkg.Client as client_module\nimport nagus.pkg as package\n"
-		"from nagus.pkg.Client import Client as DirectClient\nimport nagus.pkg.Client\n",
+		"from nagus.pkg.Client import Client as DirectClient\n"
+		"from nagus.pkg import Client as ExportedClient\nimport nagus.pkg.Client\n",
 	)
 	assert resolver.resolve("nagus.bindings.package.Client.save").node is method.node
 	assert resolver.resolve("nagus.bindings.DirectClient.save").node is method.node
-	module_function = resolver.resolve("nagus.bindings.client_module.save")
-	assert module_function.qualname == "save"
-	assert ast.literal_eval(module_function.node.body[0].value) == "module trap"
-	assert resolver.resolve("nagus.bindings.nagus.pkg.Client.save").node is module_function.node
+	assert resolver.resolve("nagus.bindings.ExportedClient.save").node is method.node
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("nagus.bindings.client_module.save")
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("nagus.bindings.nagus.pkg.Client.save")
 
 
 def test_dotted_reference_still_resolves_a_normal_module_function(bench, resolver):
@@ -531,5 +535,89 @@ def test_dotted_reference_still_resolves_a_normal_module_function(bench, resolve
 	assert ast.literal_eval(function.node.body[0].value) == "normal function"
 	write(bench / "nagus/nagus/reports/__init__.py", "from unavailable import *\n")
 	write(bench / "nagus/nagus/reports/daily.py", "def save(): return 'child module'\n")
-	child_function = resolver.resolve("nagus.reports.daily.save")
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("nagus.reports.daily.save")
+	child_function = resolver.resolve_from("nagus.reports.daily", "save")
 	assert ast.literal_eval(child_function.node.body[0].value) == "child module"
+
+
+def test_conditional_package_wildcard_does_not_fall_back_to_a_child_module(bench, resolver):
+	write(bench / "nagus/nagus/pkg/provider.py", "class Client:\n    def save(self): pass\n")
+	path = write(bench / "nagus/nagus/pkg/__init__.py", "if enabled:\n    from .provider import *\n")
+	write(bench / "nagus/nagus/pkg/Client.py", "def save(): return 'wrong module'\n")
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous") as caught:
+		resolver.resolve("nagus.pkg.Client.save")
+	assert f"{path}:2" in str(caught.value)
+
+
+def test_dotted_import_collision_is_ambiguous_while_explicit_from_selects_class(bench, resolver):
+	write(
+		bench / "nagus/nagus/pkg/Client.py",
+		"def save(): return 'module'\nclass Client:\n    def save(self): return 'class'\n",
+	)
+	write(bench / "nagus/nagus/pkg/__init__.py", "from .Client import Client\n")
+	write(
+		bench / "nagus/nagus/bindings.py",
+		"import nagus.pkg.Client as client_module\nimport nagus.pkg.Client\n"
+		"from nagus.pkg.Client import Client as ExplicitClient\n",
+	)
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("nagus.bindings.client_module.save")
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("nagus.bindings.nagus.pkg.Client.save")
+	assert resolver.resolve("nagus.bindings.ExplicitClient.save").qualname == "Client.save"
+
+
+def test_typing_only_overload_alias_does_not_hide_an_ordinary_runtime_decorator(bench, resolver):
+	source = (
+		"from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from typing import overload as signature\n"
+		"else:\n    def signature(function): return function\n"
+		"class Controller:\n    @signature\n    def validate(self): pass\n"
+	)
+	assert extract_function(source, "Controller.validate") is not None
+	write(bench / "erpnext/erpnext/bases.py", source)
+	assert isinstance(resolver.resolve("erpnext.bases.Controller.validate").node, ast.FunctionDef)
+	register_class(
+		bench,
+		"from erpnext.bases import Controller\nclass CustomLedger(Controller):\n    def validate(self): pass\n",
+	)
+	result = validate(bench)
+	assert result.checked == 1
+	assert len(result.errors) == 1
+	assert "Missing annotation fields" in result.errors[0]
+
+
+def test_global_declaration_with_only_a_typing_only_write_keeps_the_guard_false(bench, resolver):
+	source = (
+		"from typing import TYPE_CHECKING\nclass Configure:\n    global TYPE_CHECKING\n"
+		"    if TYPE_CHECKING:\n        TYPE_CHECKING = True\n"
+		"def run(): return 'runtime'\nif TYPE_CHECKING:\n    def run(): return 'typing-only'\n"
+	)
+	extracted = extract_function(source, "run")
+	assert extracted is not None and "return 'runtime'" in extracted
+	write(bench / "nagus/nagus/active.py", source)
+	assert ast.literal_eval(resolver.resolve("nagus.active.run").node.body[0].value) == "runtime"
+
+
+def test_conditional_typing_provider_alias_rebinding_keeps_replacements_ambiguous(bench, resolver):
+	source = (
+		"import typing as flags\nif enabled:\n    import typing_extensions as flags\n"
+		"    flags.TYPE_CHECKING = True\nimport typing_extensions as other_flags\n"
+		"def run(): return 'old'\nif other_flags.TYPE_CHECKING:\n    def run(): return 'replacement'\n"
+	)
+	assert extract_function(source, "run") is None
+	write(bench / "nagus/nagus/active.py", source)
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("nagus.active.run")
+
+
+def test_conditional_class_global_write_keeps_later_replacements_ambiguous(bench, resolver):
+	source = (
+		"from typing import TYPE_CHECKING\nif enabled:\n    class Configure:\n"
+		"        global TYPE_CHECKING\n        TYPE_CHECKING = True\n"
+		"def run(): return 'old'\nif TYPE_CHECKING:\n    def run(): return 'replacement'\n"
+	)
+	assert extract_function(source, "run") is None
+	write(bench / "nagus/nagus/active.py", source)
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("nagus.active.run")
