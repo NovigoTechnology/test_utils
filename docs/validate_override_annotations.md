@@ -79,6 +79,14 @@ to an ancestor hidden by that declaration. Class-level callable aliases such as
 when they replace an upstream method. Define the overriding method explicitly with `def` or
 `async def` and put its metadata on that definition. A registered function that is rebound
 after its definition cannot reuse the old definition's metadata.
+Assignments, deletions and `setattr` changes to class members are included in the method
+inventory and invalidate the affected implementation. Changes to a function's `__code__`,
+defaults or annotation docstring also invalidate its old source definition. An unrelated
+method with the same name in another scope does not replace a module-level function.
+An overload declaration is skipped only when its decorator is proven to be the current
+absolute `typing.overload` or `typing_extensions.overload` binding at definition time.
+Local decorators with those names, rebound aliases and modified typing attributes cannot
+hide the active implementation. Legacy leaf-name lookup considers active class bindings.
 Plain literal data attributes redeclared in both classes do not require method annotations.
 Wildcard imports are resolved in declaration order. An explicit unconditional definition
 after a wildcard import establishes the active binding. For a later wildcard, local source
@@ -120,6 +128,11 @@ Container identity is retained across conditional alias rebindings and captured 
 Positional and keyword-only defaults capture their values when the function is defined;
 reassigning a name later does not change an earlier default or make mutations of an old
 export list affect its replacement.
+Unknown indices and joins retain possible element identities. Container transformations,
+starred arguments, slices, views and supported mutation methods preserve reachable aliases
+and callbacks; an unsupported value operation does not prove its aliases absent.
+Joins preserve implicit method receivers and terminate for cyclic container graphs.
+Keyword binding distinguishes positional-only, keyword-accepting and local variable names.
 Dynamic namespace operations reached through helpers or builtin aliases are rejected.
 `vars(value)` is exempt only when the value is proven to be a declared class, including
 known class aliases. `vars(sys.modules[__name__])` and unknown objects remain ambiguous.
@@ -136,10 +149,23 @@ A generator expression's outermost iterable is evaluated at creation. Effects ar
 at awaits, iteration, `yield from`, known consumers such as `list`/`next`/`asyncio.run`,
 and iterator advancement. Passing a deferred value to an unknown callable conservatively
 includes possible consumption; merely storing it or applying `iter` does not consume it.
+Eager comprehensions consume every iterable. Keyword arguments are analyzed with the same
+rules as positional arguments, while storage-only `dict(value=generator)` remains lazy.
+Known local constructors, methods and protocol callbacks are inspected, including callbacks
+passed to operations such as `sorted(key=...)`. An opaque callback executed while a known
+`__all__` exists makes the export list ambiguous, even when the call has no arguments.
 Dynamic exports, unavailable
 source, conditional replacements, and unresolved cycles produce an **ambiguous resolution**
 diagnostic naming the responsible import and location, rather than claiming a controller
 was removed. This analysis never imports or executes application modules.
+
+This is a source analysis contract, not a proof for arbitrary Python execution. When a
+module has no `__all__`, public names come from its declarations and locally visible
+binding effects. Uninspected external code that secretly rewrites the importing module's
+namespace, including reflective or cyclic dependency side effects, is outside that model.
+Use runtime integration tests for such code; a passing annotation check does not establish
+the absence of every possible external side effect. The regression suite compares controlled
+examples against Python for the modeled execution, aliasing and lookup rules.
 
 The source-only extractor used by historical tracking has no checkout context for imported
 modules. It can resolve definitions after earlier wildcards; a later wildcard whose exports

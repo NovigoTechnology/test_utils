@@ -14,15 +14,14 @@ from test_utils.utils.override_metadata import (
 	parse_annotation,
 	repository_identity,
 )
-from test_utils.utils.python_scope import EffectAnalyzer
 from test_utils.utils.python_source import (
 	FUNCTION_NODES,
 	AmbiguousBinding,
 	Binding,
+	SourceAnalyzer,
 	definition_expressions,
 	executable_nodes,
 	mutable_objects,
-	overload_names,
 	runtime_body,
 	scope_bindings,
 	scope_statements,
@@ -437,7 +436,7 @@ class SourceResolver:
 		key = module.path, self.module_limit(module, before)
 		if key not in self.analyses:
 			body, _ = self.module_body(module, before)
-			analyzer = EffectAnalyzer()
+			analyzer = SourceAnalyzer()
 			for statement in body:
 				analyzer.scan(statement)
 			self.analyses[key] = analyzer
@@ -499,17 +498,24 @@ class SourceResolver:
 		seen = seen | {key}
 		parts = qualname.split(".")
 		prefix = f"{owner.qualname}." if owner else ""
-		decorators = overload_names(body)
+		current_owner = owner
 		if owner is not None:
 			body = self.class_body(owner)
-			decorators.update(overload_names(body))
 		for index, name in enumerate(parts):
+			if current_owner is not None:
+				writes = self.analysis(current_owner.module, before).member_writes.get(
+					current_owner.node, set()
+				)
+				if name in writes or None in writes:
+					raise ResolutionError(
+						f"Ambiguous mutated member {current_owner.reference}.{name} at {current_owner.module.path}"
+					)
 			try:
 				binding = select_binding(
 					body,
 					name,
 					wildcard=lambda statement, target: self.wildcard(module, statement, target, seen),
-					overloads=decorators,
+					overloads=self.analysis(module, before).overload_definitions,
 				)
 			except AmbiguousBinding as exc:
 				raise ResolutionError(
@@ -549,7 +555,7 @@ class SourceResolver:
 			elif isinstance(binding.node, (ast.ClassDef, *FUNCTION_NODES)):
 				if binding.node in self.analysis(module, before).invalid_definitions:
 					raise ResolutionError(
-						f"Ambiguous decorated definition {module.name}.{qualname} at {module.path}:{binding.node.lineno}"
+						f"Ambiguous modified or decorated definition {module.name}.{qualname} at {module.path}:{binding.node.lineno}"
 					)
 				value = Symbol(module, prefix + name, binding.node)
 			else:
@@ -560,10 +566,12 @@ class SourceResolver:
 				return value
 			if not isinstance(value.node, ast.ClassDef):
 				return None
+			if module.path != value.module.path:
+				before = None
 			module = value.module
+			current_owner = value
 			prefix = value.qualname + "."
 			body = self.class_body(value)
-			decorators.update(overload_names(body))
 		return None
 
 	def base_classes(self, symbol: Symbol) -> list[Symbol]:
@@ -590,20 +598,45 @@ class SourceResolver:
 			return value if isinstance(value.node, FUNCTION_NODES) else None
 		if "." in name:
 			return None
-		candidates = []
+		candidates = {}
+		visited = set()
 
-		def collect(owner, prefix=""):
-			for node in scope_statements(list(runtime_body(owner.body))):
-				if isinstance(node, ast.ClassDef):
-					qualified = f"{prefix}{node.name}.{name}"
-					if name in scope_bindings(list(runtime_body(node.body))):
-						value = self.qualified(module, qualified)
-						if value is not None and isinstance(value.node, FUNCTION_NODES):
-							candidates.append(value)
-					collect(node, f"{prefix}{node.name}.")
+		def relevant(node, current_module):
+			body = self.analysis(current_module).runtime_bodies.get(node, node.body)
+			return name in scope_bindings(body) or any(
+				isinstance(child, ast.ClassDef) and relevant(child, current_module)
+				for child in scope_statements(body)
+			)
 
-		collect(module.tree)
-		return candidates[0] if len(candidates) == 1 else None
+		def collect(owner=None):
+			current_module = owner.module if owner else module
+			body = self.class_body(owner) if owner else self.module_body(module)[0]
+			class_names = dict.fromkeys(
+				node.name
+				for node in scope_statements(body)
+				if isinstance(node, ast.ClassDef) and relevant(node, current_module)
+			)
+			for class_name in class_names:
+				try:
+					binding = select_binding(
+						body, class_name, overloads=self.analysis(current_module).overload_definitions
+					)
+				except AmbiguousBinding:
+					binding = None  # Qualified resolution can inspect a wildcard's actual exports.
+				if isinstance(binding, Binding) and not isinstance(binding.node, ast.ClassDef):
+					continue
+				active = self.qualified(current_module, class_name, owner=owner)
+				if active is None or not isinstance(active.node, ast.ClassDef) or active.identity in visited:
+					continue
+				visited.add(active.identity)
+				if name in scope_bindings(self.class_body(active)):
+					value = self.member(active, name)
+					if value is not None and isinstance(value.node, FUNCTION_NODES):
+						candidates[value.identity] = value
+				collect(active)
+
+		collect()
+		return next(iter(candidates.values())) if len(candidates) == 1 else None
 
 	def function_node(self, module, name):
 		value = self.function_symbol(module, name)
@@ -779,9 +812,19 @@ class AnnotationValidator:
 				)
 			# Include inherited methods from local mixins, not just the registered class.
 			methods = {}
-			class_bindings = {
-				owner.identity: scope_bindings(self.resolver.class_body(owner)) for owner in hierarchy
-			}
+			class_bindings = {}
+			for owner in hierarchy:
+				bindings = scope_bindings(self.resolver.class_body(owner))
+				writes = self.resolver.analysis(owner.module).member_writes.get(owner.node, set())
+				if None in writes:
+					raise ResolutionError(
+						f"Ambiguous dynamic member mutation of {owner.reference} at {owner.module.path}"
+					)
+				for name in writes:
+					bindings.setdefault(name, []).append(
+						ast.copy_location(ast.Name(id=name, ctx=ast.Store()), owner.node)
+					)
+				class_bindings[owner.identity] = bindings
 			for owner in hierarchy:
 				for name, declarations in class_bindings[owner.identity].items():
 					if name not in methods:

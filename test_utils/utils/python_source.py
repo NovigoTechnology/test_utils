@@ -1,7 +1,7 @@
 """Scope-aware Python source inspection without importing application code."""
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from test_utils.utils.python_ast import (
 	DEFINITION_NODES as DEFINITION_NODES,
@@ -21,18 +21,65 @@ from test_utils.utils.python_ast import (
 from test_utils.utils.python_scope import EffectAnalyzer
 
 
-def overload_names(body):
-	names = {"overload", "typing.overload", "typing_extensions.overload"}
-	for item in scope_statements(body):
-		if isinstance(item, ast.ImportFrom) and item.module in {"typing", "typing_extensions"}:
-			for alias in item.names:
+class SourceAnalyzer(EffectAnalyzer):
+	"""Identify typing overloads using the decorator binding at definition time."""
+
+	def __init__(self):
+		super().__init__()
+		self.overload_definitions = set()
+		self.changed_overload_modules = set()
+
+	def value(self, node, scope):
+		value = super().value(node, scope)
+		if isinstance(node, ast.Attribute) and node.attr == "overload":
+			if self.value(node.value, scope).modules & self.changed_overload_modules:
+				value = replace(value, uncertain=True)
+		return value
+
+	def bind(self, target, value, scope, seen=frozenset(), *, anchor=True):
+		if isinstance(target, ast.Attribute) and target.attr == "overload":
+			self.changed_overload_modules.update(
+				self.value(target.value, scope).modules & {"typing", "typing_extensions"}
+			)
+		return super().bind(target, value, scope, seen, anchor=anchor)
+
+	def expression(self, node, scope, seen):
+		if isinstance(node, ast.Call) and self.value(node.func, scope).modules & {
+			"builtins.setattr",
+			"builtins.delattr",
+		}:
+			attribute = node.args[1] if len(node.args) > 1 else None
+			if node.args and (not isinstance(attribute, ast.Constant) or attribute.value == "overload"):
+				self.changed_overload_modules.update(
+					self.value(node.args[0], scope).modules & {"typing", "typing_extensions"}
+				)
+		return super().expression(node, scope, seen)
+
+	def visit(self, node, scope, seen):
+		self.changed_overload_modules.update(
+			module
+			for module, attributes in self.module_writes.items()
+			if "overload" in attributes or None in attributes
+		)
+		if isinstance(node, FUNCTION_NODES):
+			for decorator in node.decorator_list:
+				value = self.value(decorator, scope)
+				if value.modules & {"typing.overload", "typing_extensions.overload"}:
+					if value.uncertain:
+						self.invalid_definitions.add(node)
+					else:
+						self.overload_definitions.add(node)
+		result = super().visit(node, scope, seen)
+		if (
+			isinstance(node, ast.ImportFrom)
+			and node.level == 0
+			and node.module in self.changed_overload_modules
+		):
+			for alias in node.names:
 				if alias.name == "overload":
-					names.add(alias.asname or alias.name)
-		elif isinstance(item, ast.Import):
-			for alias in item.names:
-				if alias.name in {"typing", "typing_extensions"}:
-					names.add(f"{alias.asname or alias.name}.overload")
-	return names
+					name = alias.asname or alias.name
+					scope.set(name, replace(scope.get(name), uncertain=True), anchor=False)
+		return result
 
 
 def decorator_name(node):
@@ -166,7 +213,7 @@ def ordered_bindings(body, name):
 					if isinstance(child, (ast.Import, ast.ImportFrom)) and node in child.names
 				)
 			yield Binding(node, responsible, not direct)
-		if any(effect.replaced_definition == name for effect in effects):
+		if any(effect.replaced_definition == name and effect.node is statement for effect in effects):
 			yield Binding(
 				ast.copy_location(ast.Name(id=name, ctx=ast.Store()), statement), statement, conditional=True
 			)
@@ -193,7 +240,7 @@ def select_binding(body, name, *, wildcard=None, overloads=()):
 			raise AmbiguousBinding(f"conditional declaration of {name} at line {node.lineno}")
 		if isinstance(node, FUNCTION_NODES):
 			decorators = {decorator_name(item) for item in node.decorator_list}
-			if decorators.intersection(overloads):
+			if node in overloads:
 				continue
 			if decorators.intersection({f"{name}.setter", f"{name}.getter", f"{name}.deleter"}):
 				raise AmbiguousBinding(f"descriptor {name} has multiple accessors at line {node.lineno}")
@@ -251,6 +298,17 @@ def static_exports(body, *, wildcard=None):
 	for statement in body:
 		if isinstance(statement, ast.AnnAssign) and statement.value is None:
 			continue
+		exact_augmentation = False
+		if (
+			isinstance(statement, ast.AugAssign)
+			and isinstance(statement.target, ast.Name)
+			and isinstance(statement.op, ast.Add)
+		):
+			try:
+				exact_augmentation = isinstance(literal(statement.target), (list, tuple))
+				literal(statement.value)
+			except ValueError, TypeError, KeyError, SyntaxError:
+				exact_augmentation = False
 		for node in scope_statements([statement]):
 			if not isinstance(node, ast.ImportFrom) or not any(alias.name == "*" for alias in node.names):
 				continue
@@ -261,13 +319,21 @@ def static_exports(body, *, wildcard=None):
 				values["__all__"] = unknown
 		for effect in analyzer.scan(statement):
 			node = effect.node
+			if effect.opaque and "__all__" in values:
+				raise AmbiguousBinding(
+					f"unknown call may modify __all__ at line {getattr(node, 'lineno', statement.lineno)}"
+				)
 			if effect.namespace:
 				raise AmbiguousBinding(f"dynamic namespace at line {node.lineno}")
 			for name in effect.bindings:
 				values[name] = unknown
-			for origin in effect.origins:
+			for origin in () if exact_augmentation and effect.node is statement else effect.origins:
 				if origin in objects:
-					invalid.update(mutable_objects(objects[origin]))
+					invalid.update(
+						{id(objects[origin]): objects[origin]}
+						if effect.shallow
+						else mutable_objects(objects[origin])
+					)
 		if isinstance(statement, (ast.Assign, ast.AnnAssign)):
 			targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
 			names = [target.id for target in targets if isinstance(target, ast.Name)]
@@ -312,18 +378,19 @@ def static_exports(body, *, wildcard=None):
 
 def find_definition(tree: ast.Module | ast.ClassDef, qualified_name: str):
 	parts = qualified_name.split(".")
-	analyzer = EffectAnalyzer()
+	analyzer = SourceAnalyzer()
 	for statement in runtime_body(tree.body):
 		analyzer.scan(statement)
 	node = tree
-	decorators = set()
 	for part in parts:
 		if not isinstance(node, (ast.Module, ast.ClassDef)):
 			return None
 		body = analyzer.runtime_bodies.get(node, node.body)
-		decorators.update(overload_names(body))
+		writes = analyzer.member_writes.get(node, set())
+		if part in writes or None in writes:
+			return None
 		try:
-			binding = select_binding(body, part, overloads=decorators)
+			binding = select_binding(body, part, overloads=analyzer.overload_definitions)
 		except AmbiguousBinding:
 			return None
 		if binding is None or not isinstance(binding.node, DEFINITION_NODES):
@@ -338,20 +405,49 @@ def find_function(tree: ast.Module, name: str):
 	"""Find the concrete implementation; ambiguous scopes and overload-only stubs fail."""
 	node = find_definition(tree, name)
 	if node is None and "." not in name:
-		bindings = scope_bindings(tree.body)
+		analyzer = SourceAnalyzer()
+		module_body = list(runtime_body(tree.body))
+		for statement in module_body:
+			analyzer.scan(statement)
+		bindings = scope_bindings(module_body)
 		if name in bindings or "*" in bindings:
 			return None
 		candidates = []
+		visited = set()
+
+		def body_for(scope):
+			return module_body if scope is tree else analyzer.runtime_bodies.get(scope, scope.body)
+
+		def relevant(scope):
+			return any(
+				(isinstance(item, FUNCTION_NODES) and item.name == name)
+				or (isinstance(item, ast.ClassDef) and relevant(item))
+				for item in scope_statements(body_for(scope))
+			)
 
 		def collect(scope, prefix=""):
-			if any(
-				isinstance(item, FUNCTION_NODES) and item.name == name
-				for item in scope_statements(scope.body)
-			):
+			body = body_for(scope)
+			if any(isinstance(item, FUNCTION_NODES) and item.name == name for item in scope_statements(body)):
 				candidates.append(find_definition(tree, prefix + name))
-			for item in scope_statements(scope.body):
-				if isinstance(item, ast.ClassDef):
-					collect(item, f"{prefix}{item.name}.")
+			class_names = dict.fromkeys(
+				item.name
+				for item in scope_statements(body)
+				if isinstance(item, ast.ClassDef) and relevant(item)
+			)
+			for class_name in class_names:
+				try:
+					binding = select_binding(body, class_name, overloads=analyzer.overload_definitions)
+				except AmbiguousBinding:
+					candidates.append(None)
+					continue
+				if binding is None or not isinstance(binding.node, ast.ClassDef):
+					continue
+				active = find_definition(tree, f"{prefix}{class_name}")
+				if active is None:
+					candidates.append(None)
+				elif id(active) not in visited:
+					visited.add(id(active))
+					collect(active, f"{prefix}{class_name}.")
 
 		collect(tree)
 		if len(candidates) == 1:
