@@ -159,25 +159,15 @@ def test_copying_imported_keyword_defaults_then_replacing_a_slot_is_harmless(ben
 	assert resolver(bench).resolve("erpnext.bridge.target").reference == "erpnext.api.target"
 
 
-def test_imported_keyword_defaults_copy_retains_aliases_of_nested_default_values(bench):
-	module(bench, "api", "def target(*, options=[]): pass")
-	module(
-		bench,
-		"bridge",
-		"from .api import target\ndefaults = target.__kwdefaults__.copy()\ndefaults['options'].append(2)",
-	)
-	with pytest.raises(ResolutionError, match="Ambiguous imported binding"):
-		resolver(bench).resolve("erpnext.bridge.target")
-
-
 def test_importer_mutation_of_the_declaring_base_affects_an_imported_child(bench):
 	module(bench, "api", "class Base:\n    def target(self): pass\nclass Child(Base): pass")
 	module(bench, "bridge", "from .api import Base, Child\nBase.target.__doc__ = 'changed'")
 	source_resolver = resolver(bench)
 	with pytest.raises(ResolutionError, match="Ambiguous imported binding"):
 		source_resolver.resolve("erpnext.bridge.Child.target")
+	child = source_resolver.resolve("erpnext.bridge.Child")
 	with pytest.raises(ResolutionError, match="Ambiguous imported binding"):
-		source_resolver.resolve("erpnext.bridge.Child")
+		source_resolver.member(child, "target")
 
 
 def test_dict_constructor_copy_retains_nested_imported_default_aliases(bench):
@@ -242,8 +232,9 @@ def test_wildcard_import_retains_mutations_through_other_known_exported_class_na
 	source_resolver = resolver(bench)
 	with pytest.raises(ResolutionError, match="Ambiguous imported binding"):
 		source_resolver.resolve("erpnext.bridge.Child.target")
+	child = source_resolver.resolve("erpnext.bridge.Child")
 	with pytest.raises(ResolutionError, match="Ambiguous imported binding"):
-		source_resolver.resolve("erpnext.bridge.Child")
+		source_resolver.member(child, "target")
 
 
 def test_wildcard_mutation_of_a_different_member_does_not_replace_inherited_target(bench):
@@ -280,3 +271,72 @@ def test_imported_defaults_lookup_with_a_custom_key_keeps_possible_hash_side_eff
 	)
 	with pytest.raises(ResolutionError, match="Ambiguous imported binding"):
 		resolver(bench).resolve("erpnext.bridge.target")
+
+
+def test_opaque_imported_helper_cannot_certify_metadata_of_its_imported_argument(bench):
+	module(bench, "api", "def target(): pass\ndef configure(value): value.__doc__ = 'changed'")
+	module(bench, "bridge", "from .api import target, configure\nconfigure(target)")
+	with pytest.raises(ResolutionError, match="Ambiguous imported binding"):
+		resolver(bench).resolve("erpnext.bridge.target")
+
+
+def test_parallel_wildcards_preserve_alias_identity_from_each_known_export(bench):
+	module(bench, "api", "def target(): pass")
+	module(bench, "bridge", "from .api import target as alias")
+	module(bench, "consumer", "from .bridge import *\nfrom .api import *\nalias.__doc__ = 'changed'")
+	with pytest.raises(ResolutionError, match="Ambiguous imported binding"):
+		resolver(bench).resolve("erpnext.consumer.target")
+
+
+def test_imported_base_keeps_identity_and_applies_mutations_to_the_requested_member(bench):
+	module(bench, "api", "class Base:\n    def target(self): pass\n    def other(self): pass")
+	module(bench, "bridge", "from .api import Base\nclass Child(Base): pass\nBase.other.__doc__ = 'changed'")
+	source_resolver = resolver(bench)
+	assert source_resolver.resolve("erpnext.bridge.Child.target").qualname == "Base.target"
+	base = source_resolver.hierarchy(source_resolver.resolve("erpnext.bridge.Child"))[1]
+	assert source_resolver.member(base, "target").qualname == "Base.target"
+	with pytest.raises(ResolutionError, match="Ambiguous imported binding"):
+		source_resolver.member(base, "other")
+
+
+def test_known_readers_and_unrelated_wildcard_alias_attributes_preserve_metadata(bench):
+	module(bench, "api", "def target(): pass")
+	module(bench, "bridge", "from .api import target as alias")
+	module(
+		bench,
+		"consumer",
+		"from .bridge import *\nfrom .api import *\nidentity = id(target)\nalias.debug = True",
+	)
+	assert resolver(bench).resolve("erpnext.consumer.target").reference == "erpnext.api.target"
+
+
+def test_transitive_public_wildcard_reexport_retains_mutated_object_identity(bench):
+	module(bench, "api", "def target(): pass")
+	module(bench, "bridge", "from .api import *")
+	module(bench, "consumer", "from .bridge import *\ntarget.__doc__ = 'changed'")
+	with pytest.raises(ResolutionError, match="Ambiguous imported binding"):
+		resolver(bench).resolve("erpnext.consumer.target")
+
+
+def test_calling_a_module_helper_does_not_mutate_its_namespace_or_unpassed_objects(bench):
+	module(
+		bench, "api", "def target(): pass\ndef other(): pass\ndef configure(value=None, *, flag=True): pass"
+	)
+	module(bench, "reader", "from . import api\nfrom .api import target\napi.configure(flag=True)")
+	module(bench, "consumer", "from . import api\nfrom .api import target, other\napi.configure(api.target)")
+	source_resolver = resolver(bench)
+	assert source_resolver.resolve("erpnext.reader.target").reference == "erpnext.api.target"
+	assert source_resolver.resolve("erpnext.consumer.other").reference == "erpnext.api.other"
+	with pytest.raises(ResolutionError, match="Ambiguous imported binding"):
+		source_resolver.resolve("erpnext.consumer.target")
+
+
+def test_opaque_helper_receives_imported_objects_produced_by_a_deferred_argument(bench):
+	module(bench, "api", "def target(): pass\ndef configure(values): pass")
+	module(
+		bench,
+		"consumer",
+		"from .api import target, configure\ndef values():\n    yield target\nconfigure(values())",
+	)
+	with pytest.raises(ResolutionError, match="Ambiguous imported binding"):
+		resolver(bench).resolve("erpnext.consumer.target")

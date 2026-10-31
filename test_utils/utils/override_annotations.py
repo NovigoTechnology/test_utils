@@ -354,6 +354,7 @@ class Symbol:
 	qualname: str
 	node: ast.AST
 	import_snapshot: tuple[tuple[str, int], ...] = ()
+	import_effects: tuple = ()
 
 	@property
 	def reference(self) -> str:
@@ -367,17 +368,16 @@ class Symbol:
 class ImportAnalyzer(SourceAnalyzer):
 	"""Retain checkout import identities, including a selected wildcard export."""
 
-	def __init__(self, resolver, module, wildcard=None):
+	def __init__(self, resolver, module):
 		super().__init__()
 		self.resolver = resolver
 		self.module = module
-		self.wildcard = wildcard
 		self.readonly_default_calls = set()
 		self.readonly_default_nodes = set()
 
 	@staticmethod
-	def imported_defaults(value):
-		references = value.modules | frozenset(
+	def imported_references(value):
+		return value.modules | frozenset(
 			origin[1]
 			for origin in value.origins
 			if isinstance(origin, tuple)
@@ -385,9 +385,12 @@ class ImportAnalyzer(SourceAnalyzer):
 			and origin[0] == "import"
 			and isinstance(origin[1], str)
 		)
+
+	@classmethod
+	def imported_defaults(cls, value):
 		return {
 			reference
-			for reference in references
+			for reference in cls.imported_references(value)
 			if {"__defaults__", "__kwdefaults__"}.intersection(reference.split("."))
 		}
 
@@ -405,7 +408,13 @@ class ImportAnalyzer(SourceAnalyzer):
 		):
 			return
 		if effect.mutation or effect.opaque or effect.namespace:
-			for reference in self.imported_defaults(SourceValue(effect.node, origins=effect.origins)):
+			value = SourceValue(effect.node, origins=effect.origins)
+			references = self.imported_defaults(value)
+			if effect.opaque or effect.namespace:
+				references |= self.imported_references(
+					SourceValue(effect.node, origins=effect.argument_origins)
+				)
+			for reference in references:
 				self.module_writes.setdefault(reference, set()).add(None)
 
 	def bind(self, target, value, scope, seen=frozenset(), *, anchor=True):
@@ -484,6 +493,8 @@ class ImportAnalyzer(SourceAnalyzer):
 
 	def visit(self, node, scope, seen):
 		original = node
+		wildcard = isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names)
+		previous = scope.values.copy() if wildcard else None
 		if isinstance(node, ast.ImportFrom) and node.level:
 			node = ast.copy_location(
 				ast.ImportFrom(
@@ -492,8 +503,14 @@ class ImportAnalyzer(SourceAnalyzer):
 				node,
 			)
 		result = super().visit(node, scope, seen)
-		if self.wildcard and original is self.wildcard[0]:
-			for name, reference in self.wildcard[1].items():
+		if wildcard:
+			references = self.resolver.known_wildcard_references(self.module, original)
+			if references is None:
+				return result
+			for name, value in previous.items():
+				if name not in references:
+					scope.values[name] = value
+			for name, reference in references.items():
 				scope.set(
 					name,
 					SourceValue(
@@ -511,7 +528,7 @@ class SourceResolver:
 		self.modules: dict[Path, Module] = {}
 		self.import_limits: dict[str, list[int]] = {}
 		self.analyses = {}
-		self.wildcard_analyses = {}
+		self.wildcard_references = {}
 		self.mutation_resolution_depth = 0
 
 	def module(self, app: App, name: str, path: Path) -> Module:
@@ -591,9 +608,46 @@ class SourceResolver:
 		bodies = self.analysis(owner.module).runtime_bodies
 		return bodies[owner.node] if owner.node in bodies else list(runtime_body(owner.node.body))
 
+	def known_wildcard_references(self, module, statement):
+		context = tuple(sorted((name, min(limits)) for name, limits in self.import_limits.items() if limits))
+		key = module.path, id(statement), context
+		if key in self.wildcard_references:
+			return self.wildcard_references[key]
+		limits = self.import_limits.setdefault(module.name, [])
+		limits.append(statement.lineno)
+		try:
+			name = self.import_module_name(module, statement)
+			imported = self.imported_module(name)
+			body, limit = self.module_body(imported)
+			exports = self.exported_names(imported, body, frozenset({(imported.name, "__all__", limit)}))
+			names = (
+				exports
+				if exports is not None
+				else {
+					binding
+					for binding in scope_bindings(body)
+					if not binding.startswith("_") and binding != "*"
+				}
+			)
+			if exports is None:
+				for node in scope_statements(body):
+					if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
+						transferred = self.known_wildcard_references(imported, node)
+						if transferred is None:
+							self.wildcard_references[key] = None
+							return None
+						names.update(binding for binding in transferred if not binding.startswith("_"))
+			result = {binding: f"{name}.{binding}" for binding in names}
+		except ResolutionError, AmbiguousBinding:
+			result = None
+		finally:
+			limits.pop()
+		self.wildcard_references[key] = result
+		return result
+
 	def wildcard(self, module, statement, name, seen, *, before=None, remaining=()):
 		imported_name = self.import_module_name(module, statement)
-		importer_body, importer_limit = self.module_body(module, before)
+		importer = self.analysis(module, before)
 		limits = self.import_limits.setdefault(module.name, [])
 		limits.append(statement.lineno)
 		try:
@@ -609,31 +663,17 @@ class SourceResolver:
 				raise AmbiguousBinding(f"__all__ exports missing symbol {name} in {imported.path}")
 			if value is not None:
 				reference = f"{imported_name}.{name}"
-				key = module.path, importer_limit, id(statement), name
-				if key not in self.wildcard_analyses:
-					names = (
-						exports
-						if exports is not None
-						else {
-							binding
-							for binding in scope_bindings(body)
-							if not binding.startswith("_") and binding != "*"
-						}
-					)
-					references = {binding: f"{imported_name}.{binding}" for binding in {*names, name}}
-					analyzer = ImportAnalyzer(self, module, wildcard=(statement, references))
-					for node in importer_body:
-						analyzer.scan(node)
-					self.wildcard_analyses[key] = analyzer
 				checked = (
 					self.qualified(value.module, ".".join(remaining), owner=value, seen=seen)
 					if remaining and isinstance(value.node, ast.ClassDef)
 					else value
 				)
 				if checked is not None:
-					self.check_imported_mutations(
-						module, ".".join([reference, *remaining]), checked, self.wildcard_analyses[key]
+					checked = self.check_imported_mutations(
+						module, ".".join([reference, *remaining]), checked, importer
 					)
+					if not remaining:
+						value = checked
 			return value
 		except (ResolutionError, AmbiguousBinding) as exc:
 			raise ResolutionError(
@@ -686,10 +726,15 @@ class SourceResolver:
 			body = self.class_body(owner)
 		for index, name in enumerate(parts):
 			if current_owner is not None:
-				writes = self.analysis(current_owner.module, before).member_writes.get(
-					current_owner.node, set()
-				)
+				writes = self.class_mutations(current_owner, before)
 				if name in writes or None in writes:
+					local = self.analysis(current_owner.module, before).member_writes.get(
+						current_owner.node, ()
+					)
+					if current_owner.import_effects and name not in local and None not in local:
+						raise ResolutionError(
+							f"Ambiguous imported binding {current_owner.reference}.{name}: its member was mutated in an importer"
+						)
 					raise ResolutionError(
 						f"Ambiguous mutated member {current_owner.reference}.{name} at {current_owner.module.path}"
 					)
@@ -745,8 +790,7 @@ class SourceResolver:
 					value = self.resolve(reference, seen)
 				finally:
 					limits.pop()
-				self.check_imported_mutations(module, reference, value, importer)
-				return value
+				return self.check_imported_mutations(module, reference, value, importer)
 			elif isinstance(binding.node, (ast.ClassDef, *FUNCTION_NODES)):
 				if binding.node in self.analysis(module, before).invalid_definitions:
 					raise ResolutionError(
@@ -764,6 +808,11 @@ class SourceResolver:
 				raise ResolutionError(
 					f"Ambiguous binding of {module.name}.{qualname} at {module.path}:{binding.node.lineno}; unsupported assignment or deletion"
 				)
+			if current_owner is not None:
+				for importer, _reference, analyzer in current_owner.import_effects:
+					value = self.check_imported_mutations(
+						importer, f"{current_owner.reference}.{name}", value, analyzer
+					)
 			if index == len(parts) - 1:
 				return value
 			if not isinstance(value.node, ast.ClassDef):
@@ -779,30 +828,53 @@ class SourceResolver:
 	def check_imported_mutations(self, module, reference, value, analyzer):
 		"""An importer cannot reuse metadata after changing its imported object."""
 		if self.mutation_resolution_depth or not analyzer.module_writes:
-			return
+			return value
 		sensitive = {"__code__", "__defaults__", "__kwdefaults__", "__doc__", "__wrapped__"}
 		references = {reference: isinstance(value.node, ast.ClassDef)}
 		owners = self.hierarchy(value) if isinstance(value.node, ast.ClassDef) else [value]
 		references.update((owner.reference, isinstance(owner.node, ast.ClassDef)) for owner in owners)
-		writes = {owner: set(attributes) for owner, attributes in analyzer.module_writes.items()}
-		for owner, attributes in list(writes.items()):
-			canonical = self.canonical_mutation_reference(owner)
-			if canonical is not None:
-				writes.setdefault(canonical, set()).update(attributes)
+		writes = self.imported_mutations(analyzer)
 		for candidate, is_class in references.items():
 			for owner, attributes in writes.items():
 				if candidate == owner:
-					affected = is_class or bool(attributes & (sensitive | {None}))
+					affected = bool(attributes & ({"__bases__", None} if is_class else sensitive | {None}))
 				elif candidate.startswith(owner + "."):
 					affected = candidate[len(owner) + 1 :].split(".")[0] in attributes or None in attributes
 				elif owner.startswith(candidate + "."):
-					affected = is_class or owner[len(candidate) + 1 :].split(".")[0] in sensitive
+					affected = not is_class and owner[len(candidate) + 1 :].split(".")[0] in sensitive
 				else:
 					affected = False
 				if affected:
 					raise ResolutionError(
 						f"Ambiguous imported binding {reference} at {module.path}: its object was mutated in this importer"
 					)
+		return (
+			self.with_import_effects(value, ((module, reference, analyzer),))
+			if isinstance(value.node, ast.ClassDef)
+			else value
+		)
+
+	def imported_mutations(self, analyzer):
+		writes = {owner: set(attributes) for owner, attributes in analyzer.module_writes.items()}
+		for owner, attributes in list(writes.items()):
+			canonical = self.canonical_mutation_reference(owner)
+			if canonical is not None:
+				writes.setdefault(canonical, set()).update(attributes)
+		return writes
+
+	@staticmethod
+	def with_import_effects(value, effects):
+		merged = {
+			(module.path, reference, id(analyzer)): (module, reference, analyzer)
+			for module, reference, analyzer in (*value.import_effects, *effects)
+		}
+		return replace(value, import_effects=tuple(merged.values()))
+
+	def class_mutations(self, owner, before=None):
+		writes = set(self.analysis(owner.module, before).member_writes.get(owner.node, ()))
+		for _, _, analyzer in owner.import_effects:
+			writes.update(self.imported_mutations(analyzer).get(owner.reference, ()))
+		return writes
 
 	def canonical_mutation_reference(self, reference):
 		"""Follow visible re-exports without recursively checking their importer effects."""
@@ -844,7 +916,7 @@ class SourceResolver:
 				raise ResolutionError(f"Cyclic inheritance or unbound self-reference at {symbol.reference}")
 			if resolved is None or not isinstance(resolved.node, ast.ClassDef):
 				raise ResolutionError(f"Base {name} is not a class in {symbol.module.path}")
-			result.append(resolved)
+			result.append(self.with_import_effects(resolved, symbol.import_effects))
 		return result
 
 	def member(self, owner, name):
@@ -854,7 +926,7 @@ class SourceResolver:
 	def inherited_member(self, owner, name, seen):
 		"""Visit declarations in C3 order without following an ancestor's inherited lookup."""
 		for ancestor in self.hierarchy(owner)[1:]:
-			writes = self.analysis(ancestor.module).member_writes.get(ancestor.node, set())
+			writes = self.class_mutations(ancestor)
 			if name in scope_bindings(self.class_body(ancestor)) or name in writes or None in writes:
 				return self.qualified(ancestor.module, name, owner=ancestor, seen=seen)
 		return None
@@ -934,6 +1006,16 @@ class SourceResolver:
 				raise ResolutionError(
 					f"Inconsistent inheritance for {', '.join(base.reference for base in bases)}"
 				)
+			candidate = self.with_import_effects(
+				candidate,
+				(
+					effect
+					for sequence in sequences
+					for value in sequence
+					if value.identity == candidate.identity
+					for effect in value.import_effects
+				),
+			)
 			result.append(candidate)
 			for seq in sequences:
 				if seq[0].identity == candidate.identity:
@@ -1099,7 +1181,7 @@ class AnnotationValidator:
 			class_bindings = {}
 			for owner in hierarchy:
 				bindings = scope_bindings(self.resolver.class_body(owner))
-				writes = self.resolver.analysis(owner.module).member_writes.get(owner.node, set())
+				writes = self.resolver.class_mutations(owner)
 				if None in writes:
 					raise ResolutionError(
 						f"Ambiguous dynamic member mutation of {owner.reference} at {owner.module.path}"

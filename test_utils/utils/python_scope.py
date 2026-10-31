@@ -69,6 +69,7 @@ class SourceEffect:
 	shallow: bool = False
 	opaque: bool = False
 	origins: frozenset = frozenset()
+	argument_origins: frozenset = frozenset()
 
 
 class SourceScope:
@@ -211,6 +212,38 @@ class EffectAnalyzer:
 		)
 
 	@staticmethod
+	def exposed_origins(value, seen=frozenset()):
+		"""Keep passed object identities without treating their namespaces as passed objects."""
+		if id(value) in seen:
+			return frozenset()
+		references = {
+			origin[1]
+			for origin in value.origins
+			if isinstance(origin, tuple)
+			and len(origin) == 2
+			and origin[0] == "import"
+			and isinstance(origin[1], str)
+		}
+		origins = frozenset(
+			origin
+			for origin in value.origins
+			if not (
+				isinstance(origin, tuple)
+				and len(origin) == 2
+				and origin[0] == "import"
+				and isinstance(origin[1], str)
+			)
+			or origin[1] in value.modules
+			or not any(reference.startswith(origin[1] + ".") for reference in references | value.modules)
+		)
+		return origins | frozenset().union(
+			*(
+				EffectAnalyzer.exposed_origins(item, seen | {id(value)})
+				for item in (value.items or {}).values()
+			)
+		)
+
+	@staticmethod
 	def reachable_modules(value, seen=frozenset()):
 		if id(value) in seen:
 			return frozenset()
@@ -229,6 +262,23 @@ class EffectAnalyzer:
 			if isinstance(origin, tuple) and len(origin) == 2 and isinstance(origin[0], FUNCTION_NODES)
 		)
 		return replace(value, origins=value.origins | owners) if owners and not value.scalar else value
+
+	def sequence_kind(self, value):
+		if value.items is None or value.uncertain or value.instance or value.is_class:
+			return None
+		kinds = set()
+		for origin in value.origins:
+			if isinstance(origin, (ast.List, ast.Tuple)):
+				kinds.add(type(origin))
+			elif (
+				isinstance(origin, ast.BinOp)
+				and isinstance(origin.op, ast.Add)
+				and origin in self.call_values
+			):
+				kinds.add(type(self.call_values[origin].expression))
+			else:
+				return None
+		return next(iter(kinds)) if len(kinds) == 1 and kinds <= {ast.List, ast.Tuple} else None
 
 	def value(self, node, scope):
 		if node in self.call_values:
@@ -366,6 +416,15 @@ class EffectAnalyzer:
 			possible = list((base.items or {}).values())
 			result = self.merge(possible) if possible else SourceValue(node)
 			return replace(result, origins=result.origins | self.reachable(base), uncertain=True)
+		if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+			left, right = self.value(node.left, scope), self.value(node.right, scope)
+			kind = self.sequence_kind(left)
+			if kind is not None and kind is self.sequence_kind(right):
+				items = dict(enumerate([*left.items.values(), *right.items.values()]))
+				expression = kind(elts=[value.expression for value in items.values()], ctx=ast.Load())
+				return SourceValue(
+					ast.copy_location(expression, node), items=items, origins=frozenset({node})
+				)
 		if not isinstance(node, ast.expr):
 			return SourceValue(ast.Constant(None))
 		expression = copy(node)
@@ -530,6 +589,10 @@ class EffectAnalyzer:
 			result = self.arithmetic(left, right, node.op, seen)
 			if self.protocol_result(result) != "fallback":
 				self.call_values[node] = result
+			elif isinstance(node.op, ast.Add):
+				result = self.value(node, scope)
+				if result.origins == frozenset({node}) and not result.uncertain:
+					self.call_values[node] = result
 		if isinstance(node, ast.UnaryOp):
 			name = {ast.UAdd: "__pos__", ast.USub: "__neg__", ast.Invert: "__invert__"}.get(type(node.op))
 			if name:
@@ -664,26 +727,28 @@ class EffectAnalyzer:
 			and bool(self.value(node.func.value, scope).deferred)
 			and node.func.attr in {"__next__", "send", "throw", "close", "aclose", *self.ASYNC_ADVANCES}
 		)
-		self.emit(
-			SourceEffect(
-				self.value(node, scope).expression,
-				namespace=namespace,
-				typing_modules=frozenset(changed),
-				origins=references,
-				opaque=not namespace
-				and not known_iterator
-				and (
-					uncertain_callback
-					or callee.uncertain
-					or (
-						not callee.helpers
-						and not callee.is_class
-						and not callee.modules & (consumers | readers)
-						and not (callee.modules & {"builtins.vars", "builtins.setattr", "builtins.delattr"})
-					)
-				),
-			)
+		effect = SourceEffect(
+			self.value(node, scope).expression,
+			namespace=namespace,
+			typing_modules=frozenset(changed),
+			origins=references,
+			argument_origins=frozenset().union(
+				*(self.exposed_origins(item) for item in [*callee.bound, *arguments, *keywords.values()])
+			),
+			opaque=not namespace
+			and not known_iterator
+			and (
+				uncertain_callback
+				or callee.uncertain
+				or (
+					not callee.helpers
+					and not callee.is_class
+					and not callee.modules & (consumers | readers)
+					and not (callee.modules & {"builtins.vars", "builtins.setattr", "builtins.delattr"})
+				)
+			),
 		)
+		self.emit(effect)
 		results = []
 		for helper in callee.helpers:
 			if helper.deferred:
@@ -703,6 +768,15 @@ class EffectAnalyzer:
 				produced.append(self.consume(argument, seen))
 			if "asyncio.run" in callee.modules and "main" in keywords:
 				produced.append(self.consume(keywords["main"], seen, awaiting=True))
+		if effect.opaque and produced:
+			self.emit(
+				SourceEffect(
+					node,
+					opaque=True,
+					origins=frozenset().union(*(self.reachable(item) for item in produced)),
+					argument_origins=frozenset().union(*(self.exposed_origins(item) for item in produced)),
+				)
+			)
 		if callee.modules & {
 			"builtins.list",
 			"builtins.tuple",
@@ -809,7 +883,14 @@ class EffectAnalyzer:
 			and not value.instance
 			and not value.is_class
 		):
-			self.emit(SourceEffect(value.expression, opaque=True, origins=self.reachable(value)))
+			self.emit(
+				SourceEffect(
+					value.expression,
+					opaque=True,
+					origins=self.reachable(value),
+					argument_origins=self.exposed_origins(value),
+				)
+			)
 		return value
 
 	def consume_async(self, value, seen):
@@ -914,6 +995,9 @@ class EffectAnalyzer:
 					function,
 					opaque=True,
 					origins=frozenset().union(*(self.reachable(item) for item in visible)),
+					argument_origins=frozenset().union(
+						*(self.exposed_origins(item) for item in [*arguments, *keywords.values()])
+					),
 				)
 			)
 			return self.merge(visible) if visible else SourceValue(ast.Constant(None))
@@ -1154,6 +1238,26 @@ class EffectAnalyzer:
 		name = node.func.attr
 		if base.items is None or base.instance or base.is_class:
 			return None
+		if name in {"clear", "popitem"}:
+			# These native operations change the container's structure, not its values.
+			# A shallow copy can therefore be changed without mutating shared defaults.
+			self.emit(SourceEffect(node, origins=base.origins, mutation=True, shallow=True))
+			if name == "popitem":
+				if not base.items:
+					return SourceValue(node, uncertain=True)
+				key = next(reversed(base.items))
+				item = self.default_alias(base.items[key], base)
+				key_value = (base.key_values or {}).get(key, SourceValue(ast.Constant(key), scalar=True))
+				if not self.branch_depth:
+					base.items.pop(key)
+					if base.key_values is not None:
+						base.key_values.pop(key, None)
+				return SourceValue(node, items={0: key_value, 1: item}, origins=frozenset({node}))
+			if not self.branch_depth:
+				base.items.clear()
+				if base.key_values is not None:
+					base.key_values.clear()
+			return SourceValue(ast.Constant(None), scalar=True)
 		if name in {"append", "extend", "insert", "update", "setdefault", "__setitem__"}:
 			values = list(arguments)
 			if name in {"extend", "update"} and arguments:
@@ -1195,7 +1299,10 @@ class EffectAnalyzer:
 				# Unknown key behavior cannot prove that captured values stay unchanged.
 				self.emit(
 					SourceEffect(
-						node, opaque=True, origins=self.reachable(base) | self.reachable(arguments[0])
+						node,
+						opaque=True,
+						origins=self.reachable(base) | self.reachable(arguments[0]),
+						argument_origins=self.exposed_origins(base) | self.exposed_origins(arguments[0]),
 					)
 				)
 			try:
@@ -1633,7 +1740,7 @@ class EffectAnalyzer:
 			if self.protocol_result(result) != "fallback":
 				self.bind(node.target, result, scope, seen)
 				return False
-			mutable = any(
+			mutable = self.sequence_kind(previous) is ast.List or any(
 				isinstance(origin, (ast.List, ast.Dict, ast.Set))
 				or (
 					isinstance(origin, ast.Call)
@@ -1642,13 +1749,25 @@ class EffectAnalyzer:
 				)
 				for origin in previous.origins
 			)
-			immutable = previous.scalar or (
-				bool(previous.origins) and all(isinstance(origin, ast.Tuple) for origin in previous.origins)
+			immutable = (
+				previous.scalar
+				or self.sequence_kind(previous) is ast.Tuple
+				or (
+					bool(previous.origins)
+					and all(isinstance(origin, ast.Tuple) for origin in previous.origins)
+				)
 			)
 			if mutable:
 				self.emit(SourceEffect(node, mutation=True, shallow=True, origins=previous.origins))
 			elif not immutable:
-				self.emit(SourceEffect(node, opaque=True, origins=self.reachable(previous)))
+				self.emit(
+					SourceEffect(
+						node,
+						opaque=True,
+						origins=self.reachable(previous),
+						argument_origins=self.exposed_origins(previous) | self.exposed_origins(addition),
+					)
+				)
 			items = None
 			if previous.items is not None and addition.items is not None:
 				items = (

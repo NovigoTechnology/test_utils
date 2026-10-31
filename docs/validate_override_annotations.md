@@ -83,6 +83,10 @@ Writes through imported aliases are checked in the importing module before reusi
 defining callable's metadata. This includes class member changes and mutations through
 aliases of an imported function's defaults. A rejected import does not contaminate an
 independent lookup of the defining module.
+Imported classes retain their identity when a member changes; lookup and inventory reject
+the affected member while preserving unrelated members. Opaque helpers receiving imported
+objects invalidate their reusable metadata. Known aliases from every wildcard participate
+in that check, including aliases introduced by another re-export.
 Assignments, deletions and `setattr` changes to class members are included in the method
 inventory and invalidate the affected implementation. Changes to a function's `__code__`,
 defaults or annotation docstring also invalidate its old source definition. An unrelated
@@ -90,6 +94,7 @@ method with the same name in another scope does not replace a module-level funct
 Mutating `__kwdefaults__` through a dictionary alias, container projection or mutating
 method also invalidates the owning function. A shallow copy has independent dictionary
 slots, while mutable default values reached through that copy retain their original identity.
+Clearing or removing an entry from the copy changes its own structure, not the shared value.
 Ownership is recorded when a default is captured: mutations through the original alias or
 a called helper also invalidate the function. Reassigning that alias, modifying an independent
 copy, or mutating a value before capture does not invalidate the captured implementation.
@@ -150,6 +155,8 @@ export list affect its replacement.
 Unknown indices and joins retain possible element identities. Container transformations,
 starred arguments, slices, views and supported mutation methods preserve reachable aliases
 and callbacks; an unsupported value operation does not prove its aliases absent.
+Native list and tuple concatenation create an independent outer container while retaining
+the identities of shared nested values.
 Joins preserve implicit method receivers and terminate for cyclic container graphs.
 Keyword binding distinguishes positional-only, keyword-accepting and local variable names.
 Dynamic namespace operations reached through helpers or builtin aliases are rejected.
