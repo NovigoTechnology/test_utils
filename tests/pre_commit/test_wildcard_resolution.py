@@ -472,3 +472,64 @@ def test_complete_qualified_annotation_passes_after_a_circular_wildcard(bench):
 	result = validate(bench)
 	assert result.checked == 1
 	assert not result.errors
+
+
+@pytest.mark.parametrize(
+	"binding",
+	["TYPE_CHECKING = True", "del TYPE_CHECKING", "from .flags import enabled as TYPE_CHECKING"],
+)
+def test_class_body_global_guard_binding_invalidates_module_guard(bench, resolver, binding):
+	source = (
+		"from typing import TYPE_CHECKING\nclass Configure:\n    global TYPE_CHECKING\n"
+		f"    {binding}\ndef run(): return 'old'\n"
+		"if TYPE_CHECKING:\n    def run(): return 'replacement'\n"
+	)
+	assert find_definition(ast.parse(source), "run") is None
+	assert extract_function(source, "run") is None
+	write(bench / "nagus/nagus/flags.py", "enabled = True\n")
+	write(bench / "nagus/nagus/active.py", source)
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("nagus.active.run")
+
+
+@pytest.mark.parametrize("reexport", ["from .Client import Client", "from .Client import *"])
+def test_package_class_reexport_method_and_base_use_the_same_class(bench, resolver, reexport):
+	write(
+		bench / "nagus/nagus/pkg/Client.py",
+		"def save(): return 'module trap'\nclass Client:\n    def save(self): return 'class method'\n",
+	)
+	write(bench / "nagus/nagus/pkg/__init__.py", reexport + "\n")
+	write(bench / "nagus/nagus/overrides.py", "from .pkg import Client\nclass Derived(Client): pass\n")
+	client = resolver.resolve("nagus.pkg.Client")
+	method = resolver.resolve("nagus.pkg.Client.save")
+	assert isinstance(client.node, ast.ClassDef)
+	assert method.node is client.node.body[0]
+	assert method.qualname == "Client.save"
+	derived = resolver.resolve("nagus.overrides.Derived")
+	base = resolver.base_classes(derived)[0]
+	assert base.node is client.node
+	assert resolver.method(base, "save") is method.node
+	write(
+		bench / "nagus/nagus/bindings.py",
+		"import nagus.pkg.Client as client_module\nimport nagus.pkg as package\n"
+		"from nagus.pkg.Client import Client as DirectClient\nimport nagus.pkg.Client\n",
+	)
+	assert resolver.resolve("nagus.bindings.package.Client.save").node is method.node
+	assert resolver.resolve("nagus.bindings.DirectClient.save").node is method.node
+	module_function = resolver.resolve("nagus.bindings.client_module.save")
+	assert module_function.qualname == "save"
+	assert ast.literal_eval(module_function.node.body[0].value) == "module trap"
+	assert resolver.resolve("nagus.bindings.nagus.pkg.Client.save").node is module_function.node
+
+
+def test_dotted_reference_still_resolves_a_normal_module_function(bench, resolver):
+	path = write(bench / "nagus/nagus/tools.py", "def save(): return 'normal function'\n")
+	function = resolver.resolve("nagus.tools.save")
+	assert isinstance(function.node, ast.FunctionDef)
+	assert function.module.path == path
+	assert function.qualname == "save"
+	assert ast.literal_eval(function.node.body[0].value) == "normal function"
+	write(bench / "nagus/nagus/reports/__init__.py", "from unavailable import *\n")
+	write(bench / "nagus/nagus/reports/daily.py", "def save(): return 'child module'\n")
+	child_function = resolver.resolve("nagus.reports.daily.save")
+	assert ast.literal_eval(child_function.node.body[0].value) == "child module"

@@ -334,7 +334,7 @@ class Module:
 	path: Path
 	tree: ast.Module
 
-	def import_reference(self, statement: ast.stmt, alias: ast.alias) -> str:
+	def import_reference(self, statement: ast.stmt, alias: ast.alias | None = None) -> str:
 		if isinstance(statement, ast.Import):
 			return alias.name if alias.asname else alias.name.split(".")[0]
 		prefix = statement.module or ""
@@ -343,7 +343,7 @@ class Module:
 			if statement.level > len(package):
 				raise ResolutionError(f"Relative import escapes package at {self.path}:{statement.lineno}")
 			prefix = ".".join(package[: len(package) - statement.level + 1] + ([prefix] if prefix else []))
-		return prefix if alias.name == "*" else f"{prefix}.{alias.name}"
+		return prefix if alias is None or alias.name == "*" else f"{prefix}.{alias.name}"
 
 	@cached_property
 	def imports(self) -> dict[str, str]:
@@ -399,14 +399,19 @@ class SourceResolver:
 			raise ResolutionError(
 				f"Cannot resolve {reference}: app {parts[0]!r} is not in required_apps (or frappe)"
 			)
-		for end in range(len(parts), 0, -1):
-			if require_symbol and end == len(parts):
-				continue
+		# Symbols follow package bindings first; imports name an exact provider.
+		ends = range(1, len(parts)) if require_symbol else [len(parts)]
+		for end in ends:
 			stem = app.package.joinpath(*parts[1:end])
 			for path in (stem.with_suffix(".py"), stem / "__init__.py"):
 				if not path.is_file():
 					continue
 				return self.module(app, ".".join(parts[:end]), path), parts[end:]
+			if stem.is_dir():
+				# A namespace package has no declarations of its own.
+				return Module(
+					app, ".".join(parts[:end]), stem / "__init__.py", ast.Module(body=[], type_ignores=[])
+				), parts[end:]
 		raise ResolutionError(
 			f"Cannot resolve {reference}: source file not found; check --apps-root and upstream renames"
 		)
@@ -512,7 +517,28 @@ class SourceResolver:
 		seen = seen | {key}
 		decorators = overload_names(body)
 		for index, name in enumerate(parts):
-			binding = self.binding(module, body, name, limits, seen, decorators)
+			binding = None
+			# An explicit package binding can name a class; otherwise a dotted
+			# child-module path is resolved without inspecting unrelated exports.
+			if (
+				index == 0
+				and len(parts) > 1
+				and module.path.name == "__init__.py"
+				and name not in scope_bindings(body)
+			):
+				prefix = f"{module.name}.{name}"
+				stem = module.app.package.joinpath(*prefix.split(".")[1:])
+				if stem.is_dir() or stem.with_suffix(".py").is_file():
+					try:
+						binding = self.binding(module, body, name, limits, seen, decorators)
+					except ResolutionError:
+						# Unresolved wildcard exports do not block an explicit child-module path.
+						pass
+					if binding is None:
+						child, _ = self.source_module(prefix)
+						return self.resolve_in(child, parts[1:], limits, seen)
+			if binding is None:
+				binding = self.binding(module, body, name, limits, seen, decorators)
 			if binding is None:
 				if any(path == module.path for path, _ in limits):
 					raise ResolutionError(
@@ -522,21 +548,27 @@ class SourceResolver:
 					f"Upstream symbol {module.name}.{'.'.join(parts)} not found in {module.path}; it may have been removed or renamed"
 				)
 			if isinstance(binding.node, ast.alias) and index == 0:
-				reference = module.import_reference(binding.statement, binding.node)
-				tail = parts[index:] if binding.node.name == "*" else parts[index + 1 :]
+				if isinstance(binding.statement, ast.ImportFrom):
+					reference = module.import_reference(binding.statement)
+					tail = parts if binding.node.name == "*" else [binding.node.name, *parts[1:]]
+				else:
+					reference = module.import_reference(binding.statement, binding.node)
+					tail = parts[1:]
+					prefix = binding.node.name.split(".")
+					if not binding.node.asname and parts[: len(prefix)] == prefix:
+						reference = binding.node.name
+						tail = parts[len(prefix) :]
 				try:
-					imported, remaining = self.source_module(
-						".".join([reference, *tail]), require_symbol=True
-					)
+					imported, _ = self.source_module(reference)
 					return self.resolve_in(
 						imported,
-						remaining,
+						tail,
 						(*limits, (module.path, (binding.statement.lineno, binding.statement.col_offset))),
 						seen,
 					)
 				except ResolutionError as exc:
 					raise ResolutionError(
-						f"Ambiguous import at {module.path}:{binding.statement.lineno}: {exc}"
+						f"Ambiguous import at {module.path}:{binding.statement.lineno} ({'.'.join([reference, *tail])}): {exc}"
 					) from exc
 			if not isinstance(binding.node, DEFINITION_NODES):
 				raise ResolutionError(

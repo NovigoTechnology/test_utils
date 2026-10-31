@@ -179,12 +179,22 @@ def runtime_body(tree: ast.Module | ast.ClassDef, owner=None) -> list[ast.stmt]:
 			if "." in guard and guards.modules.get(guard.split(".", 1)[0]) in guards.mutated
 		)
 
-	def collect(statements, guards):
+	def collect(statements, guards, parents=()):
+		if guards is not module_guards:
+			# Global declarations apply to the whole class, even in skipped branches.
+			global_names = {
+				name
+				for node in scope_statements(statements)
+				if isinstance(node, ast.Global)
+				for name in node.names
+			}
+			for context in (module_guards, guards, *parents):
+				context.invalidate(global_names)
 		result = []
 		for statement in statements:
 			synchronize(guards)
 			if isinstance(statement, ast.If) and decorator_name(statement.test) in guards.false:
-				result.extend(collect(statement.orelse, guards))
+				result.extend(collect(statement.orelse, guards, parents))
 				continue
 			result.append(statement)
 			# Unknown owners of a direct guard write cannot prove either provider unchanged.
@@ -213,7 +223,7 @@ def runtime_body(tree: ast.Module | ast.ClassDef, owner=None) -> list[ast.stmt]:
 			if isinstance(statement, ast.ClassDef):
 				synchronize(module_guards)
 				# Enclosing class locals are not globals of a nested class body.
-				bodies[statement] = collect(statement.body, module_guards.copy())
+				bodies[statement] = collect(statement.body, module_guards.copy(), (*parents, guards))
 				guards.invalidate({statement.name})
 			elif isinstance(statement, (ast.Import, ast.ImportFrom)):
 				for alias in statement.names:
