@@ -1,124 +1,83 @@
 # Validate override annotations
 
-`validate_override_annotations` detects Frappe overrides missing upstream tracking metadata.
-It reads Python source with AST, without importing apps, starting a site, or accessing the network.
-Use it alongside [`track_overrides`](actions/track_overrides.md), which compares annotated
-implementations against upstream history.
+`validate_override_annotations` checks that your Frappe overrides have complete upstream
+tracking annotations. It reads local app checkouts without importing the apps, starting a
+site, or downloading dependencies.
 
-## Local use
+Use [`track_overrides`](actions/track_overrides.md) to check whether the annotated upstream
+implementation has changed. The two tools serve different steps of the same workflow.
 
-In a Bench layout, dependencies are sibling repositories:
+## What gets checked
+
+The validator finds overrides registered in your app's `hooks.py`:
+
+| Hook | Where to add annotations |
+| --- | --- |
+| `override_whitelisted_methods` | The replacement function. |
+| `override_doctype_class` | Each method that overrides an upstream method, including methods inherited from your local mixins. |
+| `extend_doctype_class` | Each mixin method that overrides an upstream controller method. |
+
+Put annotations in each overriding function or method's own docstring. Class docstrings
+and comments do not cover their methods. New helper methods do not need annotations.
+
+## Run locally
+
+For manual runs, install test_utils in your active Python environment using the
+[installation instructions](../README.md#installation). The
+[pre-commit setup](#add-it-to-pre-commit) handles installation for the hooks separately.
+
+Have your custom app and its dependencies checked out together, for example:
 
 ```text
 apps/
-  frappe/frappe/
-  erpnext/erpnext/
-  nvg_base/nvg_base/
-  nagus/nagus/hooks.py
+  frappe/
+  erpnext/
+  nvg_base/
+  nagus/
+    nagus/hooks.py
 ```
 
-Run from the custom app repository:
+From the Bench root, enter the custom app repository and run:
 
 ```bash
-validate_override_annotations --app nagus --apps-root ..
-# Equivalent defaults when running from apps/nagus:
+cd apps/nagus
 validate_override_annotations
 ```
 
-`--app` accepts a repository path, package path, or app name under `--apps-root`.
-When omitted, `--apps-root` defaults to the parent of the custom app repository.
-The command exits with 0 when validation passes, or 1 for missing/invalid annotations,
-unresolved references, missing checkouts, or unsupported hook configuration.
-Errors include the custom file, line, symbol, and resolved upstream symbol.
-
-## Discovery
-
-The validator reads `required_apps` transitively from the custom app and each dependency's
-`hooks.py`, and includes `frappe` implicitly. Entries can be app names (`erpnext`) or GitHub repository names
-(`NovigoTechnology/nvg_base`). Repository names with hyphens are normalized to package
-names with underscores. All these apps must be checked out under `--apps-root`.
-Every transitive dependency must also be available under `--apps-root`. If an app's
-`required_apps` declaration is incomplete, explicitly add resolution dependencies with
-repeatable `--dependency` arguments, for example:
+You can also run directly from the Bench root:
 
 ```bash
-validate_override_annotations --app blindaris --apps-root .. --dependency nagus --dependency nvg_base
+validate_override_annotations --app apps/nagus --apps-root apps
 ```
 
-These arguments supplement static analysis; they do not change runtime Frappe hooks.
-Prefer keeping the application's `required_apps` declaration accurate.
+| Option | When to use it |
+| --- | --- |
+| `--app` | Select another app repository, package directory, or app name under `--apps-root`. Defaults to the current directory. |
+| `--apps-root` | Point to the directory containing the dependency repositories. Defaults to the parent of the custom app repository. |
+| `--dependency` | Add a dependency missing from `required_apps`. Repeat the option to add more than one. |
 
-It inspects these hooks:
+Frappe is included automatically. The validator also reads `required_apps` from your app
+and its dependencies. All of those repositories must be available under `--apps-root`,
+with versions compatible with your app.
 
-- `override_whitelisted_methods`: resolves each original function and its replacement.
-- `override_doctype_class`: resolves registered classes and their inherited methods.
-- `extend_doctype_class`: also finds the upstream DocType controller, so mixins without
-  an explicit upstream base class are checked. When a replacement is registered with
-  `override_doctype_class`, extensions are composed with that replacement first. A replacement
-  in the inspected app takes precedence over dependencies, and the last entry in its hook wins.
-  Conflicting dependency replacements are reported as ambiguous because installed app order
-  cannot be inferred from source checkouts.
+Prefer declaring dependencies in `hooks.py`, for example:
 
-Extension mixins from a dependency are included before the controller in the C3 hierarchy.
-Mixins within an app follow reverse registration order, as in Frappe. When several dependency
-apps register extensions for the same DocType, validation reports an unresolved composition:
-the checkouts alone do not establish their installed app order.
+```python
+required_apps = ["erpnext", "NovigoTechnology/nvg_base"]
+```
 
-Imported bases, aliases, relative imports, re-exports, and multiple inheritance use
-AST resolution. Methods are matched using Python's C3 inheritance order. Functions and
-methods may be async or have return annotations. Overload declarations from typing or
-typing_extensions are excluded when selecting the concrete implementation; an overload-only
-or ambiguous definition is reported as unresolved. Extension/controller composition uses C3,
-while replacement classes use only their declared bases. New helper methods absent from the
-upstream hierarchy do not need annotations, including properties with getters and setters.
-An overriding descriptor that cannot resolve to one concrete callable is reported as unresolved;
-validation continues for the remaining methods. Resolution stops at the first upstream class
-declaring an attribute, including descriptors and assigned attributes; it never falls through
-to an ancestor hidden by that declaration. Class-level callable aliases such as
-`validate = custom_validate`, and reassigned/deleted callable names, are reported as unresolved
-when they replace an upstream method. Define the overriding method explicitly with `def` or
-`async def` and put its metadata on that definition. A registered function that is rebound
-after its definition cannot reuse the old definition's metadata.
-Plain literal data attributes redeclared in both classes do not require method annotations.
-Modules containing wildcard imports are conservatively unresolved, including imports inside
-conditional branches. This applies to direct definitions, explicit re-exports, and qualified
-or legacy method names; unknown exports cannot be assumed to preserve an earlier binding.
-Use explicit imports so validation and historical tracking can resolve the implementation.
-Imported aliases for `abc.ABC`, `typing.Protocol`,
-`typing_extensions.Protocol`, and `builtins.object` do not require application checkouts.
-Application classes imported or declared under names such as `ABC` or `Protocol` remain part
-of the hierarchy; only resolved standard-library identities are excluded.
-A previously annotated method that no longer
-exists upstream is an error. Without an earlier annotation, a removed method cannot be
-distinguished from a new helper.
+If that declaration is incomplete, you can add dependencies for a validation run:
 
-`doc_events`, unrelated functions, and mock-based tests are not discovery sources.
-The validator reads only registered implementations and the source needed to resolve them.
+```bash
+validate_override_annotations --app apps/blindaris --apps-root apps \
+    --dependency nagus --dependency nvg_base
+```
 
-Hooks support static strings, dictionaries, lists/tuples, references to earlier static
-variables, concatenation, dictionary unpacking/union, and `+=`/`|=` assignments.
-Tuple concatenation creates a new tuple, preserving earlier alias values; list `+=` and
-dictionary `|=` preserve in-place updates shared by aliases.
-Dynamic hook construction using application calls, conditional assignments, item mutations,
-or `.update()` is unsupported and must be rewritten as static assignments. This includes
-mutations through aliases and nested containers, before or after assigning the hook.
-Unsupported operations touching a hook container invalidate its aliases, rather than
-silently yielding an empty registration. Conditional reassignment or deletion of a scalar
-alias invalidates that binding too. Hook-binding imports and wildcard imports in `hooks.py`
-are rejected; imports cannot reuse an earlier static binding. Application code is never
-executed to obtain hook values. Dynamically computed class bases cannot be resolved;
-use explicit imports and static base classes.
+`--dependency` affects this check only; it does not install apps or change Frappe's configuration.
 
-Definition-time effects also count: decorators, default argument values (including lambdas),
-and executable class bodies can change a hook container. Unsupported effects invalidate the
-container instead of silently producing an empty registry. Class-local aliases of a known
-hook container are conservatively unsupported. Deferred function and method bodies are not
-treated as executed merely because they are defined. Conditional hook bindings, including
-match captures and exception aliases, are rejected even when no earlier hook value exists.
+## Add the required annotation
 
-## Required docstring
-
-Put all five fields in the overriding callable's own docstring:
+Add these five fields to the overriding callable's docstring:
 
 ```python
 def get_coa(doctype: str) -> list:
@@ -132,60 +91,79 @@ def get_coa(doctype: str) -> list:
 	...
 ```
 
-- `APP` must identify the custom app containing the override (`nagus` here).
-- `HASH` must contain exactly 40 hexadecimal characters. This validator checks the SHA
-  format; historical commit availability and implementation drift are handled by
-  `track_overrides`. The hash need not equal the checkout's current HEAD.
-- `REPO` must identify a GitHub repository supported by the trackers and match the upstream
-  checkout's `origin` remote. HTTPS, SSH, SCP syntax,
-  `.git` suffixes, and trailing slashes are normalized for comparison. If no origin is
-  configured, an `owner/repository` entry in `required_apps` supplies a GitHub fallback.
-  A short app name alone does not identify a repository; configure its origin.
-  Repository mismatch errors show the normalized identity without origin credentials.
-- `PATH` must equal the repository-relative path of the resolved upstream implementation.
-- `METHOD` must identify that implementation within the file. Use `Ledger.validate` for
-  class methods. Legacy bare names such as `validate` are accepted only when unambiguous.
-  Methods inherited from another upstream class must name the class that defines them.
+Replace the example values with those for your override:
 
-Fields may appear in any order, with prose between them. Validation and both trackers
-share the same field parser. Each field must appear exactly once. Annotations in comments, module docstrings, or class
-docstrings do not cover a function or method.
+| Field | What to put there |
+| --- | --- |
+| `APP` | The custom app containing your override, such as `nagus`. |
+| `HASH` | The full 40-character upstream commit SHA that you reviewed. It does not have to match the checkout's current HEAD. |
+| `REPO` | The upstream GitHub repository containing the original implementation. Match its checkout's `origin`, or the `owner/repository` in `required_apps` if no origin is configured. |
+| `PATH` | The original implementation's file path, relative to the upstream repository root. |
+| `METHOD` | The original function name or qualified method name, such as `Ledger.validate`. For inherited methods, use the class that defines the upstream method. |
 
-## Pre-commit
+Include each field once. You can keep explanatory prose in the docstring and arrange the
+fields in any order. Prefer qualified method names over bare names such as `validate`.
 
-Replace `<tag-or-commit>` with a release or full commit SHA containing the new hook:
+The validator checks annotation completeness and references. `track_overrides` checks the
+historical commit and compares implementations. Review upstream changes before updating `HASH`.
+
+## Add it to pre-commit
+
+In your custom app's `.pre-commit-config.yaml`, use a published tag or full commit SHA
+containing these hooks:
 
 ```yaml
-- repo: https://github.com/NovigoTechnology/test_utils
-  rev: <tag-or-commit>
-  hooks:
-    - id: validate_override_annotations
-      args: ["--app", "nagus", "--apps-root", ".."]
-      pass_filenames: false
-      always_run: true
-
-    - id: track_overrides
-      args: ["--app", "nagus", "--base-branch", "nvg-develop"]
-      pass_filenames: false
-      always_run: true
+repos:
+  - repo: https://github.com/NovigoTechnology/test_utils
+    rev: <tag-or-commit>
+    hooks:
+      - id: validate_override_annotations
+      - id: track_overrides
 ```
 
-The new hook discovers untracked overrides; `track_overrides` detects changes to the
-upstream implementations of overrides that already have metadata. Both support qualified
-`METHOD` values. Tracking reports upstream method removal and unresolved symbols, rather
-than treating a missing method as unchanged.
+From that repository, install the hooks and run the annotation check:
 
-## CI checkouts
+```bash
+pre-commit install
+pre-commit run validate_override_annotations --all-files
+```
 
-CI must explicitly check out the custom app, Frappe, and every direct or transitive `required_apps` dependency
-into sibling directories before running validation. For example, if the custom checkout
-is `apps/nagus`, use checkout paths `apps/frappe`, `apps/erpnext`, and `apps/nvg_base`, then:
+No hook arguments are needed for the usual Bench layout. See the [tracking guide](actions/track_overrides.md)
+for comparison options.
+
+## Run in CI
+
+Check out the custom app, Frappe, and every dependency into sibling directories such as
+`apps/nagus`, `apps/frappe`, `apps/erpnext`, and `apps/nvg_base`. Select the dependency refs
+that your app supports, install test_utils, and run from the workspace root:
 
 ```bash
 validate_override_annotations --app apps/nagus --apps-root apps
 ```
 
-Select dependency repositories and refs in the workflow to match the supported app versions.
-The validator uses the checked-out source and origin; it does not infer a branch from an
-app name, fetch dependencies, or select a public repository in place of a checked-out fork.
-Shallow checkouts work because annotation validation does not require historical commits.
+Shallow checkouts are sufficient for this annotation check. Historical tracking has its own
+[source and authentication requirements](actions/track_overrides.md#pre-commit-usage).
+
+## Read the results and fix errors
+
+The command ends with a summary, for example:
+
+```text
+validate_override_annotations: checked 7 override(s), 0 error(s)
+```
+
+Exit code `0` means the check passed. Exit code `1` means it found invalid annotations or
+could not finish validation. Errors identify the affected source or hook registration.
+
+| Reported problem | What to do |
+| --- | --- |
+| Missing annotation fields | Add all five fields to the overriding function or method's docstring. |
+| App checkout not found | Check out the named repository under `--apps-root`. |
+| An app is missing from `required_apps` | Correct the dependency declaration or add `--dependency` for this run. |
+| `REPO` does not match the checkout | Check the annotation's upstream repository and the checkout's `origin` remote. |
+| Incorrect `PATH` or `METHOD` | Use the file and defining class/function named in the error. The method reference must identify a single declaration. |
+| Upstream method no longer exists | Review whether upstream renamed or removed the method, then update the customization and annotation. |
+| Ambiguous or unresolved reference | Inspect the reported file and line. Use explicit imports and straightforward hook declarations in your app. An unsupported upstream pattern needs review before the check can pass. |
+
+If the summary says `checked 0 override(s)`, confirm that the expected overrides are
+registered in the supported hooks and inspect any preceding errors.
