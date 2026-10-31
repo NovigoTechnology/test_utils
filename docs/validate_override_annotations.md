@@ -65,8 +65,9 @@ apps register extensions for the same DocType, validation reports an unresolved 
 the checkouts alone do not establish their installed app order.
 
 Imported bases, aliases, relative imports, re-exports, and multiple inheritance use
-AST resolution. Methods are matched using Python's C3 inheritance order. Functions and
-methods may be async or have return annotations. Overload declarations from typing or
+AST resolution. Methods are matched using Python's C3 inheritance order. Classes that reuse
+a dotted name retain their distinct source-declaration identities. Functions and methods
+may be async or have return annotations. Overload declarations from typing or
 typing_extensions are excluded when selecting the concrete implementation; an overload-only
 or ambiguous definition is reported as unresolved. Extension/controller composition uses C3,
 while replacement classes use only their declared bases. New helper methods absent from the
@@ -82,8 +83,9 @@ after its definition cannot reuse the old definition's metadata.
 Plain literal data attributes redeclared in both classes do not require method annotations.
 Definitions and imports are inspected in declaration order. An unconditional definition after
 a wildcard import can establish the current binding. For a later wildcard, the validator reads
-the imported source: a literal string list/tuple `__all__` determines exports; otherwise it
-follows public declarations and imports, including relative re-exports. An excluded name keeps
+the imported source: a single, unaliased declaration of `__all__` as a literal string list/tuple
+determines exports. When `__all__` is absent, it follows public declarations and imports,
+including relative re-exports. An excluded name keeps
 its earlier definition; an included name follows the imported implementation. Circular
 re-exports can use a declaration established before the active import, as in Frappe's `File`.
 Proven `typing.TYPE_CHECKING` branches are excluded from runtime declarations.

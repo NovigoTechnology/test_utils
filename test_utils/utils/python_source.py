@@ -150,32 +150,42 @@ class AmbiguousBinding(ValueError):
 
 def runtime_statements(body: list[ast.stmt]) -> list[ast.stmt]:
 	"""Omit proven typing.TYPE_CHECKING branches; leave other conditions unresolved."""
-	bindings = scope_bindings(body)
-	guards = {}
-	for statement in body:
-		if isinstance(statement, (ast.Import, ast.ImportFrom)):
+	guards = set()
+	result = []
+
+	def collect(statements):
+		for statement in statements:
+			if isinstance(statement, ast.If) and decorator_name(statement.test) in guards:
+				collect(statement.orelse)
+				continue
+			result.append(statement)
+			bindings = scope_bindings([statement])
+			guards.difference_update(
+				guard for guard in list(guards) if "*" in bindings or guard.split(".", 1)[0] in bindings
+			)
+			guards.difference_update(
+				decorator_name(node)
+				for node in executable_nodes(statement)
+				if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del))
+			)
+			if not isinstance(statement, (ast.Import, ast.ImportFrom)):
+				continue
 			for alias in statement.names:
-				local = alias.asname or alias.name
-				if "*" in bindings or bindings.get(local) != [alias]:
-					continue
+				local = alias.asname or (
+					alias.name.split(".")[0] if isinstance(statement, ast.Import) else alias.name
+				)
+				guards.difference_update(guard for guard in list(guards) if guard.split(".", 1)[0] == local)
 				if isinstance(statement, ast.Import) and alias.name in {"typing", "typing_extensions"}:
-					guards[f"{local}.TYPE_CHECKING"] = statement.lineno
+					guards.add(f"{local}.TYPE_CHECKING")
 				elif (
 					isinstance(statement, ast.ImportFrom)
 					and not statement.level
 					and statement.module in {"typing", "typing_extensions"}
 					and alias.name == "TYPE_CHECKING"
 				):
-					guards[local] = statement.lineno
-	result = []
-	for statement in body:
-		if (
-			isinstance(statement, ast.If)
-			and guards.get(decorator_name(statement.test), statement.lineno) < statement.lineno
-		):
-			result.extend(statement.orelse)
-		else:
-			result.append(statement)
+					guards.add(local)
+
+	collect(body)
 	return result
 
 

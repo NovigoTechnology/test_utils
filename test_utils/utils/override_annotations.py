@@ -358,6 +358,9 @@ class Module:
 		return result
 
 
+type DeclarationId = tuple[Path, int, int]
+
+
 @dataclass
 class Symbol:
 	module: Module
@@ -370,6 +373,11 @@ class Symbol:
 	def reference(self) -> str:
 		return f"{self.module.name}.{self.qualname}"
 
+	@property
+	def identity(self) -> DeclarationId:
+		"""Dotted names can be reused; source declarations remain distinct."""
+		return self.module.path, self.node.lineno, self.node.col_offset
+
 
 class SourceResolver:
 	def __init__(self, apps: list[App]):
@@ -381,7 +389,7 @@ class SourceResolver:
 			self.modules[path] = Module(app, name, path, read_tree(path))
 		return self.modules[path]
 
-	def source_module(self, reference: str) -> tuple[Module, list[str]]:
+	def source_module(self, reference: str, *, require_symbol: bool = False) -> tuple[Module, list[str]]:
 		parts = reference.split(".")
 		if not all(part.isidentifier() for part in parts):
 			raise ResolutionError(f"Invalid dotted Python reference: {reference!r}")
@@ -391,6 +399,8 @@ class SourceResolver:
 				f"Cannot resolve {reference}: app {parts[0]!r} is not in required_apps (or frappe)"
 			)
 		for end in range(len(parts), 0, -1):
+			if require_symbol and end == len(parts):
+				continue
 			stem = app.package.joinpath(*parts[1:end])
 			for path in (stem.with_suffix(".py"), stem / "__init__.py"):
 				if not path.is_file():
@@ -403,11 +413,13 @@ class SourceResolver:
 	@staticmethod
 	def module_body(module, limits):
 		limit = min((position for path, position in limits if path == module.path), default=(float("inf"), 0))
-		return [node for node in module.tree.body if (node.lineno, node.col_offset) < limit]
+		return [
+			node for node in runtime_statements(module.tree.body) if (node.lineno, node.col_offset) < limit
+		]
 
 	def exports(self, module, name, limits, seen):
 		"""Query one export; never execute a module or enumerate its dependencies."""
-		body = runtime_statements(self.module_body(module, limits))
+		body = self.module_body(module, limits)
 		key = (module.path, name, len(body), "exports")
 		if key in seen:
 			raise ResolutionError(f"Ambiguous export cycle for {module.name}.{name}")
@@ -426,6 +438,15 @@ class SourceResolver:
 			assignment = all_bindings[0]
 			try:
 				if len(all_bindings) != 1 or assignment not in body:
+					raise ValueError
+				# Support only a direct, unaliased declaration of the export list.
+				if isinstance(assignment, ast.Assign) and len(assignment.targets) == 1:
+					target = assignment.targets[0]
+				elif isinstance(assignment, ast.AnnAssign):
+					target = assignment.target
+				else:
+					raise ValueError
+				if not isinstance(target, ast.Name) or target.id != "__all__":
 					raise ValueError
 				if (
 					self.binding(module, body[body.index(assignment) + 1 :], "__all__", limits, seen)
@@ -481,7 +502,7 @@ class SourceResolver:
 			) from exc
 
 	def resolve(self, reference: str) -> Symbol:
-		module, parts = self.source_module(reference)
+		module, parts = self.source_module(reference, require_symbol=True)
 		return self.resolve_in(module, parts, (), frozenset())
 
 	def resolve_in(self, module, parts, limits, seen):
@@ -505,7 +526,9 @@ class SourceResolver:
 				reference = module.import_reference(binding.statement, binding.node)
 				tail = parts[index:] if binding.node.name == "*" else parts[index + 1 :]
 				try:
-					imported, remaining = self.source_module(".".join([reference, *tail]))
+					imported, remaining = self.source_module(
+						".".join([reference, *tail]), require_symbol=True
+					)
 					return self.resolve_in(
 						imported,
 						remaining,
@@ -566,14 +589,14 @@ class SourceResolver:
 			return None
 		return binding.node if binding and isinstance(binding.node, FUNCTION_NODES) else None
 
-	def hierarchy(self, symbol: Symbol, seen: frozenset[str] = frozenset()) -> list[Symbol]:
+	def hierarchy(self, symbol: Symbol, seen: frozenset[DeclarationId] = frozenset()) -> list[Symbol]:
 		"""Python C3 linearization, so multiple inheritance resolves the real owner."""
-		if symbol.reference in seen:
+		if symbol.identity in seen:
 			raise ResolutionError(f"Cyclic inheritance at {symbol.reference}")
 		bases = self.base_classes(symbol)
-		return [symbol, *self.compose(bases, seen | {symbol.reference})]
+		return [symbol, *self.compose(bases, seen | {symbol.identity})]
 
-	def compose(self, bases: list[Symbol], seen: frozenset[str] = frozenset()) -> list[Symbol]:
+	def compose(self, bases: list[Symbol], seen: frozenset[DeclarationId] = frozenset()) -> list[Symbol]:
 		"""Linearize the bases of a synthetic Frappe extended controller."""
 		sequences = [self.hierarchy(base, seen) for base in bases] + [bases[:]]
 		result = []
@@ -583,7 +606,7 @@ class SourceResolver:
 				(
 					seq[0]
 					for seq in sequences
-					if all(seq[0].reference not in [s.reference for s in other[1:]] for other in sequences)
+					if all(seq[0].identity not in [s.identity for s in other[1:]] for other in sequences)
 				),
 				None,
 			)
@@ -593,7 +616,7 @@ class SourceResolver:
 				)
 			result.append(candidate)
 			for seq in sequences:
-				if seq[0].reference == candidate.reference:
+				if seq[0].identity == candidate.identity:
 					seq.pop(0)
 		return result
 
@@ -640,7 +663,7 @@ class AnnotationValidator:
 		self.app = app
 		self.resolver = resolver
 		self.result = ValidationResult()
-		self.checked: set[tuple[str, str]] = set()
+		self.checked: set[tuple[DeclarationId, DeclarationId]] = set()
 
 	def error(self, custom: Symbol, upstream: str, message: str):
 		self.result.errors.append(
@@ -648,7 +671,7 @@ class AnnotationValidator:
 		)
 
 	def validate_annotation(self, custom: Symbol, upstream: Symbol):
-		key = (custom.reference, upstream.reference)
+		key = (custom.identity, upstream.identity)
 		if key in self.checked:
 			return
 		self.checked.add(key)
@@ -732,9 +755,9 @@ class AnnotationValidator:
 				)
 			# Include inherited methods from local mixins, not just the registered class.
 			methods = {}
-			class_bindings = {owner.reference: scope_bindings(owner.node.body) for owner in hierarchy}
+			class_bindings = {owner.identity: scope_bindings(owner.node.body) for owner in hierarchy}
 			for owner in hierarchy:
-				for name, declarations in class_bindings[owner.reference].items():
+				for name, declarations in class_bindings[owner.identity].items():
 					if name not in methods:
 						methods[name] = (
 							owner,
@@ -746,7 +769,7 @@ class AnnotationValidator:
 				original = None
 				upstream_owner = None
 				for owner in upstream_classes:
-					if name not in class_bindings[owner.reference]:
+					if name not in class_bindings[owner.identity]:
 						continue
 					upstream_owner = owner
 					node = self.resolver.method(owner, name)
@@ -756,7 +779,7 @@ class AnnotationValidator:
 					break
 				definitions = [
 					node
-					for node in class_bindings[method_owner.reference][name]
+					for node in class_bindings[method_owner.identity][name]
 					if isinstance(node, FUNCTION_NODES)
 				]
 				annotated = any(parse_annotation(ast.get_docstring(node) or "")[0] for node in definitions)
@@ -765,8 +788,8 @@ class AnnotationValidator:
 					continue
 				if (
 					upstream_owner is not None
-					and static_attribute(class_bindings[method_owner.reference][name])
-					and static_attribute(class_bindings[upstream_owner.reference][name])
+					and static_attribute(class_bindings[method_owner.identity][name])
+					and static_attribute(class_bindings[upstream_owner.identity][name])
 				):
 					# Ordinary data attributes do not become method overrides merely
 					# because both the controller and customization declare them.
@@ -813,7 +836,7 @@ class AnnotationValidator:
 				f"Unresolved extension composition for {doctype}: installed dependency app order is unavailable"
 			)
 		mixins = [self.resolver.resolve(path) for path in reversed(paths)]
-		if not any(mixin.reference == custom.reference for mixin in mixins):
+		if not any(mixin.identity == custom.identity for mixin in mixins):
 			raise ResolutionError(f"Extension {custom.reference} is not registered for DocType {doctype!r}")
 		if dependency_extensions:
 			mixins.extend(self.resolver.resolve(path) for path in reversed(dependency_extensions[0]))

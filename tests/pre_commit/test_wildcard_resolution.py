@@ -27,7 +27,10 @@ def test_qualified_method_after_unknown_wildcard_can_be_extracted():
 
 
 def test_later_literal_all_excluding_symbol_preserves_definition(bench, resolver):
-	write(bench / "nagus/nagus/active.py", "__all__ = ['helper']\ndef helper(): pass\nclass File: pass\n")
+	write(
+		bench / "nagus/nagus/active.py",
+		"__all__: list[str] = ['helper']\ndef helper(): pass\nclass File: pass\n",
+	)
 	write(bench / "nagus/nagus/overrides.py", "class File: pass\nfrom .active import *\n")
 	assert resolver.resolve("nagus.overrides.File").reference == "nagus.overrides.File"
 
@@ -210,3 +213,122 @@ def test_extension_validation_reaches_methods_without_executing_modules(bench):
 	assert all("Missing annotation fields" in error for error in result.errors)
 	assert any("Ledger.validate" in error for error in result.errors)
 	assert any("Ledger.reconcile" in error for error in result.errors)
+
+
+def test_redefined_base_classes_keep_both_override_methods(bench):
+	write(
+		bench / "erpnext/erpnext/bases.py",
+		"""
+		class Base:
+		    def from_first_base(self): pass
+		class Left(Base): pass
+		class Base:
+		    def from_second_base(self): pass
+		class Right(Base): pass
+		class Controller(Left, Right): pass
+		""",
+	)
+	register_class(
+		bench,
+		"""
+		from erpnext.bases import Controller
+		class CustomLedger(Controller):
+		    def from_first_base(self): pass
+		    def from_second_base(self): pass
+		""",
+	)
+	result = validate(bench)
+	assert result.checked == 2
+	assert len(result.errors) == 2
+	assert all("Missing annotation fields" in error for error in result.errors)
+	assert any("erpnext.bases.Base.from_first_base" in error for error in result.errors)
+	assert any("erpnext.bases.Base.from_second_base" in error for error in result.errors)
+
+
+def test_package_reexport_wins_over_a_same_named_child_module(bench, resolver):
+	path = write(bench / "nagus/nagus/tasks/run.py", "def run(): pass\n")
+	write(bench / "nagus/nagus/tasks/__init__.py", "from .run import run\n")
+	write(bench / "nagus/nagus/overrides.py", "from .tasks import *\n")
+	write(bench / "nagus/nagus/provider_override.py", "from .tasks.run import *\n")
+	package_export = resolver.resolve("nagus.tasks.run")
+	assert isinstance(package_export.node, ast.FunctionDef)
+	assert package_export.module.path == path
+	assert package_export.qualname == "run"
+	assert resolver.resolve("nagus.overrides.run").node is package_export.node
+	assert resolver.resolve("nagus.provider_override.run").node is package_export.node
+
+
+def test_all_alias_mutation_and_destructured_assignments_are_ambiguous(bench, resolver):
+	write(
+		bench / "nagus/nagus/active.py",
+		"__all__ = names = ['helper']\nnames.append('File')\ndef helper(): pass\nclass File: pass\n",
+	)
+	write(bench / "nagus/nagus/overrides.py", "class File: pass\nfrom .active import *\n")
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("nagus.overrides.File")
+	write(
+		bench / "nagus/nagus/destructured.py",
+		"__all__, names = ('helper', 'File')\ndef helper(): pass\nclass File: pass\n",
+	)
+	write(bench / "nagus/nagus/other_overrides.py", "class File: pass\nfrom .destructured import *\n")
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("nagus.other_overrides.File")
+
+
+def test_known_false_type_checking_skips_an_unavailable_wildcard(bench, resolver):
+	write(
+		bench / "nagus/nagus/active.py",
+		"from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from unavailable import *\n",
+	)
+	write(bench / "nagus/nagus/overrides.py", "class File: pass\nfrom .active import *\n")
+	assert resolver.resolve("nagus.overrides.File").reference == "nagus.overrides.File"
+
+
+def test_type_checking_guard_rebinding_and_earlier_wildcard_remain_ambiguous(bench, resolver):
+	write(bench / "nagus/nagus/flags.py", "TYPE_CHECKING = True\n")
+	write(
+		bench / "nagus/nagus/active.py",
+		"from typing import TYPE_CHECKING\nfrom .flags import *\nif TYPE_CHECKING:\n    class File: pass\n",
+	)
+	write(bench / "nagus/nagus/overrides.py", "class File: pass\nfrom .active import *\n")
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("nagus.overrides.File")
+	write(
+		bench / "nagus/nagus/rebound.py",
+		"from typing import TYPE_CHECKING\nTYPE_CHECKING = True\nif TYPE_CHECKING:\n    class File: pass\n",
+	)
+	write(bench / "nagus/nagus/other_overrides.py", "class File: pass\nfrom .rebound import *\n")
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("nagus.other_overrides.File")
+
+
+def test_explicit_import_after_wildcard_restores_the_type_checking_guard(bench, resolver):
+	write(bench / "nagus/nagus/flags.py", "TYPE_CHECKING = True\n")
+	write(
+		bench / "nagus/nagus/active.py",
+		"from .flags import *\nfrom typing import TYPE_CHECKING\n"
+		"if TYPE_CHECKING:\n    from unavailable import *\n",
+	)
+	write(bench / "nagus/nagus/overrides.py", "class File: pass\nfrom .active import *\n")
+	assert resolver.resolve("nagus.overrides.File").reference == "nagus.overrides.File"
+
+
+def test_type_checking_else_bases_respect_the_class_declaration_position(bench, resolver):
+	write(
+		bench / "nagus/nagus/bases.py",
+		"""
+		from typing import TYPE_CHECKING
+		if TYPE_CHECKING:
+		    from unavailable import *
+		else:
+		    class Base:
+		        def original(self): pass
+		    class Derived(Base): pass
+		    class Base:
+		        def replacement(self): pass
+		""",
+	)
+	derived, base = resolver.hierarchy(resolver.resolve("nagus.bases.Derived"))
+	assert base.node.lineno < derived.node.lineno
+	assert isinstance(resolver.method(base, "original"), ast.FunctionDef)
+	assert resolver.method(base, "replacement") is None
