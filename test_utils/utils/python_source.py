@@ -1,7 +1,8 @@
 """Scope-aware Python source inspection without importing application code."""
 
 import ast
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 
 FUNCTION_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
 DEFINITION_NODES = (*FUNCTION_NODES, ast.ClassDef)
@@ -135,6 +136,104 @@ def static_attribute(bindings):
 	return bool(bindings)
 
 
+@dataclass(frozen=True)
+class Binding:
+	node: ast.AST
+	statement: ast.stmt
+
+
+class AmbiguousBinding(ValueError):
+	def __init__(self, statement: ast.stmt, reason: str):
+		self.statement = statement
+		super().__init__(reason)
+
+
+def runtime_statements(body: list[ast.stmt]) -> list[ast.stmt]:
+	"""Omit proven typing.TYPE_CHECKING branches; leave other conditions unresolved."""
+	bindings = scope_bindings(body)
+	guards = {}
+	for statement in body:
+		if isinstance(statement, (ast.Import, ast.ImportFrom)):
+			for alias in statement.names:
+				local = alias.asname or alias.name
+				if "*" in bindings or bindings.get(local) != [alias]:
+					continue
+				if isinstance(statement, ast.Import) and alias.name in {"typing", "typing_extensions"}:
+					guards[f"{local}.TYPE_CHECKING"] = statement.lineno
+				elif (
+					isinstance(statement, ast.ImportFrom)
+					and not statement.level
+					and statement.module in {"typing", "typing_extensions"}
+					and alias.name == "TYPE_CHECKING"
+				):
+					guards[local] = statement.lineno
+	result = []
+	for statement in body:
+		if (
+			isinstance(statement, ast.If)
+			and guards.get(decorator_name(statement.test), statement.lineno) < statement.lineno
+		):
+			result.extend(statement.orelse)
+		else:
+			result.append(statement)
+	return result
+
+
+def select_binding(
+	body: list[ast.stmt],
+	name: str,
+	*,
+	decorators: set[str] | None = None,
+	wildcard: Callable[[ast.ImportFrom, str], bool] | None = None,
+) -> Binding | None:
+	"""Select a declaration by source order, failing closed on unsupported bindings.
+
+	The optional callback supplies filesystem knowledge about wildcard exports. This
+	is declaration analysis, not evaluation of decorators or arbitrary Python code.
+	"""
+	body = runtime_statements(body)
+	decorators = (decorators or set()) | overload_names(body)
+	for statement in reversed(body):
+		bindings = scope_bindings([statement])
+		matches = bindings.get(name, [])
+		if isinstance(statement, DEFINITION_NODES) and statement.name == name:
+			if isinstance(statement, FUNCTION_NODES) and any(
+				decorator_name(dec) in decorators for dec in statement.decorator_list
+			):
+				raise AmbiguousBinding(statement, f"overload-only declaration of {name!r}")
+			# Getter/setter pairs do not denote a single concrete callable.
+			if isinstance(statement, FUNCTION_NODES) and any(
+				isinstance(dec, ast.Attribute) and dec.attr in {"getter", "setter", "deleter"}
+				for dec in statement.decorator_list
+			):
+				raise AmbiguousBinding(statement, f"descriptor {name!r} has no single implementation")
+			if matches == [statement]:
+				return Binding(statement, statement)
+		elif isinstance(statement, (ast.Import, ast.ImportFrom)):
+			if matches:
+				return Binding(matches[-1], statement)
+			if isinstance(statement, ast.ImportFrom) and "*" in bindings:
+				if wildcard is None:
+					raise AmbiguousBinding(statement, "wildcard exports are unavailable")
+				if wildcard(statement, name):
+					return Binding(statement.names[0], statement)
+				continue
+		if matches or "*" in bindings:
+			imports = [
+				node
+				for node in scope_statements([statement])
+				if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names)
+			]
+			if not matches and wildcard and not any(wildcard(node, name) for node in imports):
+				continue
+			responsible = next(
+				iter(imports),
+				statement,
+			)
+			raise AmbiguousBinding(responsible, f"conditional or unsupported binding of {name!r}")
+	return None
+
+
 def find_definition(tree: ast.Module | ast.ClassDef, qualified_name: str):
 	parts = qualified_name.split(".")
 	node = tree
@@ -143,22 +242,13 @@ def find_definition(tree: ast.Module | ast.ClassDef, qualified_name: str):
 		if not isinstance(node, (ast.Module, ast.ClassDef)):
 			return None
 		decorators.update(overload_names(node.body))
-		bindings = scope_bindings(node.body)
-		if "*" in bindings:
-			# The exported names are unknown without evaluating the imported module.
+		try:
+			binding = select_binding(node.body, part, decorators=decorators)
+		except AmbiguousBinding:
 			return None
-		matches = bindings.get(part, [])
-		if any(not isinstance(item, DEFINITION_NODES) for item in matches):
+		if binding is None or not isinstance(binding.node, DEFINITION_NODES):
 			return None
-		concrete = [
-			item
-			for item in matches
-			if not isinstance(item, FUNCTION_NODES)
-			or not any(decorator_name(dec) in decorators for dec in item.decorator_list)
-		]
-		if len(concrete) != 1:
-			return None
-		node = concrete[0]
+		node = binding.node
 	return node
 
 

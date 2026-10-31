@@ -80,10 +80,25 @@ when they replace an upstream method. Define the overriding method explicitly wi
 `async def` and put its metadata on that definition. A registered function that is rebound
 after its definition cannot reuse the old definition's metadata.
 Plain literal data attributes redeclared in both classes do not require method annotations.
-Modules containing wildcard imports are conservatively unresolved, including imports inside
-conditional branches. This applies to direct definitions, explicit re-exports, and qualified
-or legacy method names; unknown exports cannot be assumed to preserve an earlier binding.
-Use explicit imports so validation and historical tracking can resolve the implementation.
+Definitions and imports are inspected in declaration order. An unconditional definition after
+a wildcard import can establish the current binding. For a later wildcard, the validator reads
+the imported source: a literal string list/tuple `__all__` determines exports; otherwise it
+follows public declarations and imports, including relative re-exports. An excluded name keeps
+its earlier definition; an included name follows the imported implementation. Circular
+re-exports can use a declaration established before the active import, as in Frappe's `File`.
+Proven `typing.TYPE_CHECKING` branches are excluded from runtime declarations.
+
+Computed, mutated or re-exported `__all__`, dynamic module exports, conditional replacement,
+and cycles without an established declaration produce an **ambiguous resolution** error with
+the responsible import's file and line. This is static declaration analysis: it does not
+execute application code or infer effects of arbitrary callbacks, decorators or metaclasses.
+Use explicit imports for patterns outside these supported declarations.
+
+Historical tracking only has the downloaded source file, so it cannot inspect a later
+wildcard's provider. It reports that binding as unresolved; an earlier wildcard followed by
+an explicit definition is supported. Qualified methods use the same declaration-order rule.
+Legacy unqualified method names remain ambiguous if an unknown module wildcard could export
+that name; prefer `ClassName.method` in annotations.
 Imported aliases for `abc.ABC`, `typing.Protocol`,
 `typing_extensions.Protocol`, and `builtins.object` do not require application checkouts.
 Application classes imported or declared under names such as `ABC` or `Protocol` remain part
