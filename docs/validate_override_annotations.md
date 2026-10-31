@@ -83,10 +83,14 @@ Assignments, deletions and `setattr` changes to class members are included in th
 inventory and invalidate the affected implementation. Changes to a function's `__code__`,
 defaults or annotation docstring also invalidate its old source definition. An unrelated
 method with the same name in another scope does not replace a module-level function.
+Mutating `__kwdefaults__` through a dictionary alias, container projection or mutating
+method also invalidates the owning function. A shallow copy has independent dictionary
+slots, while mutable default values reached through that copy retain their original identity.
 An overload declaration is skipped only when its decorator is proven to be the current
 absolute `typing.overload` or `typing_extensions.overload` binding at definition time.
 Local decorators with those names, rebound aliases and modified typing attributes cannot
-hide the active implementation. Legacy leaf-name lookup considers active class bindings.
+hide the active implementation. Projecting `overload` from an uncertain module receiver
+does not establish that proof. Legacy leaf-name lookup considers active class bindings.
 Plain literal data attributes redeclared in both classes do not require method annotations.
 Wildcard imports are resolved in declaration order. An explicit unconditional definition
 after a wildcard import establishes the active binding. For a later wildcard, local source
@@ -99,6 +103,9 @@ replaces that class's name in the module.
 Inheritance and method ownership distinguish separate class definitions even when they
 share a qualified name. A redefinition such as `class Base(Base)` therefore keeps its
 earlier base rather than being mistaken for a cycle.
+Inherited callbacks and qualified members use C3 declarations, so a class that only inherits
+a member does not hide a later class's own declaration in the same hierarchy.
+Conditional base identities retain candidate callbacks and make the resulting class uncertain.
 Member resolution retains findings from the enclosing module, including local decorators
 that replace methods. The method inventory uses the same runtime-filtered class body as
 member lookup: a method declared only under a proven false `TYPE_CHECKING` guard does not
@@ -106,7 +113,10 @@ become an override. Nested class lookup skips enclosing class namespaces, as Pyt
 
 Circular re-exports can resolve an already defined class from the partially initialized
 module, as with Frappe's `File` controller and `frappe.core.api.file`. Proven
-`typing.TYPE_CHECKING` imports do not become runtime exports. This requires an absolute
+class identities retain that import snapshot when their bases are resolved later. If a
+captured method and a later definition share both `PATH` and qualified `METHOD`, those
+annotation fields cannot distinguish them; validation reports an ambiguous method.
+Proven `typing.TYPE_CHECKING` imports do not become runtime exports. This requires an absolute
 standard typing import whose binding has not subsequently changed; a relative `.typing`
 import or an intervening wildcard cannot prove the guard false.
 Writes or deletions of the typing module's `TYPE_CHECKING` attribute also invalidate the
@@ -145,12 +155,19 @@ Uncalled function bodies and ordinary helper-local
 assignments do not rebind public names.
 
 Creating a coroutine, generator function result, or generator expression defers its body.
-A generator expression's outermost iterable is evaluated at creation. Effects are analyzed
+A generator expression evaluates its outermost iterable and acquires its iterator at creation;
+advancement and filter truth tests remain deferred. The captured iterator is not acquired
+again during advancement. Effects are analyzed
 at awaits, iteration, `yield from`, known consumers such as `list`/`next`/`asyncio.run`,
 and iterator advancement. Passing a deferred value to an unknown callable conservatively
 includes possible consumption; merely storing it or applying `iter` does not consume it.
 Eager comprehensions consume every iterable. Keyword arguments are analyzed with the same
 rules as positional arguments, while storage-only `dict(value=generator)` remains lazy.
+`iter(callable, sentinel)` defers the callback and sentinel comparison until advancement.
+Async iteration acquires `__aiter__` and awaits `__anext__`; async context managers await
+`__aenter__` and `__aexit__`. These protocols also apply to async comprehensions and
+generator expressions. Subscript writes and deletions inspect `__setitem__` and
+`__delitem__`, and reflected ordering uses the inverse comparison method on the right operand.
 Known local constructors, methods and protocol callbacks are inspected, including callbacks
 passed to operations such as `sorted(key=...)`. An opaque callback executed while a known
 `__all__` exists makes the export list ambiguous, even when the call has no arguments.

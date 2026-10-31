@@ -352,6 +352,7 @@ class Symbol:
 	module: Module
 	qualname: str
 	node: ast.AST
+	import_snapshot: tuple[tuple[str, int], ...] = ()
 
 	@property
 	def reference(self) -> str:
@@ -521,6 +522,8 @@ class SourceResolver:
 				raise ResolutionError(
 					f"Ambiguous resolution of {module.name}.{qualname} at {module.path}: {exc}"
 				) from exc
+			if binding is None and current_owner is not None:
+				binding = self.inherited_member(current_owner, name, seen)
 			if binding is None:
 				if allow_standard and name == "object" and index == 0:
 					return "builtins.object"
@@ -557,7 +560,14 @@ class SourceResolver:
 					raise ResolutionError(
 						f"Ambiguous modified or decorated definition {module.name}.{qualname} at {module.path}:{binding.node.lineno}"
 					)
-				value = Symbol(module, prefix + name, binding.node)
+				value = Symbol(
+					module,
+					prefix + name,
+					binding.node,
+					tuple(
+						sorted((name, min(limits)) for name, limits in self.import_limits.items() if limits)
+					),
+				)
 			else:
 				raise ResolutionError(
 					f"Ambiguous binding of {module.name}.{qualname} at {module.path}:{binding.node.lineno}; unsupported assignment or deletion"
@@ -575,6 +585,16 @@ class SourceResolver:
 		return None
 
 	def base_classes(self, symbol: Symbol) -> list[Symbol]:
+		"""Keep the partially initialized modules captured when this class was imported."""
+		for name, limit in symbol.import_snapshot:
+			self.import_limits.setdefault(name, []).append(limit)
+		try:
+			return self._base_classes(symbol)
+		finally:
+			for name, _ in reversed(symbol.import_snapshot):
+				self.import_limits[name].pop()
+
+	def _base_classes(self, symbol: Symbol) -> list[Symbol]:
 		result = []
 		for base in symbol.node.bases:
 			name = dotted_name(base)
@@ -591,6 +611,14 @@ class SourceResolver:
 	def member(self, owner, name):
 		"""Resolve against the selected class, preserving imported member provenance."""
 		return self.qualified(owner.module, name, owner=owner)
+
+	def inherited_member(self, owner, name, seen):
+		"""Visit declarations in C3 order without following an ancestor's inherited lookup."""
+		for ancestor in self.hierarchy(owner)[1:]:
+			writes = self.analysis(ancestor.module).member_writes.get(ancestor.node, set())
+			if name in scope_bindings(self.class_body(ancestor)) or name in writes or None in writes:
+				return self.qualified(ancestor.module, name, owner=ancestor, seen=seen)
+		return None
 
 	def function_symbol(self, module, name):
 		value = self.qualified(module, name)
@@ -766,6 +794,23 @@ class AnnotationValidator:
 			method = annotations["METHOD"]
 			# Legacy leaf names are valid only when they identify this callable uniquely.
 			valid = method == upstream.qualname
+			if valid:
+				try:
+					active = self.resolver.function_symbol(upstream.module, method)
+				except ResolutionError:
+					active = None
+				if (
+					active is not None
+					and active.module.path == upstream.module.path
+					and active.qualname == upstream.qualname
+					and active.node is not upstream.node
+				):
+					self.error(
+						custom,
+						upstream.reference,
+						f"Ambiguous METHOD {method!r}: PATH and METHOD identify a later definition in the same file, not the inherited definition captured by this class",
+					)
+					return
 			if not valid and method == upstream.node.name:
 				try:
 					valid = self.resolver.function_node(upstream.module, method) is upstream.node

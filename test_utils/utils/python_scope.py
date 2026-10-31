@@ -31,6 +31,8 @@ class SourceValue:
 	deferred: tuple = ()
 	false_constant: bool = False
 	uncertain: bool = False
+	declared: dict | None = None
+	class_order: tuple = ()
 
 
 @dataclass(eq=False)
@@ -51,6 +53,9 @@ class DeferredExecution:
 	scope: object = None
 	outer_iterable: SourceValue | None = None
 	advance: SourceValue | None = None
+	callback: SourceValue | None = None
+	sentinel: SourceValue | None = None
+	sequence: SourceValue | None = None
 
 
 @dataclass
@@ -176,6 +181,14 @@ class EffectAnalyzer:
 
 	def emit(self, effect):
 		self.effects.append(effect)
+		for origin in effect.origins:
+			if (
+				isinstance(origin, tuple)
+				and len(origin) == 2
+				and isinstance(origin[0], FUNCTION_NODES)
+				and origin[1] in {"__kwdefaults__", "__defaults__"}
+			):
+				self.invalid_definitions.add(origin[0])
 		self.changed_typing.update(effect.typing_modules)
 		if effect.namespace:
 			self.changed_typing.update({"typing", "typing_extensions"})
@@ -199,6 +212,15 @@ class EffectAnalyzer:
 			)
 		)
 
+	@staticmethod
+	def default_alias(value, container):
+		owners = frozenset(
+			origin
+			for origin in container.origins
+			if isinstance(origin, tuple) and len(origin) == 2 and isinstance(origin[0], FUNCTION_NODES)
+		)
+		return replace(value, origins=value.origins | owners) if owners and not value.scalar else value
+
 	def value(self, node, scope):
 		if node in self.call_values:
 			return self.call_values[node]
@@ -208,6 +230,33 @@ class EffectAnalyzer:
 			return SourceValue(node, scalar=True)
 		if isinstance(node, ast.Attribute):
 			base = self.value(node.value, scope)
+			if node.attr in {"__kwdefaults__", "__defaults__"}:
+				owners = frozenset(
+					(origin, node.attr) for origin in base.origins if isinstance(origin, FUNCTION_NODES)
+				)
+				if owners:
+					items = {}
+					for helper in base.helpers:
+						names = (
+							{parameter.arg for parameter in helper.node.args.kwonlyargs}
+							if node.attr == "__kwdefaults__"
+							else {
+								parameter.arg
+								for parameter in [*helper.node.args.posonlyargs, *helper.node.args.args]
+							}
+						)
+						items.update(
+							{name: value for name, value in helper.defaults.items() if name in names}
+						)
+					return SourceValue(
+						node,
+						origins=owners,
+						items=items,
+						key_values={name: SourceValue(ast.Constant(name), scalar=True) for name in items}
+						if node.attr == "__kwdefaults__"
+						else None,
+					)
+
 			if base.items is not None and node.attr in base.items and (base.is_class or base.instance):
 				member = base.items[node.attr]
 				bound = (
@@ -218,11 +267,17 @@ class EffectAnalyzer:
 					)
 					else ()
 				)
-				return replace(member, bound=bound)
+				return replace(
+					member,
+					bound=bound,
+					modules=member.modules | frozenset(f"{name}.{node.attr}" for name in base.modules),
+					uncertain=member.uncertain or base.uncertain,
+				)
 			modules = frozenset(f"{name}.{node.attr}" for name in base.modules)
 			return SourceValue(
 				ast.copy_location(ast.Attribute(value=base.expression, attr=node.attr, ctx=node.ctx), node),
 				modules=modules,
+				uncertain=base.uncertain,
 				origins=frozenset()
 				if node.attr in {"__name__", "__qualname__", "__module__"}
 				and (
@@ -285,14 +340,17 @@ class EffectAnalyzer:
 							for item in (node.slice.lower, node.slice.upper, node.slice.step)
 						)
 					)
-					selected = list(base.items.values())[index]
+					selected = [self.default_alias(value, base) for value in list(base.items.values())[index]]
 					return SourceValue(node, items=dict(enumerate(selected)), origins=frozenset({node}))
 				index = ast.literal_eval(node.slice)
 				if base.items is not None and index in base.items:
-					return (
-						self.merge([base.items[index], base.items[None]])
-						if None in base.items and index is not None
-						else base.items[index]
+					return self.default_alias(
+						(
+							self.merge([base.items[index], base.items[None]])
+							if None in base.items and index is not None
+							else base.items[index]
+						),
+						base,
 					)
 			except ValueError, TypeError:
 				pass
@@ -367,7 +425,11 @@ class EffectAnalyzer:
 				{},
 				expression=node,
 				scope=scope,
-				outer_iterable=self.value(node.generators[0].iter, scope),
+				outer_iterable=self.acquire(
+					self.value(node.generators[0].iter, scope),
+					seen,
+					asynchronous=bool(node.generators[0].is_async),
+				),
 			)
 			self.call_values[node] = SourceValue(node, deferred=(deferred,))
 			return
@@ -376,13 +438,15 @@ class EffectAnalyzer:
 			for generator in node.generators:
 				self.expression(generator.iter, local, seen)
 				iterable = self.value(generator.iter, local)
-				produced = self.consume(iterable, seen)
+				produced = (
+					self.consume_async(iterable, seen) if generator.is_async else self.consume(iterable, seen)
+				)
 				values = list(iterable.items.values()) if iterable.items else []
 				value = self.merge(values) if values else produced
 				self.bind(generator.target, value, local, seen)
 				for condition in generator.ifs:
 					self.expression(condition, local, seen)
-					self.protocol(self.value(condition, local), ("__bool__", "__len__"), [], seen)
+					self.truth(self.value(condition, local), seen)
 			for element in [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]:
 				self.expression(element, local, seen)
 			item = self.value(node.value if isinstance(node, ast.DictComp) else node.elt, local)
@@ -463,10 +527,10 @@ class EffectAnalyzer:
 				self.value(node.operand, scope), (name,) if name else ("__bool__", "__len__"), [], seen
 			)
 		if isinstance(node, ast.IfExp):
-			self.protocol(self.value(node.test, scope), ("__bool__", "__len__"), [], seen)
+			self.truth(self.value(node.test, scope), seen)
 		if isinstance(node, ast.BoolOp):
 			for operand in node.values[:-1]:
-				self.protocol(self.value(operand, scope), ("__bool__", "__len__"), [], seen)
+				self.truth(self.value(operand, scope), seen)
 		if isinstance(node, ast.FormattedValue):
 			self.protocol(
 				self.value(node.value, scope), ("__format__",), [SourceValue(ast.Constant(""))], seen
@@ -486,7 +550,17 @@ class EffectAnalyzer:
 						self.value(node.left, scope), (name,), [self.value(comparator, scope)], seen
 					)
 					self.protocol(
-						self.value(comparator, scope), (name,), [self.value(node.left, scope)], seen
+						self.value(comparator, scope),
+						(
+							{
+								"__lt__": "__gt__",
+								"__le__": "__ge__",
+								"__gt__": "__lt__",
+								"__ge__": "__le__",
+							}.get(name, name),
+						),
+						[self.value(node.left, scope)],
+						seen,
 					)
 				if isinstance(operator, (ast.In, ast.NotIn)):
 					self.protocol(
@@ -498,6 +572,8 @@ class EffectAnalyzer:
 		if not isinstance(node, ast.Call):
 			return
 		callee = self.value(node.func, scope)
+		if any(helper.node in self.invalid_definitions for helper in callee.helpers):
+			callee = replace(callee, uncertain=True)
 		arguments = []
 		for item in node.args:
 			value = self.value(item, scope)
@@ -656,7 +732,11 @@ class EffectAnalyzer:
 		if callee.is_class:
 			self.protocol(callee, ("__new__",), arguments, seen)
 			instance = SourceValue(
-				node, items=dict(callee.items or {}), origins=frozenset({node}), instance=True
+				node,
+				items=dict(callee.items or {}),
+				origins=frozenset({node}),
+				instance=True,
+				uncertain=callee.uncertain,
 			)
 			initializer = (callee.items or {}).get("__init__")
 			for helper in initializer.helpers if initializer else ():
@@ -673,11 +753,13 @@ class EffectAnalyzer:
 			if f"builtins.{builtin}" in callee.modules and arguments:
 				results.append(self.protocol(arguments[0], methods, [], seen))
 		if "builtins.iter" in callee.modules and arguments:
-			value = arguments[0]
 			results.append(
-				self.protocol(value, ("__iter__",), [], seen)
-				if value.instance and "__iter__" in (value.items or {})
-				else value
+				SourceValue(
+					node,
+					deferred=(DeferredExecution(None, [], {}, callback=arguments[0], sentinel=arguments[1]),),
+				)
+				if len(arguments) == 2
+				else self.acquire(arguments[0], seen)
 			)
 		if "builtins.vars" in callee.modules and arguments:
 			results.append(SourceValue(node, origins=self.reachable(arguments[0])))
@@ -707,7 +789,7 @@ class EffectAnalyzer:
 		if isinstance(node.func, ast.Attribute):
 			iterator = self.value(node.func.value, scope)
 			if node.func.attr in {"__next__", "send", "throw"}:
-				results.append(self.consume(iterator, seen))
+				results.append(self.advance(iterator, seen))
 			elif node.func.attr in self.ASYNC_ADVANCES and iterator.deferred:
 				results.append(
 					SourceValue(node, deferred=(DeferredExecution(None, [], {}, advance=iterator),))
@@ -715,45 +797,97 @@ class EffectAnalyzer:
 		if results:
 			self.call_values[node] = self.merge(results)
 
+	def acquire(self, value, seen, *, asynchronous=False):
+		"""Obtain the iterator without advancing a generator or awaiting its next item."""
+		value = self.project_view(value)
+		name = "__aiter__" if asynchronous else "__iter__"
+		if value.instance and name in (value.items or {}):
+			return self.protocol(value, (name,), [], seen)
+		if value.instance and not asynchronous and "__getitem__" in (value.items or {}):
+			return SourceValue(value.expression, deferred=(DeferredExecution(None, [], {}, sequence=value),))
+		if (
+			not value.deferred
+			and not value.scalar
+			and value.items is None
+			and not value.instance
+			and not value.is_class
+		):
+			self.emit(SourceEffect(value.expression, opaque=True, origins=self.reachable(value)))
+		return value
+
+	def consume_async(self, value, seen):
+		return self.advance_async(self.acquire(value, seen, asynchronous=True), seen)
+
+	def advance_async(self, iterator, seen):
+		if iterator.deferred:
+			return self.advance(iterator, seen)
+		step = self.protocol(iterator, ("__anext__",), [], seen)
+		return self.advance(step, seen, awaiting=True) if step.deferred else step
+
 	def consume(self, value, seen, *, awaiting=False):
+		return self.advance(value if awaiting else self.acquire(value, seen), seen, awaiting=awaiting)
+
+	def advance(self, value, seen, *, awaiting=False):
+		"""Advance an already acquired iterator; do not repeat its __iter__ callback."""
 		value = self.project_view(value)
 		produced = []
 		for deferred in value.deferred:
 			if id(deferred) in seen:
 				continue
-			if deferred.advance is not None:
-				produced.append(self.consume(deferred.advance, seen | {id(deferred)}))
+			active = seen | {id(deferred)}
+			if deferred.callback is not None:
+				item = self.callback(deferred.callback, [], value.expression, active)
+				if deferred.sentinel is not None:
+					self.protocol(item, ("__eq__",), [deferred.sentinel], active)
+					self.protocol(deferred.sentinel, ("__eq__",), [item], active)
+				produced.append(item)
+			elif deferred.sequence is not None:
+				produced.append(
+					self.protocol(
+						deferred.sequence,
+						("__getitem__",),
+						[SourceValue(ast.Constant(0), scalar=True)],
+						active,
+					)
+				)
+			elif deferred.advance is not None:
+				produced.append(self.advance(deferred.advance, active))
 			elif deferred.helper:
 				produced.append(
 					self.invoke(
-						deferred.helper,
-						deferred.arguments,
-						deferred.keywords,
-						seen | {id(deferred)},
-						yielding=True,
+						deferred.helper, deferred.arguments, deferred.keywords, active, yielding=not awaiting
 					)
 				)
 			else:
 				local = SourceScope(deferred.scope, kind="function")
 				for index, generator in enumerate(deferred.expression.generators):
 					if index:
-						self.expression(generator.iter, local, seen)
-					iterable = self.value(generator.iter, local) if index else deferred.outer_iterable
-					item = self.consume(iterable, seen | {id(deferred)})
-					values = list(iterable.items.values()) if iterable.items else []
-					self.bind(generator.target, self.merge(values) if values else item, local, seen)
+						self.expression(generator.iter, local, active)
+						iterator = self.acquire(
+							self.value(generator.iter, local), active, asynchronous=bool(generator.is_async)
+						)
+					else:
+						iterator = deferred.outer_iterable
+					item = (
+						self.advance_async(iterator, active)
+						if generator.is_async
+						else self.advance(iterator, active)
+					)
+					values = list(iterator.items.values()) if iterator.items and not iterator.instance else []
+					self.bind(generator.target, self.merge(values) if values else item, local, active)
 					for condition in generator.ifs:
-						self.expression(condition, local, seen)
-				self.expression(deferred.expression.elt, local, seen)
+						self.expression(condition, local, active)
+						self.truth(self.value(condition, local), active)
+				self.expression(deferred.expression.elt, local, active)
 				produced.append(self.value(deferred.expression.elt, local))
 		if not value.deferred and value.instance and id(value) not in seen:
-			for name in ("__await__",) if awaiting else ("__iter__", "__next__"):
-				method = (value.items or {}).get(name)
-				for helper in method.helpers if method else ():
-					item = self.invoke(helper, [value], {}, seen | {id(value)}, yielding=not awaiting)
-					produced.append(item)
-					if name == "__iter__" and item is not value:
-						produced.append(self.consume(item, seen | {id(value)}))
+			name = "__await__" if awaiting else "__next__"
+			method = (value.items or {}).get(name)
+			for helper in method.helpers if method else ():
+				item = self.invoke(helper, [value], {}, seen | {id(value)}, yielding=not awaiting)
+				produced.append(item)
+				if awaiting and (item.deferred or item.instance):
+					produced.append(self.advance(item, seen | {id(value), id(helper.node)}, awaiting=True))
 		if not value.deferred and value.items is not None and not value.instance and not value.is_class:
 			produced.extend(
 				value.key_values.values() if value.key_values is not None else value.items.values()
@@ -854,6 +988,16 @@ class EffectAnalyzer:
 			self.expression(target, scope, seen)
 			base = self.value(target.value, scope)
 			if isinstance(target, ast.Subscript):
+				if base.instance:
+					arguments = [self.value(target.slice, scope)] + (
+						[] if isinstance(target.ctx, ast.Del) else [value]
+					)
+					self.protocol(
+						base,
+						("__delitem__",) if isinstance(target.ctx, ast.Del) else ("__setitem__",),
+						arguments,
+						seen,
+					)
 				try:
 					attribute = ast.literal_eval(target.slice)
 				except ValueError, TypeError:
@@ -893,6 +1037,8 @@ class EffectAnalyzer:
 				self.mark_members(base, target.attr)
 				if base.items is not None:
 					base.items[target.attr] = value
+				if base.is_class and base.declared is not None:
+					base.declared[target.attr] = value
 			modules = (
 				self.value(target.value, scope).modules
 				if isinstance(target, ast.Attribute) and target.attr == "TYPE_CHECKING"
@@ -902,8 +1048,9 @@ class EffectAnalyzer:
 				SourceEffect(
 					self.value(target, scope).expression,
 					typing_modules=modules & {"typing", "typing_extensions"},
-					origins=self.reachable(self.value(target.value, scope)),
+					origins=base.origins,
 					mutation=True,
+					shallow=True,
 				)
 			)
 
@@ -1051,11 +1198,11 @@ class EffectAnalyzer:
 				values.append(arguments[1])
 			if name == "pop":
 				self.emit(SourceEffect(node, origins=base.origins, mutation=True, shallow=True))
-			return self.merge(values) if values else SourceValue(ast.Constant(None))
+			return self.default_alias(self.merge(values), base) if values else SourceValue(ast.Constant(None))
 		if name == "copy":
 			return SourceValue(
 				node,
-				items=dict(base.items),
+				items={key: self.default_alias(value, base) for key, value in base.items.items()},
 				key_values=dict(base.key_values) if base.key_values is not None else None,
 				origins=frozenset({node}),
 			)
@@ -1070,6 +1217,7 @@ class EffectAnalyzer:
 		kind, base = value.view
 		entries = []
 		for key, item in (base.items or {}).items():
+			item = EffectAnalyzer.default_alias(item, base)
 			key_value = (base.key_values or {}).get(key, SourceValue(ast.Constant(key), scalar=True))
 			entries.append(
 				item
@@ -1109,6 +1257,39 @@ class EffectAnalyzer:
 			for helper in method.helpers if method else ():
 				results.append(self.call_helper(helper, [value, *arguments], {}, seen))
 		return self.merge(results) if results else SourceValue(ast.Constant(None))
+
+	@staticmethod
+	def class_identity(value):
+		origins = frozenset(origin for origin in value.origins if isinstance(origin, ast.ClassDef))
+		return origins if origins else id(value)
+
+	def linearize(self, value, bases):
+		sequences = [list(base.class_order) if base.class_order else [base] for base in bases] + [list(bases)]
+		result = [value]
+		while any(sequences):
+			sequences = [sequence for sequence in sequences if sequence]
+			candidate = next(
+				(
+					sequence[0]
+					for sequence in sequences
+					if all(
+						self.class_identity(sequence[0])
+						not in [self.class_identity(item) for item in other[1:]]
+						for other in sequences
+					)
+				),
+				None,
+			)
+			if candidate is None:
+				# An unprovable MRO is unknown, not a different precedence order.
+				value.uncertain = True
+				result.extend(item for sequence in sequences for item in sequence)
+				break
+			result.append(candidate)
+			for sequence in sequences:
+				if self.class_identity(sequence[0]) == self.class_identity(candidate):
+					sequence.pop(0)
+		return tuple(result)
 
 	def mark_members(self, value, name):
 		for origin in value.origins:
@@ -1171,6 +1352,9 @@ class EffectAnalyzer:
 		if isinstance(node, DEFINITION_NODES):
 			for expression in definition_expressions(node):
 				self.expression(expression, scope, seen)
+			base_values = (
+				[self.value(base, scope) for base in node.bases] if isinstance(node, ast.ClassDef) else []
+			)
 			replaced = False
 			argument = SourceValue(
 				ast.Constant(None), is_class=isinstance(node, ast.ClassDef), origins=frozenset({node})
@@ -1209,21 +1393,21 @@ class EffectAnalyzer:
 			helpers = (
 				(self.function(node, scope),) if isinstance(node, FUNCTION_NODES) and not replaced else ()
 			)
-			inherited = {}
-			if isinstance(node, ast.ClassDef):
-				for base in reversed(node.bases):
-					inherited.update(self.value(base, scope).items or {})
-				inherited.update(local.values)
 			value = SourceValue(
 				ast.Constant(None),
 				helpers=helpers,
 				is_class=isinstance(node, ast.ClassDef) and not replaced,
 				origins=frozenset({node}),
-				items=inherited if isinstance(node, ast.ClassDef) else None,
+				declared=local.values.copy() if isinstance(node, ast.ClassDef) else None,
+				uncertain=any(base.uncertain for base in base_values),
 			)
 			if isinstance(node, ast.ClassDef):
-				for base in node.bases:
-					base_value = self.value(base, scope)
+				value.class_order = self.linearize(value, base_values)
+				value.items = {}
+				for owner in reversed(value.class_order):
+					value.items.update(owner.declared if owner.declared is not None else owner.items or {})
+			if isinstance(node, ast.ClassDef):
+				for base_value in base_values:
 					method = (base_value.items or {}).get("__init_subclass__")
 					for helper in method.helpers if method else ():
 						self.call_helper(helper, [value], {}, seen)
@@ -1308,14 +1492,17 @@ class EffectAnalyzer:
 				)
 		elif isinstance(node, (ast.With, ast.AsyncWith)):
 			contexts = []
+			asynchronous = isinstance(node, ast.AsyncWith)
 			for item in node.items:
 				self.expression(item.context_expr, scope, seen)
 				context = self.value(item.context_expr, scope)
 				entry = (
 					self.consume(context, seen)
-					if context.deferred
-					else self.protocol(context, ("__enter__", "__aenter__"), [], seen)
+					if context.deferred and not asynchronous
+					else self.protocol(context, ("__aenter__",) if asynchronous else ("__enter__",), [], seen)
 				)
+				if asynchronous:
+					entry = self.consume(entry, seen, awaiting=True)
 				contexts.append(context)
 				if item.optional_vars:
 					self.bind(item.optional_vars, entry, scope, seen)
@@ -1323,15 +1510,22 @@ class EffectAnalyzer:
 				if self.visit(statement, scope, seen):
 					break
 			for context in reversed(contexts):
-				self.protocol(context, ("__exit__", "__aexit__"), [SourceValue(ast.Constant(None))] * 3, seen)
+				exit_value = self.protocol(
+					context,
+					("__aexit__",) if asynchronous else ("__exit__",),
+					[SourceValue(ast.Constant(None))] * 3,
+					seen,
+				)
+				if asynchronous:
+					self.consume(exit_value, seen, awaiting=True)
 		elif isinstance(node, (ast.While, ast.Assert)):
 			self.expression(node.test, scope, seen)
-			self.protocol(self.value(node.test, scope), ("__bool__", "__len__"), [], seen)
+			self.truth(self.value(node.test, scope), seen)
 			if isinstance(node, ast.While):
 				self.branches([node.body, node.orelse], scope, seen)
 		elif isinstance(node, ast.If):
 			self.expression(node.test, scope, seen)
-			self.protocol(self.value(node.test, scope), ("__bool__", "__len__"), [], seen)
+			self.truth(self.value(node.test, scope), seen)
 			if self.value(node.test, scope).false_constant:
 				for statement in node.orelse:
 					if self.visit(statement, scope, seen):
@@ -1341,7 +1535,11 @@ class EffectAnalyzer:
 		elif isinstance(node, (ast.For, ast.AsyncFor)):
 			self.expression(node.iter, scope, seen)
 			iterable = self.value(node.iter, scope)
-			produced = self.consume(iterable, seen)
+			produced = (
+				self.consume_async(iterable, seen)
+				if isinstance(node, ast.AsyncFor)
+				else self.consume(iterable, seen)
+			)
 			values = list(iterable.items.values()) if iterable.items else []
 			self.bind(
 				node.target,
