@@ -4,7 +4,7 @@ import ast
 import json
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path, PurePosixPath
 
@@ -14,6 +14,7 @@ from test_utils.utils.override_metadata import (
 	parse_annotation,
 	repository_identity,
 )
+from test_utils.utils.python_scope import SourceValue
 from test_utils.utils.python_source import (
 	FUNCTION_NODES,
 	AmbiguousBinding,
@@ -363,12 +364,155 @@ class Symbol:
 		return self.module.path, id(self.node)
 
 
+class ImportAnalyzer(SourceAnalyzer):
+	"""Retain checkout import identities, including a selected wildcard export."""
+
+	def __init__(self, resolver, module, wildcard=None):
+		super().__init__()
+		self.resolver = resolver
+		self.module = module
+		self.wildcard = wildcard
+		self.readonly_default_calls = set()
+		self.readonly_default_nodes = set()
+
+	@staticmethod
+	def imported_defaults(value):
+		references = value.modules | frozenset(
+			origin[1]
+			for origin in value.origins
+			if isinstance(origin, tuple)
+			and len(origin) == 2
+			and origin[0] == "import"
+			and isinstance(origin[1], str)
+		)
+		return {
+			reference
+			for reference in references
+			if {"__defaults__", "__kwdefaults__"}.intersection(reference.split("."))
+		}
+
+	@staticmethod
+	def call_location(node):
+		return tuple(
+			getattr(node, field, None) for field in ("lineno", "col_offset", "end_lineno", "end_col_offset")
+		)
+
+	def emit(self, effect):
+		super().emit(effect)
+		if effect.opaque and (
+			self.call_location(effect.node) in self.readonly_default_calls
+			or id(effect.node) in self.readonly_default_nodes
+		):
+			return
+		if effect.mutation or effect.opaque or effect.namespace:
+			for reference in self.imported_defaults(SourceValue(effect.node, origins=effect.origins)):
+				self.module_writes.setdefault(reference, set()).add(None)
+
+	def bind(self, target, value, scope, seen=frozenset(), *, anchor=True):
+		if isinstance(target, ast.Subscript):
+			for reference in self.imported_defaults(self.value(target.value, scope)):
+				self.module_writes.setdefault(reference, set()).add(None)
+		return super().bind(target, value, scope, seen, anchor=anchor)
+
+	def expression(self, node, scope, seen):
+		copied = None
+		readonly = False
+		readonly_nodes = []
+		readonly_locations = []
+		constructors = {
+			"builtins.dict",
+			"builtins.list",
+			"builtins.tuple",
+			"builtins.set",
+			"builtins.frozenset",
+		}
+		if isinstance(node, ast.Call) and node.args and self.value(node.func, scope).modules & constructors:
+			argument = self.value(node.args[0], scope)
+			if any(
+				reference.endswith((".__defaults__", ".__kwdefaults__")) for reference in argument.modules
+			):
+				readonly_nodes = [argument.expression, node.args[0]]
+				readonly_locations = [
+					self.call_location(item) for item in readonly_nodes if hasattr(item, "lineno")
+				]
+		if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+			base = self.value(node.func.value, scope)
+			references = self.imported_defaults(base)
+			readonly = bool(references) and node.func.attr in {
+				"get",
+				"keys",
+				"values",
+				"items",
+				"copy",
+				"__getitem__",
+			}
+			if readonly and node.func.attr in {"get", "__getitem__"}:
+				key = self.value(node.args[0], scope) if node.args else None
+				readonly = key is not None and key.scalar and not key.uncertain
+			if node.func.attr == "copy" and references:
+				copied = SourceValue(
+					node,
+					items={None: SourceValue(node, modules=frozenset(references), origins=base.origins)},
+					origins=frozenset({node}),
+				)
+			elif node.func.attr not in {"get", "keys", "values", "items", "copy", "__getitem__"}:
+				for reference in references:
+					self.module_writes.setdefault(reference, set()).add(None)
+		location = self.call_location(node)
+		if readonly:
+			self.readonly_default_calls.add(location)
+		self.readonly_default_calls.update(readonly_locations)
+		self.readonly_default_nodes.update(map(id, readonly_nodes))
+		try:
+			result = super().expression(node, scope, seen)
+		finally:
+			if readonly:
+				self.readonly_default_calls.discard(location)
+			self.readonly_default_calls.difference_update(readonly_locations)
+			self.readonly_default_nodes.difference_update(map(id, readonly_nodes))
+		if isinstance(node, ast.Call) and node.args and self.value(node.func, scope).modules & constructors:
+			original = self.value(node.args[0], scope)
+			references = self.imported_defaults(original)
+			if references and original.items is None:
+				current = self.call_values.get(node, SourceValue(node, origins=frozenset({node})))
+				items = dict(current.items or {})
+				items[None] = SourceValue(node, modules=frozenset(references), origins=original.origins)
+				copied = replace(current, items=items)
+		if copied is not None:
+			self.call_values[node] = copied
+		return result
+
+	def visit(self, node, scope, seen):
+		original = node
+		if isinstance(node, ast.ImportFrom) and node.level:
+			node = ast.copy_location(
+				ast.ImportFrom(
+					module=self.resolver.import_module_name(self.module, node), names=node.names, level=0
+				),
+				node,
+			)
+		result = super().visit(node, scope, seen)
+		if self.wildcard and original is self.wildcard[0]:
+			for name, reference in self.wildcard[1].items():
+				scope.set(
+					name,
+					SourceValue(
+						ast.Name(id=name, ctx=ast.Load()),
+						modules=frozenset({reference}),
+						origins=frozenset({("import", reference)}),
+					),
+				)
+		return result
+
+
 class SourceResolver:
 	def __init__(self, apps: list[App]):
 		self.apps = {app.name: app for app in apps}
 		self.modules: dict[Path, Module] = {}
 		self.import_limits: dict[str, list[int]] = {}
 		self.analyses = {}
+		self.wildcard_analyses = {}
+		self.mutation_resolution_depth = 0
 
 	def module(self, app: App, name: str, path: Path) -> Module:
 		if path not in self.modules:
@@ -437,7 +581,7 @@ class SourceResolver:
 		key = module.path, self.module_limit(module, before)
 		if key not in self.analyses:
 			body, _ = self.module_body(module, before)
-			analyzer = SourceAnalyzer()
+			analyzer = ImportAnalyzer(self, module)
 			for statement in body:
 				analyzer.scan(statement)
 			self.analyses[key] = analyzer
@@ -447,8 +591,9 @@ class SourceResolver:
 		bodies = self.analysis(owner.module).runtime_bodies
 		return bodies[owner.node] if owner.node in bodies else list(runtime_body(owner.node.body))
 
-	def wildcard(self, module, statement, name, seen):
+	def wildcard(self, module, statement, name, seen, *, before=None, remaining=()):
 		imported_name = self.import_module_name(module, statement)
+		importer_body, importer_limit = self.module_body(module, before)
 		limits = self.import_limits.setdefault(module.name, [])
 		limits.append(statement.lineno)
 		try:
@@ -462,6 +607,33 @@ class SourceResolver:
 			value = self.qualified(imported, name, seen=seen)
 			if value is None and exports is not None:
 				raise AmbiguousBinding(f"__all__ exports missing symbol {name} in {imported.path}")
+			if value is not None:
+				reference = f"{imported_name}.{name}"
+				key = module.path, importer_limit, id(statement), name
+				if key not in self.wildcard_analyses:
+					names = (
+						exports
+						if exports is not None
+						else {
+							binding
+							for binding in scope_bindings(body)
+							if not binding.startswith("_") and binding != "*"
+						}
+					)
+					references = {binding: f"{imported_name}.{binding}" for binding in {*names, name}}
+					analyzer = ImportAnalyzer(self, module, wildcard=(statement, references))
+					for node in importer_body:
+						analyzer.scan(node)
+					self.wildcard_analyses[key] = analyzer
+				checked = (
+					self.qualified(value.module, ".".join(remaining), owner=value, seen=seen)
+					if remaining and isinstance(value.node, ast.ClassDef)
+					else value
+				)
+				if checked is not None:
+					self.check_imported_mutations(
+						module, ".".join([reference, *remaining]), checked, self.wildcard_analyses[key]
+					)
 			return value
 		except (ResolutionError, AmbiguousBinding) as exc:
 			raise ResolutionError(
@@ -491,7 +663,17 @@ class SourceResolver:
 		except AmbiguousBinding as exc:
 			raise AmbiguousBinding(f"{module.path}: {exc}") from exc
 
-	def qualified(self, module, qualname, *, seen=frozenset(), before=None, allow_standard=False, owner=None):
+	def qualified(
+		self,
+		module,
+		qualname,
+		*,
+		seen=frozenset(),
+		before=None,
+		allow_standard=False,
+		owner=None,
+		complete_importer=False,
+	):
 		body, limit = self.module_body(module, before)
 		key = (module.name, qualname, limit, id(owner.node) if owner else None)
 		if key in seen:
@@ -515,7 +697,14 @@ class SourceResolver:
 				binding = select_binding(
 					body,
 					name,
-					wildcard=lambda statement, target: self.wildcard(module, statement, target, seen),
+					wildcard=lambda statement, target: self.wildcard(
+						module,
+						statement,
+						target,
+						seen,
+						before=None if complete_importer else before,
+						remaining=parts[index + 1 :],
+					),
 					overloads=self.analysis(module, before).overload_definitions,
 				)
 			except AmbiguousBinding as exc:
@@ -550,11 +739,14 @@ class SourceResolver:
 				}:
 					return reference
 				limits = self.import_limits.setdefault(module.name, [])
+				importer = self.analysis(module, None if complete_importer else before)
 				limits.append(statement.lineno)
 				try:
-					return self.resolve(reference, seen)
+					value = self.resolve(reference, seen)
 				finally:
 					limits.pop()
+				self.check_imported_mutations(module, reference, value, importer)
+				return value
 			elif isinstance(binding.node, (ast.ClassDef, *FUNCTION_NODES)):
 				if binding.node in self.analysis(module, before).invalid_definitions:
 					raise ResolutionError(
@@ -584,6 +776,51 @@ class SourceResolver:
 			body = self.class_body(value)
 		return None
 
+	def check_imported_mutations(self, module, reference, value, analyzer):
+		"""An importer cannot reuse metadata after changing its imported object."""
+		if self.mutation_resolution_depth or not analyzer.module_writes:
+			return
+		sensitive = {"__code__", "__defaults__", "__kwdefaults__", "__doc__", "__wrapped__"}
+		references = {reference: isinstance(value.node, ast.ClassDef)}
+		owners = self.hierarchy(value) if isinstance(value.node, ast.ClassDef) else [value]
+		references.update((owner.reference, isinstance(owner.node, ast.ClassDef)) for owner in owners)
+		writes = {owner: set(attributes) for owner, attributes in analyzer.module_writes.items()}
+		for owner, attributes in list(writes.items()):
+			canonical = self.canonical_mutation_reference(owner)
+			if canonical is not None:
+				writes.setdefault(canonical, set()).update(attributes)
+		for candidate, is_class in references.items():
+			for owner, attributes in writes.items():
+				if candidate == owner:
+					affected = is_class or bool(attributes & (sensitive | {None}))
+				elif candidate.startswith(owner + "."):
+					affected = candidate[len(owner) + 1 :].split(".")[0] in attributes or None in attributes
+				elif owner.startswith(candidate + "."):
+					affected = is_class or owner[len(candidate) + 1 :].split(".")[0] in sensitive
+				else:
+					affected = False
+				if affected:
+					raise ResolutionError(
+						f"Ambiguous imported binding {reference} at {module.path}: its object was mutated in this importer"
+					)
+
+	def canonical_mutation_reference(self, reference):
+		"""Follow visible re-exports without recursively checking their importer effects."""
+		parts = reference.split(".")
+		if parts[0] not in self.apps:
+			return None
+		self.mutation_resolution_depth += 1
+		try:
+			for end in range(len(parts), 0, -1):
+				try:
+					owner = self.resolve(".".join(parts[:end]))
+				except ResolutionError:
+					continue
+				return ".".join([owner.reference, *parts[end:]])
+		finally:
+			self.mutation_resolution_depth -= 1
+		return None
+
 	def base_classes(self, symbol: Symbol) -> list[Symbol]:
 		"""Keep the partially initialized modules captured when this class was imported."""
 		for name, limit in symbol.import_snapshot:
@@ -598,7 +835,9 @@ class SourceResolver:
 		result = []
 		for base in symbol.node.bases:
 			name = dotted_name(base)
-			resolved = self.qualified(symbol.module, name, before=symbol.node.lineno, allow_standard=True)
+			resolved = self.qualified(
+				symbol.module, name, before=symbol.node.lineno, allow_standard=True, complete_importer=True
+			)
 			if isinstance(resolved, str):
 				continue
 			if resolved is None and name == symbol.node.name:

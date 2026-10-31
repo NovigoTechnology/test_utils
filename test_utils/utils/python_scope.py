@@ -168,9 +168,15 @@ class EffectAnalyzer:
 			self.scope.values[name] = SourceValue(
 				ast.Name(id=name, ctx=ast.Load()), modules=frozenset({f"builtins.{name}"})
 			)
+		self.scope.values["NotImplemented"] = SourceValue(
+			ast.Name(id="NotImplemented", ctx=ast.Load()),
+			modules=frozenset({"builtins.NotImplemented"}),
+			scalar=True,
+		)
 		self.effects = []
 		self.call_values = {}
 		self.invalid_definitions = set()
+		self.default_owners = {}
 		self.runtime_bodies = {}
 		self.changed_typing = set()
 		self.module_writes = {}
@@ -181,6 +187,9 @@ class EffectAnalyzer:
 
 	def emit(self, effect):
 		self.effects.append(effect)
+		if effect.mutation or effect.opaque or effect.namespace:
+			for origin in effect.origins:
+				self.invalid_definitions.update(self.default_owners.get(origin, ()))
 		for origin in effect.origins:
 			if (
 				isinstance(origin, tuple)
@@ -285,7 +294,7 @@ class EffectAnalyzer:
 					or base.helpers
 					or any(isinstance(origin, DEFINITION_NODES) for origin in base.origins)
 				)
-				else self.reachable(base),
+				else self.reachable(base) | frozenset(("import", name) for name in modules),
 				false_constant=node.attr == "TYPE_CHECKING"
 				and bool(base.modules & {"typing", "typing_extensions"})
 				and not base.uncertain
@@ -466,6 +475,21 @@ class EffectAnalyzer:
 			)
 			self.call_values[node] = SourceValue(node, helpers=(self.function(function, scope),))
 			return
+		if isinstance(node, ast.Compare):
+			self.expression(node.left, scope, seen)
+			left = self.value(node.left, scope)
+			for index, (operator, comparator) in enumerate(zip(node.ops, node.comparators, strict=True)):
+				self.expression(comparator, scope, seen)
+				right = self.value(comparator, scope)
+				result = self.comparison(left, right, operator, seen)
+				self.call_values[node] = result
+				if index < len(node.ops) - 1:
+					truth = self.truth(result, seen)
+					known = self.literal_truth(truth)
+					if known is False or (known is None and self.literal_truth(result) is False):
+						break
+				left = right
+			return
 		for child in ast.iter_child_nodes(node):
 			if isinstance(child, ast.expr):
 				self.expression(child, scope, seen)
@@ -503,72 +527,44 @@ class EffectAnalyzer:
 				)
 		if isinstance(node, ast.BinOp):
 			left, right = self.value(node.left, scope), self.value(node.right, scope)
-			stem = {
-				ast.Add: "add",
-				ast.Sub: "sub",
-				ast.Mult: "mul",
-				ast.MatMult: "matmul",
-				ast.Div: "truediv",
-				ast.FloorDiv: "floordiv",
-				ast.Mod: "mod",
-				ast.Pow: "pow",
-				ast.LShift: "lshift",
-				ast.RShift: "rshift",
-				ast.BitOr: "or",
-				ast.BitAnd: "and",
-				ast.BitXor: "xor",
-			}.get(type(node.op))
-			if stem:
-				self.protocol(left, (f"__{stem}__",), [right], seen)
-				self.protocol(right, (f"__r{stem}__",), [left], seen)
+			result = self.arithmetic(left, right, node.op, seen)
+			if self.protocol_result(result) != "fallback":
+				self.call_values[node] = result
 		if isinstance(node, ast.UnaryOp):
 			name = {ast.UAdd: "__pos__", ast.USub: "__neg__", ast.Invert: "__invert__"}.get(type(node.op))
-			self.protocol(
-				self.value(node.operand, scope), (name,) if name else ("__bool__", "__len__"), [], seen
-			)
+			if name:
+				self.protocol(self.value(node.operand, scope), (name,), [], seen)
+			else:
+				operand = self.value(node.operand, scope)
+				truth = self.truth(operand, seen)
+				known = self.literal_truth(truth)
+				if known is None:
+					known = self.literal_truth(operand)
+				self.call_values[node] = SourceValue(
+					ast.Constant(not known) if known is not None else node,
+					scalar=True,
+					uncertain=known is None,
+				)
 		if isinstance(node, ast.IfExp):
 			self.truth(self.value(node.test, scope), seen)
 		if isinstance(node, ast.BoolOp):
 			for operand in node.values[:-1]:
 				self.truth(self.value(operand, scope), seen)
 		if isinstance(node, ast.FormattedValue):
-			self.protocol(
-				self.value(node.value, scope), ("__format__",), [SourceValue(ast.Constant(""))], seen
+			value = self.value(node.value, scope)
+			if node.conversion in {ord("r"), ord("a")}:
+				value = self.stringify(value, seen, representation=True)
+			elif node.conversion == ord("s"):
+				value = self.stringify(value, seen)
+			specification = (
+				self.value(node.format_spec, scope)
+				if node.format_spec
+				else SourceValue(ast.Constant(""), scalar=True)
 			)
-		if isinstance(node, ast.Compare):
-			for operator, comparator in zip(node.ops, node.comparators, strict=True):
-				name = {
-					ast.Eq: "__eq__",
-					ast.NotEq: "__ne__",
-					ast.Lt: "__lt__",
-					ast.LtE: "__le__",
-					ast.Gt: "__gt__",
-					ast.GtE: "__ge__",
-				}.get(type(operator))
-				if name:
-					self.protocol(
-						self.value(node.left, scope), (name,), [self.value(comparator, scope)], seen
-					)
-					self.protocol(
-						self.value(comparator, scope),
-						(
-							{
-								"__lt__": "__gt__",
-								"__le__": "__ge__",
-								"__gt__": "__lt__",
-								"__ge__": "__le__",
-							}.get(name, name),
-						),
-						[self.value(node.left, scope)],
-						seen,
-					)
-				if isinstance(operator, (ast.In, ast.NotIn)):
-					self.protocol(
-						self.value(comparator, scope),
-						("__contains__", "__iter__"),
-						[self.value(node.left, scope)],
-						seen,
-					)
+			if "__format__" in (value.items or {}):
+				self.protocol(value, ("__format__",), [specification], seen)
+			elif value.instance:
+				self.stringify(value, seen)
 		if not isinstance(node, ast.Call):
 			return
 		callee = self.value(node.func, scope)
@@ -737,6 +733,7 @@ class EffectAnalyzer:
 				origins=frozenset({node}),
 				instance=True,
 				uncertain=callee.uncertain,
+				class_order=callee.class_order,
 			)
 			initializer = (callee.items or {}).get("__init__")
 			for helper in initializer.helpers if initializer else ():
@@ -744,14 +741,14 @@ class EffectAnalyzer:
 			results.append(instance)
 		if "asyncio.run" in callee.modules and produced:
 			results.append(self.merge(produced))
-		for builtin, methods in {
-			"bool": ("__bool__", "__len__"),
-			"len": ("__len__",),
-			"str": ("__str__",),
-			"repr": ("__repr__",),
-		}.items():
-			if f"builtins.{builtin}" in callee.modules and arguments:
-				results.append(self.protocol(arguments[0], methods, [], seen))
+		if "builtins.bool" in callee.modules and arguments:
+			results.append(self.truth(arguments[0], seen))
+		if "builtins.len" in callee.modules and arguments:
+			results.append(self.protocol(arguments[0], ("__len__",), [], seen))
+		if callee.modules & {"builtins.str", "builtins.repr"} and arguments:
+			results.append(
+				self.stringify(arguments[0], seen, representation="builtins.repr" in callee.modules)
+			)
 		if "builtins.iter" in callee.modules and arguments:
 			results.append(
 				SourceValue(
@@ -768,7 +765,7 @@ class EffectAnalyzer:
 				self.truth(item, seen)
 		if "builtins.print" in callee.modules:
 			for argument in arguments:
-				self.protocol(argument, ("__str__", "__repr__"), [], seen)
+				self.stringify(argument, seen)
 		if "builtins.hash" in callee.modules and arguments:
 			self.protocol(arguments[0], ("__hash__",), [], seen)
 		if "builtins.format" in callee.modules and arguments:
@@ -913,7 +910,11 @@ class EffectAnalyzer:
 			# A recursion cutoff is unknown, never evidence that effects disappear.
 			visible = [*arguments, *keywords.values(), *closure.root.values.values()]
 			self.emit(
-				SourceEffect(function, origins=frozenset().union(*(self.reachable(item) for item in visible)))
+				SourceEffect(
+					function,
+					opaque=True,
+					origins=frozenset().union(*(self.reachable(item) for item in visible)),
+				)
 			)
 			return self.merge(visible) if visible else SourceValue(ast.Constant(None))
 		local = SourceScope(closure, kind="function", body=function.body)
@@ -1164,8 +1165,14 @@ class EffectAnalyzer:
 					base.key_values.update(
 						{key: SourceValue(ast.Constant(key), scalar=True) for key in keywords}
 					)
-				base.items.update(arguments[0].items or {} if arguments else {})
-				base.items.update(keywords)
+				incoming = dict(arguments[0].items or {}) if arguments else {}
+				incoming.update(keywords)
+				for key, value in incoming.items():
+					base.items[key] = (
+						self.merge([base.items[key], value])
+						if self.branch_depth and key in base.items
+						else value
+					)
 			else:
 				value = values[-1] if values else SourceValue(ast.Constant(None))
 				if name == "setdefault" and len(arguments) > 1:
@@ -1183,6 +1190,14 @@ class EffectAnalyzer:
 			self.emit(SourceEffect(node, origins=base.origins, mutation=True, shallow=True))
 			return value if name == "setdefault" else SourceValue(ast.Constant(None))
 		if name in {"get", "pop", "__getitem__"}:
+			if base.key_values is not None and arguments and not arguments[0].scalar:
+				# A mapping lookup may execute application-defined hash/equality code.
+				# Unknown key behavior cannot prove that captured values stay unchanged.
+				self.emit(
+					SourceEffect(
+						node, opaque=True, origins=self.reachable(base) | self.reachable(arguments[0])
+					)
+				)
 			try:
 				key = (
 					ast.literal_eval(arguments[0].expression)
@@ -1250,12 +1265,168 @@ class EffectAnalyzer:
 		name = "__bool__" if "__bool__" in (value.items or {}) else "__len__"
 		return self.protocol(value, (name,), [], seen)
 
+	def stringify(self, value, seen, *, representation=False):
+		name = "__repr__" if representation or "__str__" not in (value.items or {}) else "__str__"
+		return (
+			self.protocol(value, (name,), [], seen)
+			if name in (value.items or {})
+			else SourceValue(ast.Constant(""), scalar=True)
+		)
+
+	@staticmethod
+	def literal_truth(value):
+		if value.scalar and not value.uncertain and isinstance(value.expression, ast.Constant):
+			return bool(value.expression.value)
+		return None
+
+	@staticmethod
+	def operator_stem(operator):
+		return {
+			ast.Add: "add",
+			ast.Sub: "sub",
+			ast.Mult: "mul",
+			ast.MatMult: "matmul",
+			ast.Div: "truediv",
+			ast.FloorDiv: "floordiv",
+			ast.Mod: "mod",
+			ast.Pow: "pow",
+			ast.LShift: "lshift",
+			ast.RShift: "rshift",
+			ast.BitOr: "or",
+			ast.BitAnd: "and",
+			ast.BitXor: "xor",
+		}.get(type(operator))
+
+	@staticmethod
+	def protocol_result(value):
+		if not value.uncertain and value.modules == frozenset({"builtins.NotImplemented"}):
+			return "fallback"
+		if not value.uncertain and (
+			value.scalar
+			or value.instance
+			or value.is_class
+			or value.items is not None
+			or value.helpers
+			or isinstance(value.expression, ast.Constant)
+		):
+			return "handled"
+		return "unknown"
+
+	def ordered_protocols(self, left, right, direct, reflected, seen, *, binary=False):
+		candidates = [(left, direct, right), (right, reflected, left)]
+		if (
+			binary
+			and left.class_order
+			and right.class_order
+			and self.class_identity(left.class_order[0]) == self.class_identity(right.class_order[0])
+		):
+			candidates.pop()
+		left_reflected = (left.items or {}).get(reflected)
+		right_reflected = (right.items or {}).get(reflected)
+		same_reflected = left_reflected is right_reflected or bool(
+			left_reflected
+			and right_reflected
+			and left_reflected.helpers == right_reflected.helpers
+			and left_reflected.modules == right_reflected.modules
+			and not left_reflected.uncertain
+			and not right_reflected.uncertain
+		)
+		if (
+			(not binary or not same_reflected)
+			and left.class_order
+			and right.class_order
+			and any(
+				self.class_identity(left.class_order[0]) == self.class_identity(owner)
+				for owner in right.class_order[1:]
+			)
+		):
+			candidates.reverse()
+		possible = []
+		for receiver, name, argument in candidates:
+			if name not in (receiver.items or {}):
+				continue
+			result = self.protocol(receiver, (name,), [argument], seen)
+			status = self.protocol_result(result)
+			if status == "fallback":
+				continue
+			possible.append(result)
+			if status == "handled":
+				break
+		return (
+			self.merge(possible)
+			if possible
+			else SourceValue(
+				ast.Name(id="NotImplemented", ctx=ast.Load()),
+				modules=frozenset({"builtins.NotImplemented"}),
+				scalar=True,
+			)
+		)
+
+	def arithmetic(self, left, right, operator, seen, *, inplace=False):
+		stem = self.operator_stem(operator)
+		if not stem:
+			return SourceValue(ast.Constant(None), uncertain=True)
+		if inplace and f"__i{stem}__" in (left.items or {}):
+			result = self.protocol(left, (f"__i{stem}__",), [right], seen)
+			status = self.protocol_result(result)
+			if status == "handled":
+				return result
+			fallback = self.ordered_protocols(left, right, f"__{stem}__", f"__r{stem}__", seen, binary=True)
+			return fallback if status == "fallback" else self.merge([result, fallback])
+		return self.ordered_protocols(left, right, f"__{stem}__", f"__r{stem}__", seen, binary=True)
+
+	def comparison(self, left, right, operator, seen):
+		if isinstance(operator, (ast.In, ast.NotIn)):
+			if "__contains__" in (right.items or {}):
+				result = self.protocol(right, ("__contains__",), [left], seen)
+			else:
+				item = self.consume(right, seen)
+				result = self.ordered_protocols(item, left, "__eq__", "__eq__", seen)
+			truth = self.truth(result, seen)
+			known = self.literal_truth(truth)
+			if known is None:
+				known = self.literal_truth(result)
+			if known is not None and isinstance(operator, ast.NotIn):
+				known = not known
+			return SourceValue(
+				ast.Constant(known) if known is not None else left.expression,
+				scalar=True,
+				uncertain=known is None,
+			)
+		methods = {
+			ast.Eq: ("__eq__", "__eq__"),
+			ast.NotEq: ("__ne__", "__ne__"),
+			ast.Lt: ("__lt__", "__gt__"),
+			ast.LtE: ("__le__", "__ge__"),
+			ast.Gt: ("__gt__", "__lt__"),
+			ast.GtE: ("__ge__", "__le__"),
+		}
+		if type(operator) not in methods:
+			return SourceValue(ast.Constant(None), uncertain=True)
+		result = self.ordered_protocols(left, right, *methods[type(operator)], seen)
+		return replace(result, uncertain=True) if self.protocol_result(result) == "fallback" else result
+
 	def protocol(self, value, names, arguments, seen):
 		results = []
 		for name in names:
 			method = (value.items or {}).get(name)
-			for helper in method.helpers if method else ():
-				results.append(self.call_helper(helper, [value, *arguments], {}, seen))
+			if method is None:
+				continue
+			location = next((helper.node for helper in method.helpers), value.expression)
+			if not hasattr(location, "lineno"):
+				location = ast.Constant(None, lineno=0, col_offset=0)
+			if method.helpers:
+				for helper in method.helpers:
+					receiver = (
+						value.class_order[0] if helper.descriptor == "class" and value.class_order else value
+					)
+					bound = () if helper.descriptor == "static" and name != "__new__" else (receiver,)
+					callee = replace(
+						method, helpers=(helper,), bound=bound, uncertain=method.uncertain or value.uncertain
+					)
+					results.append(self.callback(callee, arguments, location, seen))
+			else:
+				results.append(self.callback(replace(method, uncertain=True), arguments, location, seen))
 		return self.merge(results) if results else SourceValue(ast.Constant(None))
 
 	@staticmethod
@@ -1321,6 +1492,12 @@ class EffectAnalyzer:
 				if default is not None
 			}
 		)
+		# Ownership belongs to the captured objects, including aliases that predate
+		# the definition. Copies retain only the identities they actually share.
+		for value in defaults.values():
+			if not value.scalar:
+				for origin in self.reachable(value):
+					self.default_owners.setdefault(origin, set()).add(node)
 		deferred = isinstance(node, ast.AsyncFunctionDef) or any(
 			isinstance(child, (ast.Yield, ast.YieldFrom))
 			for statement in scope_statements(node.body)
@@ -1446,10 +1623,32 @@ class EffectAnalyzer:
 			for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
 				self.bind(target, value, scope, seen)
 		elif isinstance(node, ast.AugAssign):
+			loaded = copy(node.target)
+			loaded.ctx = ast.Load()
+			self.expression(loaded, scope, seen)
+			previous = self.value(loaded, scope)
 			self.expression(node.value, scope, seen)
-			previous = self.value(node.target, scope)
 			addition = self.value(node.value, scope)
-			self.emit(SourceEffect(node, mutation=True, origins=self.reachable(previous)))
+			result = self.arithmetic(previous, addition, node.op, seen, inplace=True)
+			if self.protocol_result(result) != "fallback":
+				self.bind(node.target, result, scope, seen)
+				return False
+			mutable = any(
+				isinstance(origin, (ast.List, ast.Dict, ast.Set))
+				or (
+					isinstance(origin, ast.Call)
+					and self.value(origin.func, scope).modules
+					& {"builtins.list", "builtins.dict", "builtins.set"}
+				)
+				for origin in previous.origins
+			)
+			immutable = previous.scalar or (
+				bool(previous.origins) and all(isinstance(origin, ast.Tuple) for origin in previous.origins)
+			)
+			if mutable:
+				self.emit(SourceEffect(node, mutation=True, shallow=True, origins=previous.origins))
+			elif not immutable:
+				self.emit(SourceEffect(node, opaque=True, origins=self.reachable(previous)))
 			items = None
 			if previous.items is not None and addition.items is not None:
 				items = (
@@ -1458,7 +1657,10 @@ class EffectAnalyzer:
 					else {**previous.items, **addition.items}
 				)
 			value = replace(
-				previous, origins=previous.origins | addition.origins, items=items, uncertain=True
+				previous,
+				origins=previous.origins if mutable else frozenset({node}),
+				items=items,
+				uncertain=True,
 			)
 			self.bind(node.target, value, scope, seen)
 		elif isinstance(node, ast.Delete):
@@ -1474,7 +1676,7 @@ class EffectAnalyzer:
 					alias.name.split(".")[0] if isinstance(node, ast.Import) else alias.name
 				)
 				module = (
-					alias.name
+					(alias.name if alias.asname else alias.name.split(".")[0])
 					if isinstance(node, ast.Import)
 					else f"{node.module}.{alias.name}"
 					if not node.level
@@ -1485,6 +1687,13 @@ class EffectAnalyzer:
 					SourceValue(
 						ast.Constant(None),
 						modules=frozenset({module}) if module else frozenset(),
+						origins=frozenset(
+							{
+								("import", module)
+								if module
+								else ("relative-import", node.level, node.module, alias.name)
+							}
+						),
 						false_constant=module in {"typing.TYPE_CHECKING", "typing_extensions.TYPE_CHECKING"}
 						and node.module not in self.changed_typing,
 					),
@@ -1558,6 +1767,93 @@ class EffectAnalyzer:
 				self.return_values[-1].append(
 					self.value(node.value, scope) if node.value else SourceValue(ast.Constant(None))
 				)
+		elif isinstance(node, (ast.Try, ast.TryStar)):
+			# Handler expressions run only on exception paths and observe the try's state.
+			scopes = []
+			owner = scope
+			while owner:
+				scopes.append(owner)
+				owner = owner.parent
+
+			def snapshot():
+				return [owner.values.copy() for owner in scopes]
+
+			def restore(state):
+				for owner, values in zip(scopes, state, strict=True):
+					owner.values = values.copy()
+
+			def combine(states):
+				for index, owner in enumerate(scopes):
+					keys = set().union(*(state[index] for state in states))
+					owner.values = {
+						key: self.merge(
+							[state[index].get(key, SourceValue(ast.Constant(None))) for state in states]
+						)
+						for key in keys
+					}
+
+			exception_states = []
+			terminal = None
+			self.branch_depth += 1
+			for statement in node.body:
+				can_raise = isinstance(statement, ast.ClassDef) or any(
+					isinstance(
+						child,
+						(
+							ast.Call,
+							ast.Raise,
+							ast.Attribute,
+							ast.Subscript,
+							ast.BinOp,
+							ast.Compare,
+							ast.Await,
+						),
+					)
+					or (isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load))
+					for child in self.expression_nodes(statement)
+				)
+				if can_raise:
+					exception_states.append(snapshot())
+				if self.visit(statement, scope, seen):
+					terminal = statement
+					if can_raise:
+						exception_states.append(snapshot())
+					break
+				if can_raise:
+					exception_states.append(snapshot())
+			self.branch_depth -= 1
+			normal = snapshot()
+			outcomes = []
+			if not isinstance(terminal, ast.Raise):
+				if terminal is None:
+					for statement in node.orelse:
+						if self.visit(statement, scope, seen):
+							break
+				outcomes.append(snapshot())
+			if exception_states and node.handlers:
+				combine(exception_states)
+				handler_outcomes = []
+				for handler in node.handlers:
+					if handler.type is not None:
+						self.expression(handler.type, scope, seen)
+					unmatched = snapshot()
+					self.branch_depth += 1
+					for statement in handler.body:
+						if self.visit(statement, scope, seen):
+							break
+					self.branch_depth -= 1
+					handler_outcomes.append(snapshot())
+					restore(unmatched)
+					if handler.type is None:
+						break
+				outcomes.extend(handler_outcomes)
+			if outcomes:
+				combine(outcomes)
+			else:
+				restore(normal)
+			for statement in node.finalbody:
+				if self.visit(statement, scope, seen):
+					break
 		elif isinstance(node, (ast.Global, ast.Nonlocal)):
 			pass
 		else:
