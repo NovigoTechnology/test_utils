@@ -3,8 +3,8 @@
 import ast
 
 import pytest
+from test_validate_override_annotations import annotation, function_source, register_class, validate, write
 from test_validate_override_annotations import bench as bench
-from test_validate_override_annotations import register_class, validate, write
 
 from test_utils.utils.override_annotations import ResolutionError, SourceResolver, locate_app
 from test_utils.utils.python_source import extract_function, find_definition
@@ -332,3 +332,143 @@ def test_type_checking_else_bases_respect_the_class_declaration_position(bench, 
 	assert base.node.lineno < derived.node.lineno
 	assert isinstance(resolver.method(base, "original"), ast.FunctionDef)
 	assert resolver.method(base, "replacement") is None
+
+
+@pytest.mark.parametrize("module", ["typing", "typing_extensions"])
+def test_guard_mutation_survives_reimport_under_another_alias(bench, resolver, module):
+	source = (
+		f"import {module} as original\noriginal.TYPE_CHECKING = True\nimport {module} as flags\n"
+		"def run(): return 'old'\nif flags.TYPE_CHECKING:\n    def run(): return 'replacement'\n"
+	)
+	assert find_definition(ast.parse(source), "run") is None
+	assert extract_function(source, "run") is None
+	write(bench / "nagus/nagus/active.py", source)
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("nagus.active.run")
+	direct_source = source.replace(
+		f"import {module} as flags", f"from {module} import TYPE_CHECKING as flags"
+	).replace("if flags.TYPE_CHECKING:", "if flags:")
+	assert find_definition(ast.parse(direct_source), "run") is None
+	assert extract_function(direct_source, "run") is None
+	write(bench / "nagus/nagus/direct_active.py", direct_source)
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("nagus.direct_active.run")
+
+
+def test_uncertain_typing_module_alias_store_invalidates_later_guard_imports(bench, resolver):
+	alias_prefixes = (
+		"if enabled:\n    import typing as original\n    original.TYPE_CHECKING = True\n",
+		"import typing as original\nif enabled:\n    original = None\noriginal.TYPE_CHECKING = True\n",
+	)
+	for index, prefix in enumerate(alias_prefixes):
+		source = (
+			prefix + "import typing as flags\ndef run(): return 'old'\n"
+			"if flags.TYPE_CHECKING:\n    def run(): return 'replacement'\n"
+		)
+		assert find_definition(ast.parse(source), "run") is None
+		assert extract_function(source, "run") is None
+		write(bench / f"nagus/nagus/uncertain_alias_{index}.py", source)
+		with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+			resolver.resolve(f"nagus.uncertain_alias_{index}.run")
+
+
+def test_historical_method_metadata_does_not_select_a_later_same_named_class(bench):
+	source = (
+		"class Base:\n    def validate(self): return 'historical'\n"
+		"class Controller(Base): pass\nclass Base:\n    def validate(self): return 'later'\n"
+	)
+	assert extract_function(source, "Base.validate") is None
+	write(bench / "erpnext/erpnext/bases.py", source)
+	doc = annotation(method="Base.validate", path="erpnext/bases.py")
+	register_class(
+		bench,
+		"from erpnext.bases import Controller\nclass CustomLedger(Controller):\n"
+		+ function_source(doc, name="validate", indent="    "),
+	)
+	result = validate(bench)
+	assert result.errors
+	assert any("ambiguous" in error.lower() and "Base.validate" in error for error in result.errors)
+
+
+def test_typing_only_class_binding_does_not_hide_an_ancestor_method(bench):
+	write(
+		bench / "erpnext/erpnext/bases.py",
+		"""
+		class Base:
+		    def validate(self): pass
+		class Controller(Base):
+		    from typing import TYPE_CHECKING
+		    if TYPE_CHECKING:
+		        def validate(self): ...
+		""",
+	)
+	register_class(
+		bench,
+		"from erpnext.bases import Controller\nclass CustomLedger(Controller):\n    def validate(self): pass\n",
+	)
+	result = validate(bench)
+	assert result.checked == 1
+	assert len(result.errors) == 1
+	assert "Missing annotation fields" in result.errors[0]
+	assert "erpnext.bases.Base.validate" in result.errors[0]
+
+
+def test_module_guard_method_else_agrees_across_consumers(bench, resolver):
+	source = (
+		"from typing import TYPE_CHECKING\nclass Ledger:\n    if TYPE_CHECKING:\n"
+		"        def validate(self): return 'typing-only'\n    else:\n"
+		"        def validate(self): return 'runtime'\n"
+	)
+	extracted = extract_function(source, "Ledger.validate")
+	assert extracted is not None and "return 'runtime'" in extracted
+	write(bench / "erpnext/erpnext/accounts/doctype/ledger/ledger.py", source)
+	method = resolver.resolve("erpnext.accounts.doctype.ledger.ledger.Ledger.validate")
+	assert ast.literal_eval(method.node.body[0].value) == "runtime"
+	register_class(
+		bench,
+		"from erpnext.accounts.doctype.ledger.ledger import Ledger\n"
+		"class CustomLedger(Ledger):\n    def validate(self): pass\n",
+	)
+	result = validate(bench)
+	assert result.checked == 1
+	assert len(result.errors) == 1
+	assert "Missing annotation fields" in result.errors[0]
+	assert "Ledger.validate" in result.errors[0]
+
+
+def test_class_local_guard_rebinding_remains_unknown(bench, resolver):
+	source = (
+		"from typing import TYPE_CHECKING\nclass Ledger:\n    TYPE_CHECKING = dynamic()\n"
+		"    if TYPE_CHECKING:\n        def validate(self): return 'first'\n"
+		"    else:\n        def validate(self): return 'second'\n"
+	)
+	assert extract_function(source, "Ledger.validate") is None
+	write(bench / "erpnext/erpnext/accounts/doctype/ledger/ledger.py", source)
+	with pytest.raises(ResolutionError, match=r"[Aa]mbiguous"):
+		resolver.resolve("erpnext.accounts.doctype.ledger.ledger.Ledger.validate")
+	register_class(
+		bench,
+		"from erpnext.accounts.doctype.ledger.ledger import Ledger\n"
+		"class CustomLedger(Ledger):\n    def validate(self): pass\n",
+	)
+	result = validate(bench)
+	assert result.checked == 0
+	assert result.errors
+	assert all("Missing annotation fields" not in error for error in result.errors)
+
+
+def test_complete_qualified_annotation_passes_after_a_circular_wildcard(bench):
+	write(
+		bench / "erpnext/erpnext/accounts/doctype/ledger/ledger.py",
+		"class Ledger:\n    def validate(self): pass\nfrom .api import *\n",
+	)
+	write(bench / "erpnext/erpnext/accounts/doctype/ledger/api.py", "from .ledger import Ledger\n")
+	doc = annotation(method="Ledger.validate", path="erpnext/accounts/doctype/ledger/ledger.py")
+	register_class(
+		bench,
+		"from erpnext.accounts.doctype.ledger.ledger import Ledger\nclass CustomLedger(Ledger):\n"
+		+ function_source(doc, name="validate", indent="    "),
+	)
+	result = validate(bench)
+	assert result.checked == 1
+	assert not result.errors

@@ -22,11 +22,12 @@ from test_utils.utils.python_source import (
 	executable_nodes,
 	find_function,
 	overload_names,
-	runtime_statements,
+	runtime_body,
 	scope_bindings,
 	scope_statements,
 	select_binding,
 	static_attribute,
+	unique_definition,
 )
 
 HOOKS = {"required_apps", "override_whitelisted_methods", "override_doctype_class", "extend_doctype_class"}
@@ -413,9 +414,7 @@ class SourceResolver:
 	@staticmethod
 	def module_body(module, limits):
 		limit = min((position for path, position in limits if path == module.path), default=(float("inf"), 0))
-		return [
-			node for node in runtime_statements(module.tree.body) if (node.lineno, node.col_offset) < limit
-		]
+		return [node for node in runtime_body(module.tree) if (node.lineno, node.col_offset) < limit]
 
 	def exports(self, module, name, limits, seen):
 		"""Query one export; never execute a module or enumerate its dependencies."""
@@ -548,7 +547,7 @@ class SourceResolver:
 				return Symbol(module, ".".join(parts), node, limits)
 			if not isinstance(node, ast.ClassDef):
 				break
-			body = node.body
+			body = runtime_body(module.tree, node)
 			decorators |= overload_names(body)
 		raise ResolutionError(f"Cannot resolve definition {module.name}.{'.'.join(parts)}")
 
@@ -584,7 +583,11 @@ class SourceResolver:
 	def method(self, owner: Symbol, name: str):
 		"""Inspect the selected class body, retaining module-level overload aliases."""
 		try:
-			binding = select_binding(owner.node.body, name, decorators=overload_names(owner.module.tree.body))
+			binding = select_binding(
+				runtime_body(owner.module.tree, owner.node),
+				name,
+				decorators=overload_names(owner.module.tree.body),
+			)
 		except AmbiguousBinding:
 			return None
 		return binding.node if binding and isinstance(binding.node, FUNCTION_NODES) else None
@@ -711,14 +714,17 @@ class AnnotationValidator:
 		if annotations.get("METHOD"):
 			method = annotations["METHOD"]
 			# Legacy leaf names are valid only when they identify this callable uniquely.
-			valid = method == upstream.qualname
+			valid = (
+				method == upstream.qualname
+				and unique_definition(upstream.module.tree, method) is upstream.node
+			)
 			if not valid and method == upstream.node.name:
 				valid = find_function(upstream.module.tree, method) is upstream.node
 			if not valid:
 				self.error(
 					custom,
 					upstream.reference,
-					f"METHOD must identify {upstream.qualname!r}; qualify class methods to avoid ambiguity",
+					f"METHOD must identify {upstream.qualname!r}; qualify class methods and avoid ambiguous declarations",
 				)
 
 	def function(self, original: str, replacement: str):
@@ -755,7 +761,10 @@ class AnnotationValidator:
 				)
 			# Include inherited methods from local mixins, not just the registered class.
 			methods = {}
-			class_bindings = {owner.identity: scope_bindings(owner.node.body) for owner in hierarchy}
+			class_bindings = {
+				owner.identity: scope_bindings(runtime_body(owner.module.tree, owner.node))
+				for owner in hierarchy
+			}
 			for owner in hierarchy:
 				for name, declarations in class_bindings[owner.identity].items():
 					if name not in methods:

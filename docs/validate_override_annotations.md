@@ -88,7 +88,12 @@ determines exports. When `__all__` is absent, it follows public declarations and
 including relative re-exports. An excluded name keeps
 its earlier definition; an included name follows the imported implementation. Circular
 re-exports can use a declaration established before the active import, as in Frappe's `File`.
-Proven `typing.TYPE_CHECKING` branches are excluded from runtime declarations.
+Proven `typing.TYPE_CHECKING` branches are excluded from runtime declarations and method
+inventories. Class members use the module guard state at their class declaration, respecting
+class-local rebindings. Observed writes to a typing module's guard remain invalidated across
+subsequent imports of that module.
+An attribute write to `TYPE_CHECKING` through an unresolved owner conservatively invalidates
+both typing providers; the validator does not infer aliases through conditional code.
 
 Computed, mutated or re-exported `__all__`, dynamic module exports, conditional replacement,
 and cycles without an established declaration produce an **ambiguous resolution** error with
@@ -163,6 +168,9 @@ def get_coa(doctype: str) -> list:
 - `METHOD` must identify that implementation within the file. Use `Ledger.validate` for
   class methods. Legacy bare names such as `validate` are accepted only when unambiguous.
   Methods inherited from another upstream class must name the class that defines them.
+  The path must identify one explicit declaration: repeated class/function declarations or
+  explicit rebinding of an owner are rejected, because historical metadata cannot distinguish
+  them. The validator does not add declaration positions to the annotation format.
 
 Fields may appear in any order, with prose between them. Validation and both trackers
 share the same field parser. Each field must appear exactly once. Annotations in comments, module docstrings, or class

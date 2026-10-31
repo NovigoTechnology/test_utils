@@ -2,7 +2,7 @@
 
 import ast
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 FUNCTION_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
 DEFINITION_NODES = (*FUNCTION_NODES, ast.ClassDef)
@@ -148,45 +148,100 @@ class AmbiguousBinding(ValueError):
 		super().__init__(reason)
 
 
-def runtime_statements(body: list[ast.stmt]) -> list[ast.stmt]:
-	"""Omit proven typing.TYPE_CHECKING branches; leave other conditions unresolved."""
-	guards = set()
-	result = []
+@dataclass
+class _TypingGuards:
+	false: set[str] = field(default_factory=set)
+	modules: dict[str, str] = field(default_factory=dict)
+	mutated: set[str] = field(default_factory=set)
 
-	def collect(statements):
+	def copy(self):
+		return _TypingGuards(self.false.copy(), self.modules.copy(), self.mutated.copy())
+
+	def invalidate(self, names):
+		self.false.difference_update(
+			guard for guard in list(self.false) if "*" in names or guard.split(".", 1)[0] in names
+		)
+		for local in list(self.modules):
+			if "*" in names or local in names:
+				self.modules.pop(local)
+
+
+def runtime_body(tree: ast.Module | ast.ClassDef, owner=None) -> list[ast.stmt]:
+	"""Filter typing-only declarations using the module state at each class declaration."""
+	bodies = {}
+	module_guards = _TypingGuards()
+
+	def synchronize(guards):
+		guards.mutated.update(module_guards.mutated)
+		guards.false.difference_update(
+			guard
+			for guard in list(guards.false)
+			if "." in guard and guards.modules.get(guard.split(".", 1)[0]) in guards.mutated
+		)
+
+	def collect(statements, guards):
+		result = []
 		for statement in statements:
-			if isinstance(statement, ast.If) and decorator_name(statement.test) in guards:
-				collect(statement.orelse)
+			synchronize(guards)
+			if isinstance(statement, ast.If) and decorator_name(statement.test) in guards.false:
+				result.extend(collect(statement.orelse, guards))
 				continue
 			result.append(statement)
+			# Unknown owners of a direct guard write cannot prove either provider unchanged.
+			expressions = (
+				definition_expressions(statement) if isinstance(statement, ast.ClassDef) else [statement]
+			)
+			for expression in expressions:
+				for node in executable_nodes(expression):
+					if (
+						isinstance(node, ast.Attribute)
+						and isinstance(node.ctx, (ast.Store, ast.Del))
+						and node.attr == "TYPE_CHECKING"
+					):
+						module = (
+							guards.modules.get(node.value.id) if isinstance(node.value, ast.Name) else None
+						)
+						module_guards.mutated.update({module} if module else {"typing", "typing_extensions"})
 			bindings = scope_bindings([statement])
-			guards.difference_update(
-				guard for guard in list(guards) if "*" in bindings or guard.split(".", 1)[0] in bindings
+			# A class name is bound after its body; expressions may bind names first.
+			guards.invalidate(
+				{name for name, nodes in bindings.items() if any(node is not statement for node in nodes)}
+				if isinstance(statement, ast.ClassDef)
+				else bindings
 			)
-			guards.difference_update(
-				decorator_name(node)
-				for node in executable_nodes(statement)
-				if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del))
-			)
-			if not isinstance(statement, (ast.Import, ast.ImportFrom)):
-				continue
-			for alias in statement.names:
-				local = alias.asname or (
-					alias.name.split(".")[0] if isinstance(statement, ast.Import) else alias.name
-				)
-				guards.difference_update(guard for guard in list(guards) if guard.split(".", 1)[0] == local)
-				if isinstance(statement, ast.Import) and alias.name in {"typing", "typing_extensions"}:
-					guards.add(f"{local}.TYPE_CHECKING")
-				elif (
-					isinstance(statement, ast.ImportFrom)
-					and not statement.level
-					and statement.module in {"typing", "typing_extensions"}
-					and alias.name == "TYPE_CHECKING"
-				):
-					guards.add(local)
+			synchronize(guards)
+			if isinstance(statement, ast.ClassDef):
+				synchronize(module_guards)
+				# Enclosing class locals are not globals of a nested class body.
+				bodies[statement] = collect(statement.body, module_guards.copy())
+				guards.invalidate({statement.name})
+			elif isinstance(statement, (ast.Import, ast.ImportFrom)):
+				for alias in statement.names:
+					local = alias.asname or (
+						alias.name.split(".")[0] if isinstance(statement, ast.Import) else alias.name
+					)
+					guards.invalidate({local})
+					if isinstance(statement, ast.Import) and alias.name in {"typing", "typing_extensions"}:
+						guards.modules[local] = alias.name
+						if alias.name not in guards.mutated:
+							guards.false.add(f"{local}.TYPE_CHECKING")
+					elif (
+						isinstance(statement, ast.ImportFrom)
+						and not statement.level
+						and statement.module in {"typing", "typing_extensions"}
+						and alias.name == "TYPE_CHECKING"
+						and statement.module not in guards.mutated
+					):
+						guards.false.add(local)
+		return result
 
-	collect(body)
-	return result
+	bodies[tree] = collect(tree.body, module_guards if isinstance(tree, ast.Module) else _TypingGuards())
+	return bodies.get(owner or tree, (owner or tree).body)
+
+
+def runtime_statements(body: list[ast.stmt]) -> list[ast.stmt]:
+	"""Filter a standalone body when no enclosing module context is available."""
+	return runtime_body(ast.Module(body=body, type_ignores=[]))
 
 
 def select_binding(
@@ -201,7 +256,6 @@ def select_binding(
 	The optional callback supplies filesystem knowledge about wildcard exports. This
 	is declaration analysis, not evaluation of decorators or arbitrary Python code.
 	"""
-	body = runtime_statements(body)
 	decorators = (decorators or set()) | overload_names(body)
 	for statement in reversed(body):
 		bindings = scope_bindings([statement])
@@ -251,9 +305,10 @@ def find_definition(tree: ast.Module | ast.ClassDef, qualified_name: str):
 	for part in parts:
 		if not isinstance(node, (ast.Module, ast.ClassDef)):
 			return None
-		decorators.update(overload_names(node.body))
+		body = runtime_body(tree, node)
+		decorators.update(overload_names(body))
 		try:
-			binding = select_binding(node.body, part, decorators=decorators)
+			binding = select_binding(body, part, decorators=decorators)
 		except AmbiguousBinding:
 			return None
 		if binding is None or not isinstance(binding.node, DEFINITION_NODES):
@@ -262,22 +317,59 @@ def find_definition(tree: ast.Module | ast.ClassDef, qualified_name: str):
 	return node
 
 
+def unique_definition(tree: ast.Module | ast.ClassDef, qualified_name: str):
+	"""Identify one explicit declaration for metadata, leaving wildcard checks to the resolver.
+
+	A dotted tracking name cannot distinguish two declarations of the same owner.
+	Explicit rebinding still invalidates it; wildcard membership requires source files.
+	"""
+	node = tree
+	decorators = set()
+	for part in qualified_name.split("."):
+		if not isinstance(node, (ast.Module, ast.ClassDef)):
+			return None
+		body = runtime_body(tree, node)
+		decorators.update(overload_names(body))
+		declarations = [
+			item
+			for item in scope_bindings(body).get(part, [])
+			if isinstance(item, DEFINITION_NODES)
+			and not (
+				isinstance(item, FUNCTION_NODES)
+				and any(decorator_name(dec) in decorators for dec in item.decorator_list)
+			)
+		]
+		if len(declarations) != 1:
+			return None
+		try:
+			binding = select_binding(body, part, decorators=decorators, wildcard=lambda _node, _name: False)
+		except AmbiguousBinding:
+			return None
+		if binding is None or binding.node is not declarations[0]:
+			return None
+		node = binding.node
+	return node
+
+
 def find_function(tree: ast.Module, name: str):
 	"""Find the concrete implementation; ambiguous scopes and overload-only stubs fail."""
-	node = find_definition(tree, name)
+
+	def tracked_definition(qualified_name):
+		selected = find_definition(tree, qualified_name)
+		return selected if selected is unique_definition(tree, qualified_name) else None
+
+	node = tracked_definition(name)
 	if node is None and "." not in name:
-		bindings = scope_bindings(tree.body)
+		bindings = scope_bindings(runtime_body(tree))
 		if name in bindings or "*" in bindings:
 			return None
 		candidates = []
 
 		def collect(scope, prefix=""):
-			if any(
-				isinstance(item, FUNCTION_NODES) and item.name == name
-				for item in scope_statements(scope.body)
-			):
-				candidates.append(find_definition(tree, prefix + name))
-			for item in scope_statements(scope.body):
+			body = runtime_body(tree, scope)
+			if any(isinstance(item, FUNCTION_NODES) and item.name == name for item in scope_statements(body)):
+				candidates.append(tracked_definition(prefix + name))
+			for item in scope_statements(body):
 				if isinstance(item, ast.ClassDef):
 					collect(item, f"{prefix}{item.name}.")
 
