@@ -155,9 +155,10 @@ def test_validator_accepted_reordered_fields_are_tracked(bench, monkeypatch, act
 	register_function(bench, doc)
 	assert not validate(bench).errors
 	module = action_module() if action else tracker
-	monkeypatch.setattr(module, "get_last_commit_hash_for_file_in_branch", lambda *args: "b" * 40)
+	monkeypatch.setattr(tracker, "get_last_commit_hash_for_file_in_branch", lambda *args: "b" * 40)
+	monkeypatch.setattr(tracker.RevisionSources, "paths", {"erpnext/accounts/utils.py"})
 	monkeypatch.setattr(
-		module,
+		tracker,
 		"download_file_from_commit",
 		lambda repo, sha, path: f"def get_coa():\n    return {1 if sha == SHA else 2}\n",
 	)

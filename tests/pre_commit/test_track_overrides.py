@@ -65,9 +65,10 @@ def custom():
     """
     pass
 ''')
-	monkeypatch.setattr(module, "get_last_commit_hash_for_file_in_branch", lambda *args: "b" * 40)
+	monkeypatch.setattr(track_overrides, "get_last_commit_hash_for_file_in_branch", lambda *args: "b" * 40)
+	monkeypatch.setattr(track_overrides.RevisionSources, "paths", {"upstream/controller.py"})
 	monkeypatch.setattr(
-		module,
+		track_overrides,
 		"download_file_from_commit",
 		lambda repo, sha, path: SOURCE if sha == "a" * 40 else "class One: pass",
 	)

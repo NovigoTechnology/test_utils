@@ -1,6 +1,7 @@
 """Exercise argument-free tracking with real, isolated dependency repositories."""
 
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -37,6 +38,18 @@ def annotated(path, sha, app="custom", repo="https://github.com/example/upstream
 		f'def custom():\n    """\n    APP: {app}\n    HASH: {sha}\n'
 		f'    REPO: {repo}\n    PATH: upstream/api.py\n    METHOD: value\n    """\n    pass\n'
 	)
+
+
+def mock_remote_tree(monkeypatch):
+	def get(url, **kwargs):
+		assert "/git/trees/" in url
+		assert kwargs["params"] == {"recursive": "1"}
+		return SimpleNamespace(
+			status_code=200,
+			json=lambda: {"truncated": False, "tree": [{"type": "blob", "path": "upstream/api.py"}]},
+		)
+
+	monkeypatch.setattr(tracker.requests, "get", get)
 
 
 @pytest.fixture
@@ -110,6 +123,7 @@ def test_nested_invocation_scans_the_app_repository_instead_of_only_the_subdirec
 def test_invalid_hash_fails_as_unverified_instead_of_succeeding(bench, monkeypatch, capsys):
 	_, custom, _, _ = bench
 	annotated(custom / "custom/override.py", "a" * 40)
+	mock_remote_tree(monkeypatch)
 
 	def unavailable(*args):
 		raise UpstreamFetchError("404 - annotated commit not found")
@@ -122,6 +136,7 @@ def test_invalid_hash_fails_as_unverified_instead_of_succeeding(bench, monkeypat
 def test_shallow_history_can_read_the_baseline_remotely(bench, monkeypatch):
 	_, custom, _, _ = bench
 	annotated(custom / "custom/override.py", "a" * 40)
+	mock_remote_tree(monkeypatch)
 	calls = []
 
 	def baseline(repo, sha, path):
@@ -136,6 +151,7 @@ def test_shallow_history_can_read_the_baseline_remotely(bench, monkeypatch):
 def test_network_errors_are_unverified_without_a_traceback(bench, monkeypatch, capsys):
 	_, custom, _, _ = bench
 	annotated(custom / "custom/override.py", "a" * 40)
+	mock_remote_tree(monkeypatch)
 
 	def unavailable(*args):
 		raise requests.ConnectionError("Network unavailable")
@@ -172,8 +188,12 @@ def test_existing_optional_arguments_work_with_defaults_for_the_remaining_option
 ):
 	_, _, _, sha = bench
 	if "--base-branch" in arguments:
+		mock_remote_tree(monkeypatch)
 		monkeypatch.setattr(
 			tracker, "get_last_commit_hash_for_file_in_branch", lambda repo, path, branch: sha
+		)
+		monkeypatch.setattr(
+			tracker, "download_file_from_commit", lambda *args: "def value():\n    return 'before'\n"
 		)
 	assert run(arguments) == 0
 

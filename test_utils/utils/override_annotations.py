@@ -37,6 +37,14 @@ class ResolutionError(ValueError):
 	"""An override cannot be verified from the configured checkouts."""
 
 
+class MissingSymbolError(ResolutionError):
+	"""A readable namespace proves that the requested declaration is absent."""
+
+	def __init__(self, message, *, owner_resolved=False):
+		super().__init__(message)
+		self.owner_resolved = owner_resolved
+
+
 def read_tree(path: Path) -> ast.Module:
 	try:
 		return ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
@@ -385,9 +393,14 @@ class SourceResolver:
 		self.apps = {app.name: app for app in apps}
 		self.modules: dict[Path, Module] = {}
 
+	# Revision-backed callers override source access, retaining the same analysis.
+	read_tree = staticmethod(read_tree)
+	is_file = staticmethod(Path.is_file)
+	is_dir = staticmethod(Path.is_dir)
+
 	def module(self, app: App, name: str, path: Path) -> Module:
 		if path not in self.modules:
-			self.modules[path] = Module(app, name, path, read_tree(path))
+			self.modules[path] = Module(app, name, path, self.read_tree(path))
 		return self.modules[path]
 
 	def source_module(self, reference: str, *, require_symbol: bool = False) -> tuple[Module, list[str]]:
@@ -404,10 +417,10 @@ class SourceResolver:
 		for end in ends:
 			stem = app.package.joinpath(*parts[1:end])
 			for path in (stem.with_suffix(".py"), stem / "__init__.py"):
-				if not path.is_file():
+				if not self.is_file(path):
 					continue
 				return self.module(app, ".".join(parts[:end]), path), parts[end:]
-			if stem.is_dir():
+			if self.is_dir(stem):
 				# A namespace package has no declarations of its own.
 				return Module(
 					app, ".".join(parts[:end]), stem / "__init__.py", ast.Module(body=[], type_ignores=[])
@@ -536,7 +549,7 @@ class SourceResolver:
 			if index == 0 and len(parts) > 1 and module.path.name == "__init__.py":
 				prefix = f"{module.name}.{name}"
 				stem = module.app.package.joinpath(*prefix.split(".")[1:])
-				if stem.is_dir() or stem.with_suffix(".py").is_file():
+				if self.is_dir(stem) or self.is_file(stem.with_suffix(".py")):
 					if binding is None:
 						child, _ = self.source_module(prefix)
 						return self.resolve_in(child, parts[1:], limits, seen, dotted_path=dotted_path)
@@ -549,8 +562,17 @@ class SourceResolver:
 					raise ResolutionError(
 						f"Ambiguous circular import: {name!r} is not yet declared in {module.path}"
 					)
-				raise ResolutionError(
-					f"Upstream symbol {module.name}.{'.'.join(parts)} not found in {module.path}; it may have been removed or renamed"
+				if "__getattr__" in scope_bindings(body) or any(
+					isinstance(node, ast.Call)
+					and isinstance(node.func, ast.Name)
+					and node.func.id in {"exec", "globals", "locals"}
+					for statement in body
+					for node in executable_nodes(statement)
+				):
+					raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
+				raise MissingSymbolError(
+					f"Upstream symbol {module.name}.{'.'.join(parts)} not found in {module.path}; it may have been removed or renamed",
+					owner_resolved=index > 0,
 				)
 			if isinstance(binding.node, ast.alias) and index == 0:
 				if isinstance(binding.statement, ast.ImportFrom):
@@ -584,6 +606,10 @@ class SourceResolver:
 						dotted_path=isinstance(binding.statement, ast.Import) and not binding.node.asname,
 					)
 				except ResolutionError as exc:
+					if isinstance(exc, MissingSymbolError) and exc.owner_resolved:
+						# The imported class was resolved; its missing member is
+						# distinct from an import whose target cannot be resolved.
+						raise
 					raise ResolutionError(
 						f"Ambiguous import at {module.path}:{binding.statement.lineno} ({'.'.join([reference, *tail])}): {exc}"
 					) from exc
