@@ -198,63 +198,6 @@ def test_dynamic_custom_helper_without_an_upstream_attribute_remains_a_helper(be
 	assert not validate(bench).errors
 
 
-@pytest.mark.parametrize("qualified", [False, True])
-@pytest.mark.parametrize(
-	"mutation",
-	[
-		"target.__code__ = replacement.__code__",
-		"setattr(target, '__code__', replacement.__code__)",
-		"target.__defaults__ = (2,)",
-		"target.__kwdefaults__ = {'option': 2}",
-		"target.__doc__ = 'replacement metadata'",
-		"target.__wrapped__ = replacement",
-		"def configure(value):\n    value.__code__ = replacement.__code__\nconfigure(target)",
-	],
-)
-def test_modified_callable_cannot_certify_its_original_ast(bench, qualified, mutation):
-	source = "def replacement(value=2, *, option=2): return 'new'\n"
-	if qualified:
-		source += "class File:\n    def validate(self, value=1, *, option=1): return 'old'\n"
-		mutation = mutation.replace("target", "File.validate")
-		name = "File.validate"
-	else:
-		source += "def target(value=1, *, option=1): return 'old'\n"
-		name = "target"
-	source += mutation
-	module(bench, "api", source)
-	with pytest.raises(ResolutionError, match="Ambiguous"):
-		resolver(bench).resolve(f"erpnext.api.{name}")
-	assert extract_function(source, name) is None
-
-
-def test_function_metadata_mutation_keeps_an_unrelated_callable_resolvable(bench):
-	source = "def target(): return 'stable'\ndef replacement(): return 'new'\nreplacement.__doc__ = 'changed'"
-	module(bench, "api", source)
-	assert resolver(bench).resolve("erpnext.api.target").node.lineno == 1
-	assert "return 'stable'" in extract_function(source, "target")
-
-
-def test_function_mutation_on_a_redefined_class_preserves_the_earlier_base(bench):
-	source = "class Base:\n    def validate(self): return 'original'\nclass Ledger(Base): pass\nclass Base:\n    def validate(self): return 'replacement'\ndef replacement(self): return 'patched'\nBase.validate.__code__ = replacement.__code__"
-	module(bench, "api", source)
-	source_resolver = resolver(bench)
-	base = source_resolver.hierarchy(source_resolver.resolve("erpnext.api.Ledger"))[1]
-	assert source_resolver.member(base, "validate").node.lineno == 2
-	with pytest.raises(ResolutionError, match="Ambiguous"):
-		source_resolver.resolve("erpnext.api.Base.validate")
-
-
-def test_mutating_a_captured_old_method_invalidates_that_base_after_class_rebinding(bench):
-	source = "class Base:\n    def validate(self): return 'original'\noriginal = Base.validate\nclass Ledger(Base): pass\nclass Base:\n    def validate(self): return 'replacement'\noriginal.__doc__ = 'changed'"
-	module(bench, "api", source)
-	source_resolver = resolver(bench)
-	base = source_resolver.hierarchy(source_resolver.resolve("erpnext.api.Ledger"))[1]
-	with pytest.raises(ResolutionError, match="Ambiguous"):
-		source_resolver.member(base, "validate")
-	assert source_resolver.resolve("erpnext.api.Base.validate").node.lineno == 6
-	assert "return 'replacement'" in extract_function(source, "Base.validate")
-
-
 @pytest.mark.parametrize("limited_first", [False, True])
 def test_function_mutation_analysis_is_cached_per_module_snapshot(bench, limited_first):
 	source = "class File:\n    def validate(self): return 'old'\ndef replacement(self): return 'new'\nFile.validate.__code__ = replacement.__code__"

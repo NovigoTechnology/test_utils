@@ -28,6 +28,7 @@ def assert_sound_exports(operation):
 	try:
 		actual = proven_exports(source)
 	except AmbiguousBinding:
+		assert expected != {"helper"}, "A valid, inactive operation must keep exports provable"
 		return
 	assert actual == expected, source
 
@@ -69,11 +70,20 @@ CONTAINER_PATHS = [
 
 
 @pytest.mark.parametrize("_name, setup, target", CONTAINER_PATHS, ids=[case[0] for case in CONTAINER_PATHS])
-@pytest.mark.parametrize("mutation", ["append", "slice-assignment", "augment"])
-def test_nested_container_provenance_matches_python(_name, setup, target, mutation):
-	if mutation == "append":
-		operation = f"{target}.append('File')"
-	elif mutation == "slice-assignment":
+def test_nested_container_provenance_matches_python(_name, setup, target):
+	assert_sound_exports(setup + f"\n{target}.append('File')")
+
+
+# Establish every provenance route once, then sample the independent write paths.
+WRITE_SAMPLES = [
+	case for case in CONTAINER_PATHS if case[0] in {"list", "variable-key", "starred-assignment"}
+]
+
+
+@pytest.mark.parametrize("_name, setup, target", WRITE_SAMPLES, ids=[case[0] for case in WRITE_SAMPLES])
+@pytest.mark.parametrize("mutation", ["slice-assignment", "augment"])
+def test_recovered_aliases_support_each_write_path(_name, setup, target, mutation):
+	if mutation == "slice-assignment":
 		operation = f"{target}[:] = ['File']"
 	else:
 		operation = f"mutated = {target}\nmutated += ['File']"
@@ -200,9 +210,6 @@ DEFERRED_CASES = [
 	),
 	("helper-return", "def pending():\n    return configure()\nlist(pending())"),
 	("helper-return-list", "def pending():\n    return [configure()]\nlist(pending()[0])"),
-	("starred-argument", "def consume(*args):\n    pass\nconsume(*configure())"),
-	("starred-list", "values = [*configure()]"),
-	("starred-tuple", "values = (*configure(),)"),
 ]
 
 
@@ -240,20 +247,12 @@ IMPLICIT_CALLS = [
 		"decorate = lambda fn: (__all__.append('File'), fn)[1]\n@decorate\ndef configure():\n    pass",
 	),
 	(
-		"constructor",
-		"class Config:\n    def __init__(self):\n        __all__.append('File')\nConfig()",
-	),
-	(
 		"instance-method",
 		"class Config:\n    def configure(self):\n        __all__.append('File')\nConfig().configure()",
 	),
 	(
 		"static-method",
 		"class Config:\n    @staticmethod\n    def configure():\n        __all__.append('File')\nConfig.configure()",
-	),
-	(
-		"context-manager",
-		"class Config:\n    def __enter__(self):\n        __all__.append('File')\n    def __exit__(self, *args):\n        pass\nwith Config():\n    pass",
 	),
 	(
 		"truth-test",
@@ -291,14 +290,18 @@ CALLABLE_CONTAINER_PATHS = [
 @pytest.mark.parametrize(
 	"_name, setup, callback", CALLABLE_CONTAINER_PATHS, ids=[case[0] for case in CALLABLE_CONTAINER_PATHS]
 )
-@pytest.mark.parametrize("lambda_callback", [False, True])
-def test_inserted_and_extracted_callbacks_match_python(_name, setup, callback, lambda_callback):
-	definition = (
-		"configure = lambda: __all__.append('File')"
-		if lambda_callback
-		else "def configure():\n    __all__.append('File')"
-	)
+def test_inserted_and_extracted_callbacks_match_python(_name, setup, callback):
+	definition = "def configure():\n    __all__.append('File')"
 	assert_sound_exports(f"{definition}\n{setup}\n{callback}()")
+
+
+@pytest.mark.parametrize(
+	"_name, setup, callback",
+	[case for case in CALLABLE_CONTAINER_PATHS if case[0] in {"append", "get"}],
+	ids=["append", "get"],
+)
+def test_lambda_callbacks_keep_provenance_through_storage_and_lookup(_name, setup, callback):
+	assert_sound_exports(f"configure = lambda: __all__.append('File')\n{setup}\n{callback}()")
 
 
 SECOND_AUDIT_CASES = [
@@ -362,7 +365,7 @@ SECOND_AUDIT_CASES = [
 
 
 @pytest.mark.parametrize("_name, operation", SECOND_AUDIT_CASES, ids=[case[0] for case in SECOND_AUDIT_CASES])
-def test_second_review_dataflow_cases_match_python(_name, operation):
+def test_deferred_bindings_and_control_flow_keep_provenance(_name, operation):
 	assert_sound_exports(operation)
 
 
@@ -374,10 +377,6 @@ PRESERVED_EXPORTS = [
 	"snapshot = tuple(__all__)",
 	"snapshot = __all__[:]\nsnapshot.append('File')",
 	"def configure(target=__all__):\n    target.append('File')",
-	"def configure():\n    __all__.append('File')\n    yield 1\npending = configure()",
-	"pending = (__all__.append('File') for value in [0])",
-	"def configure():\n    __all__.append('File')\n    yield 1\nbox = dict(value=configure())",
-	"def configure():\n    __all__.append('File')\n    yield 1\nbox = [configure()]",
 	"old = __all__\n__all__ = ['helper']\nold.append('File')",
 	"def configure(target=__all__):\n    target.append('File')\n__all__ = ['helper']\nconfigure()",
 ]

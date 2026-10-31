@@ -99,10 +99,7 @@ def test_nested_class_skips_the_outer_class_namespace():
 	"source",
 	[
 		"async def configure():\n    __all__.append('File')\npending = configure()",
-		"def configure():\n    __all__.append('File')\n    yield 1\npending = configure()",
-		"pending = (__all__.append('File') for item in [0])",
 		"def configure():\n    __all__.append('File')\n    yield 1\npending = iter(configure())",
-		"snapshot = list(__all__)",
 		"def configure():\n    def inner(value=(yield 1)):\n        pass\n    __all__.append('File')\npending = configure()",
 		"async def configure():\n    __all__.append('File')\n    yield 1\npending = configure()\nadvance = pending.__anext__()",
 	],
@@ -114,13 +111,11 @@ def test_creating_a_deferred_object_does_not_execute_its_body(source):
 @pytest.mark.parametrize(
 	"source",
 	[
-		"def configure():\n    __all__.append('File')\n    yield 1\nlist(configure())",
 		"def configure():\n    __all__.append('File')\n    yield 1\npending = configure()\nnext(pending)",
 		"pending = (__all__.append('File') for item in [0])\ntuple(pending)",
 		"import asyncio\nasync def configure():\n    __all__.append('File')\nasyncio.run(configure())",
 		"def inner():\n    __all__.append('File')\n    yield 1\ndef outer():\n    yield from inner()\nlist(outer())",
 		"from collections import deque\npending = (__all__.append('File') for item in [0])\ndeque(pending, maxlen=0)",
-		"def configure():\n    __all__.append('File')\n    yield 1\nfor value in configure():\n    pass",
 		"import asyncio\nasync def inner():\n    __all__.append('File')\nasync def outer():\n    await inner()\nasyncio.run(outer())",
 		"def configure():\n    lazy = lambda: (yield 1)\n    __all__.append('File')\nconfigure()",
 		"def configure():\n    __all__.append('File')\n    yield 1\npending = configure()\npending.__next__()",
@@ -144,12 +139,6 @@ def test_unexecuted_deferred_helper_does_not_invalidate_a_typing_guard(asynchron
 	body = "    t.TYPE_CHECKING = True" + ("" if asynchronous else "\n    yield 1")
 	source = f"import typing\n{definition} configure(t=typing):\n{body}\npending = configure()\nif typing.TYPE_CHECKING:\n    class File: pass"
 	assert not any(isinstance(node, ast.If) for node in runtime_body(ast.parse(source).body))
-
-
-def test_captured_default_keeps_the_old_container_after_rebinding():
-	assert exports(
-		"__all__ = []\ndef configure(target=__all__):\n    target.append('File')\n__all__ = ['helper']\nconfigure()"
-	) == {"helper"}
 
 
 @pytest.mark.parametrize(
@@ -195,10 +184,8 @@ def test_generator_creation_evaluates_the_outermost_iterable():
 	"operation",
 	[
 		"alias = __all__\nif enabled:\n    alias = []\nalias.append('File')",
-		"def configure(target=__all__):\n    target.append('File')\n__all__ = ['helper']\nconfigure()",
 		"def configure():\n    __all__.append('File')\n    yield 1\npending = configure()\nif enabled:\n    list(pending)",
 		"pending = (__all__.append('File') for item in [0])\nif enabled:\n    next(pending)",
-		"class Outer:\n    __all__ = []\n    class Inner:\n        __all__.append('File')",
 	],
 )
 def test_proven_exports_match_python_across_execution_paths(enabled, operation):

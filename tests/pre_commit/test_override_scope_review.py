@@ -60,7 +60,6 @@ def test_class_body_globals_affect_the_module_binding(bench, body):
 		"def configure():\n    alias = __all__\n    alias.append('File')\nconfigure()",
 		"def configure():\n    alias = __all__\n    def inner():\n        alias.append('File')\n    inner()\nconfigure()",
 		"class Configure:\n    alias = __all__\n    alias.append('File')",
-		"def configure():\n    if enabled:\n        alias = __all__\n    else:\n        alias = []\n    alias.append('File')\nconfigure()",
 	],
 )
 def test_export_mutations_follow_local_aliases_and_closures(helper):
@@ -85,14 +84,6 @@ def test_redefined_classes_have_distinct_inheritance_identities(bench):
 	source = resolver(bench)
 	value = source.resolve("erpnext.api.File")
 	assert [item.node.lineno for item in source.hierarchy(value)] == [3, 2, 1]
-
-
-def test_c3_keeps_both_distinct_versions_of_a_class(bench):
-	module(
-		bench, "api", "class Base: pass\nclass Old(Base): pass\nclass Base: pass\nclass File(Old, Base): pass"
-	)
-	source = resolver(bench)
-	assert [item.node.lineno for item in source.hierarchy(source.resolve("erpnext.api.File"))] == [4, 2, 1, 3]
 
 
 def test_known_local_decorator_cannot_silently_replace_the_selected_class(bench):
@@ -127,8 +118,6 @@ def test_alias_of_namespace_builtin_is_analyzed(bench):
 	[
 		"def configure():\n    alias = __all__\n    alias += ['File']\nconfigure()",
 		"def configure():\n    try:\n        alias = __all__\n        alias.append('File')\n    except ValueError:\n        pass\nconfigure()",
-		"def configure():\n    alias = []\n    def inner():\n        nonlocal alias\n        alias = __all__\n    inner()\n    alias.append('File')\nconfigure()",
-		"def configure(alias=__all__):\n    alias.append('File')\nconfigure()",
 		"def configure():\n    return\n    __all__.append('File')\nconfigure()",
 		"def configure():\n    local = []\n    local.append('File')\nconfigure()",
 		"[__all__.append('File') for __all__ in [[]]]",

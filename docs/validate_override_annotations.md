@@ -79,6 +79,10 @@ to an ancestor hidden by that declaration. Class-level callable aliases such as
 when they replace an upstream method. Define the overriding method explicitly with `def` or
 `async def` and put its metadata on that definition. A registered function that is rebound
 after its definition cannot reuse the old definition's metadata.
+Writes through imported aliases are checked in the importing module before reusing the
+defining callable's metadata. This includes class member changes and mutations through
+aliases of an imported function's defaults. A rejected import does not contaminate an
+independent lookup of the defining module.
 Assignments, deletions and `setattr` changes to class members are included in the method
 inventory and invalidate the affected implementation. Changes to a function's `__code__`,
 defaults or annotation docstring also invalidate its old source definition. An unrelated
@@ -86,6 +90,11 @@ method with the same name in another scope does not replace a module-level funct
 Mutating `__kwdefaults__` through a dictionary alias, container projection or mutating
 method also invalidates the owning function. A shallow copy has independent dictionary
 slots, while mutable default values reached through that copy retain their original identity.
+Ownership is recorded when a default is captured: mutations through the original alias or
+a called helper also invalidate the function. Reassigning that alias, modifying an independent
+copy, or mutating a value before capture does not invalidate the captured implementation.
+Dictionary lookups with unproven keys may execute hash/equality callbacks and therefore
+cannot establish that a captured default was only read.
 An overload declaration is skipped only when its decorator is proven to be the current
 absolute `typing.overload` or `typing_extensions.overload` binding at definition time.
 Local decorators with those names, rebound aliases and modified typing attributes cannot
@@ -168,6 +177,11 @@ Async iteration acquires `__aiter__` and awaits `__anext__`; async context manag
 `__aenter__` and `__aexit__`. These protocols also apply to async comprehensions and
 generator expressions. Subscript writes and deletions inspect `__setitem__` and
 `__delitem__`, and reflected ordering uses the inverse comparison method on the right operand.
+Protocol calls use the same invalidation checks as explicit calls. Truth testing selects
+`__bool__` before `__len__`; string conversion falls back to `__repr__`. F-string conversions,
+each link of chained comparisons, augmented assignments and exception handler type
+expressions contribute their executed effects. Conditional dictionary updates retain aliases
+that remain reachable on another branch.
 Known local constructors, methods and protocol callbacks are inspected, including callbacks
 passed to operations such as `sorted(key=...)`. An opaque callback executed while a known
 `__all__` exists makes the export list ambiguous, even when the call has no arguments.
@@ -183,6 +197,8 @@ namespace, including reflective or cyclic dependency side effects, is outside th
 Use runtime integration tests for such code; a passing annotation check does not establish
 the absence of every possible external side effect. The regression suite compares controlled
 examples against Python for the modeled execution, aliasing and lookup rules.
+The [test strategy](override_test_strategy.md) maps behavior to suites and explains the
+representative matrices and positive cases used to limit duplication.
 
 The source-only extractor used by historical tracking has no checkout context for imported
 modules. It can resolve definitions after earlier wildcards; a later wildcard whose exports

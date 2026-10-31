@@ -153,7 +153,6 @@ def test_inspecting_a_class_namespace_does_not_replace_the_module_binding(bench)
 @pytest.mark.parametrize(
 	"wrapper,access",
 	[
-		("(__all__,)", "WRAPPED[0]"),
 		("[(__all__,)]", "WRAPPED[0][0]"),
 		("[[[__all__]]]", "WRAPPED[0][0][0]"),
 	],
