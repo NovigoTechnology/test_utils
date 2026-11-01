@@ -1,0 +1,47 @@
+name: Prepare release PR
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily at 21:00 Argentina (00:00 UTC).
+    - cron: '0 0 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-release-pr-v2
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/nvg-develop'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.NOVIGO_BOT_20250619 }}
+      BASE_BRANCH: v2
+      HEAD_BRANCH: nvg-develop
+    steps:
+      - name: Check PR token
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo '::error::NOVIGO_BOT_20250619 must be available to this repository.'
+            exit 1
+          fi
+      - name: Open or reuse release PR
+        run: |
+          url=$(gh pr list --repo "$GITHUB_REPOSITORY" --base "$BASE_BRANCH" --head "$HEAD_BRANCH" --state open --json url,isCrossRepository --jq 'map(select(.isCrossRepository == false)) | .[0].url // empty')
+          if [ -n "$url" ]; then
+            echo "Release PR already exists: $url" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          commits=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_BRANCH...$HEAD_BRANCH" --jq '.ahead_by')
+          if [ "$commits" -eq 0 ]; then
+            echo 'No new commits to promote; no PR created.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          url=$(gh pr create --repo "$GITHUB_REPOSITORY" \
+            --base "$BASE_BRANCH" --head "$HEAD_BRANCH" \
+            --title 'chore(release): promote nvg-develop to v2' \
+            --body 'Promote the reviewed development changes to v2. Wait for CI checks, review and approve this PR, then use **Create a merge commit** to preserve Conventional Commits. Merging starts the release workflow.')
+          echo "Release PR: $url" >> "$GITHUB_STEP_SUMMARY"

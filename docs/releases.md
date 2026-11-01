@@ -7,11 +7,13 @@ The release circuit is:
 ## Publish
 
 1. Merge reviewed changes into `nvg-develop` using Conventional Commit messages.
-2. Open and review a PR from `nvg-develop` to `v2`.
+2. Open **Actions → Prepare release PR → Run workflow**, select `nvg-develop` and run it. Review the generated PR from `nvg-develop` to `v2`.
 3. Merge that promotion using **Create a merge commit**. This preserves the individual commits used to calculate the version.
 4. Open its **Release** workflow run. It calculates the version, builds the package, updates `pyproject.toml` and `CHANGELOG.md` on `v2`, pushes the release commit and tag, and publishes the GitHub Release.
 
 No manual version edit is required. Merging into `nvg-develop`, closing an unmerged PR, or pushing a release commit does not trigger publication.
+
+**Prepare release PR** runs daily at **21:00 Argentina (00:00 UTC)** and can also be started manually. Scheduled runs use the default branch, `nvg-develop`. It links an existing open promotion PR instead of creating a duplicate, and skips creation when there are no new development commits to promote. It does not merge PRs or publish releases.
 
 ## Versions
 
