@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path, PurePosixPath
 
+from test_utils.utils.namespace_types import class_values_are_safe
 from test_utils.utils.override_metadata import (
 	FIELDS,
 	github_repository,
@@ -392,6 +393,8 @@ class SourceResolver:
 	def __init__(self, apps: list[App], *, require_unique_definitions: bool = False):
 		self.apps = {app.name: app for app in apps}
 		self.modules: dict[Path, Module] = {}
+		self._verified_class_namespaces = set()
+		self._checking_class_namespaces = set()
 		# Tracking metadata requires uniqueness; MRO resolution also uses declaration-time prefixes.
 		self.require_unique_definitions = require_unique_definitions
 
@@ -444,7 +447,7 @@ class SourceResolver:
 			raise ResolutionError(f"Ambiguous export cycle for {module.name}.{name}")
 		seen = seen | {key}
 		bindings = scope_bindings(body)
-		if self.dynamic_namespace([body], {name, "__all__"}, module.tree):
+		if self.dynamic_namespace([body], {name, "__all__"}, module.tree, module=module):
 			raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
 		all_bindings = bindings.get("__all__", [])
 		if all_bindings:
@@ -481,7 +484,9 @@ class SourceResolver:
 			except (AttributeError, ValueError, TypeError, SyntaxError) as exc:
 				raise ResolutionError(f"Ambiguous dynamic __all__ in {module.path}") from exc
 			return name in values
-		if "__getattr__" in bindings or self.dynamic_namespace([body], {"__getattr__"}, module.tree):
+		if "__getattr__" in bindings or self.dynamic_namespace(
+			[body], {"__getattr__"}, module.tree, module=module
+		):
 			raise ResolutionError(f"Ambiguous dynamic exports (__getattr__) in {module.path}")
 		if self.binding(module, body, "__all__", limits, seen) is not None:
 			raise ResolutionError(f"Ambiguous reexported __all__ in {module.path}")
@@ -533,15 +538,153 @@ class SourceResolver:
 			raise ResolutionError(f"Invalid dotted Python reference: {reference!r}")
 		return self.resolve_from(provider, name)
 
-	@staticmethod
-	def dynamic_namespace(scopes, names, tree):
+	def _class_namespace_reads(self, statement, tree, module_bindings, module):
+		"""Allow an eager tuple of class keys filtered by the standard cached-property type."""
+		if statement not in runtime_body(tree) or not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+			return {}
+		targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+		if not all(isinstance(target, ast.Name) for target in targets):
+			return {}
+		builtins = {"tuple", "vars", "isinstance"}
+		if (builtins | {"*"}).intersection(module_bindings):
+			return {}
+		consumer = statement.value
+		if not (
+			isinstance(consumer, ast.Call)
+			and isinstance(consumer.func, ast.Name)
+			and consumer.func.id == "tuple"
+			and len(consumer.args) == 1
+			and not consumer.keywords
+			and isinstance(consumer.args[0], ast.GeneratorExp)
+		):
+			return {}
+		generator = consumer.args[0]
+		if len(generator.generators) != 1:
+			return {}
+		clause = generator.generators[0]
+		if (
+			clause.is_async
+			or not isinstance(clause.target, ast.Tuple)
+			or len(clause.target.elts) != 2
+			or not all(isinstance(target, ast.Name) for target in clause.target.elts)
+			or len(clause.ifs) != 1
+		):
+			return {}
+		key, value = (target.id for target in clause.target.elts)
+		if key == value or not isinstance(generator.elt, ast.Name) or generator.elt.id != key:
+			return {}
+		predicate = clause.ifs[0]
+		if not (
+			isinstance(predicate, ast.Call)
+			and isinstance(predicate.func, ast.Name)
+			and predicate.func.id == "isinstance"
+			and len(predicate.args) == 2
+			and not predicate.keywords
+			and isinstance(predicate.args[0], ast.Name)
+			and predicate.args[0].id == value
+			and isinstance(predicate.args[1], ast.Name)
+		):
+			return {}
+		type_name = predicate.args[1].id
+		if {key, value}.intersection(builtins | {type_name}):
+			return {}
+		if not any(
+			isinstance(import_node, ast.ImportFrom)
+			and import_node.level == 0
+			and import_node.module == "functools"
+			and import_node.lineno < consumer.lineno
+			and any(
+				alias.name == "cached_property"
+				and (alias.asname or alias.name) == type_name
+				and module_bindings.get(type_name) == [alias]
+				for alias in import_node.names
+			)
+			for import_node in runtime_body(tree)
+		):
+			return {}
+		items = clause.iter
+		if not (
+			isinstance(items, ast.Call)
+			and not items.args
+			and not items.keywords
+			and isinstance(items.func, ast.Attribute)
+			and items.func.attr == "items"
+		):
+			return {}
+		call = items.func.value
+		if not (
+			isinstance(call, ast.Call)
+			and isinstance(call.func, ast.Name)
+			and call.func.id == "vars"
+			and len(call.args) == 1
+			and not call.keywords
+			and isinstance(call.args[0], ast.Name)
+			and call.args[0].id not in {key, value}
+		):
+			return {}
+
+		def ordinary_class(owner, *, ancestor=False):
+			if not isinstance(owner, ast.ClassDef) or owner.decorator_list or owner.keywords:
+				return None
+			if ancestor and "__init_subclass__" in scope_bindings(runtime_body(tree, owner)):
+				return None
+			dependencies = {owner.name}
+			for base in owner.bases:
+				if not isinstance(base, ast.Name):
+					return None
+				if base.id == "object" and "object" not in module_bindings:
+					dependencies.add("object")
+					continue
+				parent = unique_definition(tree, base.id)
+				if not isinstance(parent, ast.ClassDef) or parent.end_lineno >= owner.lineno:
+					return None
+				inherited = ordinary_class(parent, ancestor=True)
+				if inherited is None:
+					return None
+				dependencies.update(inherited)
+			return dependencies
+
+		owner = unique_definition(tree, call.args[0].id)
+		dependencies = ordinary_class(owner)
+		if dependencies and owner.end_lineno < call.lineno and module is not None:
+			key = (tree, owner)
+			if key not in self._verified_class_namespaces:
+				if key in self._checking_class_namespaces:
+					return {}
+				self._checking_class_namespaces.add(key)
+				try:
+					if not class_values_are_safe(self, module, owner):
+						return {}
+					# Source trees stay immutable for this resolver, including revisions.
+					self._verified_class_namespaces.add(key)
+				finally:
+					self._checking_class_namespaces.remove(key)
+			return {
+				call: dependencies
+				| builtins
+				| {type_name, "__class__", "__getattribute__", "__getattr__", "__slots__", "__new__"}
+			}
+		return {}
+
+	def dynamic_namespace(self, scopes, names, tree, *, module=None):
 		"""Reject unsupported namespace access without interpreting its effects."""
 		namespace_calls = {"exec", "globals", "locals", "vars", "setattr", "delattr"}
+		module_bindings = scope_bindings(runtime_body(tree))
+		class_reads = {}
+		if isinstance(tree, ast.Module) and not {"vars", "*"}.intersection(module_bindings):
+			for statement in scopes[0]:
+				class_reads.update(self._class_namespace_reads(statement, tree, module_bindings, module))
+		names = set(names)
+		if class_reads:
+			names.add("vars")
+			for dependencies in class_reads.values():
+				names.update(dependencies)
 		for scope in scopes:
 			for statement in scope:
 				for node in executable_nodes(statement, tree=tree):
 					if (
 						isinstance(node, ast.Call)
+						and node not in class_reads
 						and (
 							(isinstance(node.func, ast.Name) and node.func.id in namespace_calls)
 							or (isinstance(node.func, ast.Attribute) and node.func.attr in namespace_calls)
@@ -550,6 +693,7 @@ class SourceResolver:
 						isinstance(node, ast.Attribute)
 						and (
 							node.attr == "__dict__"
+							or (class_reads and isinstance(node.ctx, (ast.Store, ast.Del)))
 							or (
 								(isinstance(node.ctx, (ast.Store, ast.Del)) or node.attr == "__all__")
 								and node.attr in names
@@ -566,7 +710,8 @@ class SourceResolver:
 							if isinstance(item, ast.Global)
 							for name in item.names
 						}
-						if global_names.intersection(names, scope_bindings(body)):
+						bindings = scope_bindings(body)
+						if global_names.intersection(names, bindings):
 							return True
 		return False
 
@@ -579,7 +724,7 @@ class SourceResolver:
 		seen = seen | {key}
 		decorators = overload_names(body)
 		for index, name in enumerate(parts):
-			if self.dynamic_namespace(scopes, parts, module.tree):
+			if self.dynamic_namespace(scopes, parts, module.tree, module=module):
 				raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
 			binding = self.binding(module, body, name, limits, seen, decorators)
 			if index == 0 and len(parts) > 1 and module.path.name == "__init__.py":
@@ -603,7 +748,7 @@ class SourceResolver:
 						f"Ambiguous circular import: {name!r} is not yet declared in {module.path}"
 					)
 				if "__getattr__" in scope_bindings(body) or (
-					index == 0 and self.dynamic_namespace([body], {"__getattr__"}, module.tree)
+					index == 0 and self.dynamic_namespace([body], {"__getattr__"}, module.tree, module=module)
 				):
 					raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
 				raise MissingSymbolError(
@@ -674,7 +819,18 @@ class SourceResolver:
 			decorators |= overload_names(body)
 		raise ResolutionError(f"Cannot resolve definition {module.name}.{'.'.join(parts)}")
 
-	def base_classes(self, symbol: Symbol) -> list[Symbol]:
+	def base_classes(self, symbol: Symbol, *, ordinary_metaclass=False) -> list[Symbol]:
+		if ordinary_metaclass and (
+			symbol.node.decorator_list
+			or symbol.node.keywords
+			or self.dynamic_namespace(
+				[runtime_body(symbol.module.tree), runtime_body(symbol.module.tree, symbol.node)],
+				{"__bases__", "__class__", "__subclasscheck__"},
+				symbol.module.tree,
+				module=symbol.module,
+			)
+		):
+			raise ResolutionError(f"Unverified metaclass behavior for {symbol.reference}")
 		result = []
 		for base in symbol.node.bases:
 			name = dotted_name(base)
@@ -696,6 +852,8 @@ class SourceResolver:
 				prefix = symbol.module.import_reference(binding.statement, binding.node)
 				reference = ".".join([prefix, *(name.split(".") if binding.node.name == "*" else rest)])
 			if reference in {"abc.ABC", "typing.Protocol", "typing_extensions.Protocol", "builtins.object"}:
+				if ordinary_metaclass and reference != "builtins.object":
+					raise ResolutionError(f"Unverified metaclass behavior for {symbol.reference}")
 				continue
 			resolved = self.resolve_in(symbol.module, name.split("."), limits, frozenset())
 			if not isinstance(resolved.node, ast.ClassDef):
@@ -705,11 +863,29 @@ class SourceResolver:
 
 	def method(self, owner: Symbol, name: str):
 		"""Inspect the selected class body, retaining module-level overload aliases."""
+		module_body = self.module_body(owner.module, owner.import_limits)
+		class_body = runtime_body(owner.module.tree, owner.node)
+		if self.dynamic_namespace(
+			[module_body, class_body],
+			[
+				*owner.qualname.split("."),
+				name,
+				"__code__",
+				"__defaults__",
+				"__kwdefaults__",
+				"__annotations__",
+			],
+			owner.module.tree,
+			module=owner.module,
+		):
+			raise ResolutionError(
+				f"Ambiguous dynamic namespace in {owner.module.path} for {owner.reference}.{name}"
+			)
 		try:
 			binding = select_binding(
-				runtime_body(owner.module.tree, owner.node),
+				class_body,
 				name,
-				decorators=overload_names(runtime_body(owner.module.tree)),
+				decorators=overload_names(module_body),
 			)
 		except AmbiguousBinding:
 			return None
@@ -721,6 +897,220 @@ class SourceResolver:
 			raise ResolutionError(f"Cyclic inheritance at {symbol.reference}")
 		bases = self.base_classes(symbol)
 		return [symbol, *self.compose(bases, seen | {symbol.identity})]
+
+	def controller_variants(self, controller: Symbol) -> list[Symbol]:
+		"""Resolve explicit class selections without executing a controller factory."""
+		hierarchy = self.hierarchy(controller)
+		owner = next(
+			(
+				s
+				for s in hierarchy
+				if "resolve_controller" in scope_bindings(runtime_body(s.module.tree, s.node))
+			),
+			None,
+		)
+		if owner is None:
+			return []
+		factory = self.method(owner, "resolve_controller")
+		if (
+			not isinstance(factory, ast.FunctionDef)
+			or len(factory.decorator_list) != 1
+			or not any(isinstance(d, ast.Name) and d.id == "classmethod" for d in factory.decorator_list)
+		):
+			raise ResolutionError(f"Cannot statically inspect {owner.reference}.resolve_controller")
+		module_body = runtime_body(owner.module.tree)
+		class_body = runtime_body(owner.module.tree, owner.node)
+		if (
+			self.binding(owner.module, module_body, "classmethod", (), frozenset()) is not None
+			or {"classmethod", "*"}.intersection(scope_bindings(class_body))
+			or self.dynamic_namespace(
+				[module_body, class_body], {"classmethod"}, owner.module.tree, module=owner.module
+			)
+		):
+			raise ResolutionError(f"Shadowed classmethod in {owner.reference}")
+		body = factory.body
+		bindings = scope_bindings(body)
+		parameters = [*factory.args.posonlyargs, *factory.args.args]
+		receiver = parameters[0].arg if parameters else None
+		# A bare annotation creates a function local even though it assigns no value.
+		for statement in scope_statements(body):
+			if (
+				isinstance(statement, ast.AnnAssign)
+				and statement.value is None
+				and isinstance(statement.target, ast.Name)
+				and statement.target.id != receiver
+			):
+				bindings.setdefault(statement.target.id, [statement])
+		if (
+			len(parameters) != 1
+			or factory.args.kwonlyargs
+			or factory.args.vararg
+			or factory.args.kwarg
+			or bindings.get(receiver)
+			or "*" in bindings
+			or any(
+				isinstance(node, (ast.Yield, ast.YieldFrom, ast.Await))
+				for statement in body
+				for node in executable_nodes(statement)
+			)
+		):
+			raise ResolutionError(f"Reassigned controller receiver in {owner.reference}.resolve_controller")
+		imports = {
+			alias: statement
+			for statement in scope_statements(body)
+			if isinstance(statement, (ast.Import, ast.ImportFrom))
+			for alias in statement.names
+		}
+		controller_ids = {s.identity for s in hierarchy}
+		referenced_classes = set()
+
+		def resolve_class(name, position):
+			referenced_classes.add(name)
+			definitions = bindings.get(name, [])
+			if definitions:
+				alias = definitions[0]
+				statement = imports.get(alias)
+				if (
+					len(definitions) != 1
+					or not isinstance(statement, ast.ImportFrom)
+					or statement not in body
+					or statement.lineno >= position
+					or alias.name == "*"
+				):
+					raise ResolutionError(f"Unavailable controller class {name!r} in {owner.reference}")
+				symbol = self.resolve_registration(owner.module.import_reference(statement, alias))
+			else:
+				symbol = self.resolve_from(owner.module.name, name)
+			if not isinstance(symbol.node, ast.ClassDef):
+				raise ResolutionError(f"Controller implementation {symbol.reference} is not a class")
+			return symbol
+
+		def class_names(expression):
+			if isinstance(expression, ast.Name):
+				return [expression]
+			if isinstance(expression, ast.IfExp):
+				try:
+					condition = bool(ast.literal_eval(expression.test))
+				except ValueError, TypeError, SyntaxError:
+					return class_names(expression.body) + class_names(expression.orelse)
+				return class_names(expression.body if condition else expression.orelse)
+			raise ResolutionError(f"Unsupported controller selection in {owner.reference}.resolve_controller")
+
+		def subclass_names(expression):
+			if isinstance(expression, ast.Name):
+				return [expression]
+			if isinstance(expression, ast.BinOp) and isinstance(expression.op, ast.BitOr):
+				return subclass_names(expression.left) + subclass_names(expression.right)
+			raise ResolutionError(f"Unsupported subclass guard in {owner.reference}.resolve_controller")
+
+		def known_test(test):
+			try:
+				return bool(ast.literal_eval(test))
+			except ValueError, TypeError, SyntaxError:
+				pass
+			if (
+				isinstance(test, ast.Compare)
+				and isinstance(test.left, ast.Name)
+				and test.left.id == receiver
+				and len(test.ops) == 1
+				and isinstance(test.comparators[0], ast.Name)
+				and isinstance(test.ops[0], (ast.Is, ast.IsNot))
+			):
+				target = resolve_class(test.comparators[0].id, test.lineno)
+				matches = target.identity == controller.identity
+				return not matches if isinstance(test.ops[0], ast.IsNot) else matches
+			if (
+				isinstance(test, ast.Call)
+				and isinstance(test.func, ast.Name)
+				and test.func.id == "issubclass"
+				and len(test.args) == 2
+				and not test.keywords
+				and isinstance(test.args[0], ast.Name)
+				and test.args[0].id == receiver
+			):
+				if (
+					receiver == "issubclass"
+					or "issubclass" in bindings
+					or self.binding(owner.module, module_body, "issubclass", (), frozenset()) is not None
+					or self.dynamic_namespace(
+						[module_body, body], {"issubclass"}, owner.module.tree, module=owner.module
+					)
+				):
+					raise ResolutionError(f"Shadowed issubclass in {owner.reference}")
+				targets = [resolve_class(n.id, n.lineno) for n in subclass_names(test.args[1])]
+				for target in targets:
+					for ancestor in self.hierarchy(target):
+						self.base_classes(ancestor, ordinary_metaclass=True)
+				return any(target.identity in controller_ids for target in targets)
+			return None
+
+		returns = []
+
+		def collect(statements):
+			for statement in statements:
+				if isinstance(statement, ast.Return):
+					returns.append(statement)
+					return True
+				if isinstance(statement, ast.If):
+					known = known_test(statement.test)
+					if known is not None:
+						if collect(statement.body if known else statement.orelse):
+							return True
+					else:
+						left = collect(statement.body)
+						right = collect(statement.orelse)
+						if left and right:
+							return True
+				elif not isinstance(
+					statement,
+					(ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign, ast.Expr, ast.Pass, ast.Global),
+				):
+					raise ResolutionError(f"Unsupported controller control flow in {owner.reference}")
+			return False
+
+		if not collect(body) or not returns:
+			raise ResolutionError(f"Cannot determine implementations of {owner.reference}.resolve_controller")
+		variants = {}
+		for statement in returns:
+			value = statement.value
+			if isinstance(value, ast.Name) and value.id == receiver:
+				continue
+			if (
+				isinstance(value, ast.Name)
+				and bindings.get(value.id)
+				and not isinstance(bindings[value.id][0], ast.alias)
+			):
+				definitions = bindings[value.id]
+				if (
+					len(definitions) != 1
+					or not isinstance(definitions[0], (ast.Assign, ast.AnnAssign))
+					or definitions[0] not in body
+					or definitions[0].lineno >= statement.lineno
+				):
+					raise ResolutionError(
+						f"Unavailable controller selection {value.id!r} in {owner.reference}"
+					)
+				value = definitions[0].value
+			for name in class_names(value):
+				variant = resolve_class(name.id, name.lineno)
+				if owner.identity not in {s.identity for s in self.hierarchy(variant)}:
+					raise ResolutionError(
+						f"Controller implementation {variant.reference} must inherit {owner.reference}"
+					)
+				if variant.identity != controller.identity:
+					variants[variant.identity] = variant
+		if self.dynamic_namespace(
+			[body],
+			set(bindings) | referenced_classes | {receiver, owner.node.name},
+			owner.module.tree,
+			module=owner.module,
+		) or any(
+			isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del))
+			for statement in body
+			for node in executable_nodes(statement, tree=owner.module.tree)
+		):
+			raise ResolutionError(f"Dynamic controller selection in {owner.reference}.resolve_controller")
+		return list(variants.values())
 
 	def compose(self, bases: list[Symbol], seen: frozenset[DeclarationId] = frozenset()) -> list[Symbol]:
 		"""Linearize the bases of a synthetic Frappe extended controller."""
@@ -882,11 +1272,15 @@ class AnnotationValidator:
 				raise ResolutionError(
 					f"Cannot resolve upstream controller or base class for DocType {doctype!r}"
 				)
+			controller = self.extension_controller(doctype, hooks) if extension else custom
+			variant_hierarchies = [
+				self.resolver.hierarchy(v) for v in self.resolver.controller_variants(controller)
+			]
 			# Include inherited methods from local mixins, not just the registered class.
 			methods = {}
 			class_bindings = {
 				owner.identity: scope_bindings(runtime_body(owner.module.tree, owner.node))
-				for owner in hierarchy
+				for owner in [*hierarchy, *(s for variant in variant_hierarchies for s in variant)]
 			}
 			for owner in hierarchy:
 				for name, declarations in class_bindings[owner.identity].items():
@@ -915,6 +1309,52 @@ class AnnotationValidator:
 					if isinstance(node, FUNCTION_NODES)
 				]
 				annotated = any(parse_annotation(ast.get_docstring(node) or "")[0] for node in definitions)
+				if upstream_owner is None:
+					candidates = {}
+					unresolved = []
+					for variant in variant_hierarchies:
+						for owner in variant:
+							if owner.module.app.name == self.app.name:
+								continue
+							if name not in class_bindings[owner.identity]:
+								continue
+							if static_attribute(
+								class_bindings[method_owner.identity][name]
+							) and static_attribute(class_bindings[owner.identity][name]):
+								break
+							node = self.resolver.method(owner, name)
+							if isinstance(node, FUNCTION_NODES):
+								symbol = Symbol(owner.module, f"{owner.qualname}.{name}", node)
+								candidates[symbol.identity] = (owner, symbol)
+							else:
+								unresolved.append(owner)
+							break
+					if unresolved:
+						self.error(
+							method,
+							f"{unresolved[0].reference}.{name}",
+							f"Cannot resolve concrete implementation of overriding method {method.reference}",
+						)
+						continue
+					if candidates:
+						choices = list(candidates.values())
+						if len(choices) > 1 and annotated:
+							fields, _ = parse_annotation(ast.get_docstring(definitions[-1]) or "")
+							choices = [
+								(owner, symbol)
+								for owner, symbol in choices
+								if fields.get("METHOD") == symbol.qualname
+								and fields.get("PATH")
+								== symbol.module.path.relative_to(symbol.module.app.root).as_posix()
+							]
+						if len(choices) != 1 and annotated:
+							self.error(
+								method,
+								f"DocType {doctype}",
+								"Ambiguous controller implementation; specify its qualified METHOD and PATH",
+							)
+							continue
+						upstream_owner, original = choices[0]
 				if upstream_owner is None and not annotated:
 					# Helper descriptors may define a getter and setter with the same name.
 					continue

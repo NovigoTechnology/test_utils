@@ -104,6 +104,12 @@ Replace the example values with those for your override:
 Include each field once. You can keep explanatory prose in the docstring and arrange the
 fields in any order. Prefer qualified method names over bare names such as `validate`.
 
+Some controllers select between implementations, such as Frappe's `FileV1` and `FileV2`.
+For a method available only on one implementation, point `PATH` and `METHOD` to that
+implementation, for example `frappe/core/doctype/file/file_v1.py` and
+`FileV1.validate_duplicate_entry`. Methods already declared on the base controller keep
+their base-controller annotation. You do not need to start a site or change its storage settings.
+
 The validator checks annotation completeness and references. `track_overrides` checks the
 historical commit and compares implementations. Review upstream changes before updating `HASH`.
 
