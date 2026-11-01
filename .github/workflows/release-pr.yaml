@@ -18,30 +18,22 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.14'
-      - name: Install release tools
-        run: python -m pip install python-semantic-release==10.7.0
-      - name: Prepare local promotion
+      - name: Open or reuse release PR
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git switch -c v2 origin/v2
-          git merge --no-ff origin/nvg-develop -m 'chore: preview release promotion'
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
-      - name: Calculate next version
-        id: version
-        run: python .github/scripts/release_version.py --published-releases "$RUNNER_TEMP/releases.json" --source-sha origin/nvg-develop
-      - name: Open or update release PR
-        if: steps.version.outputs.changed == 'true'
-        env:
-          NEXT_VERSION: ${{ steps.version.outputs.version }}
-        run: python .github/scripts/release_flow.py open-promotion --version "$NEXT_VERSION"
-      - name: Nothing to publish
-        if: steps.version.outputs.changed != 'true'
-        run: echo 'No publishable changes; no release PR or tag was created.' >> "$GITHUB_STEP_SUMMARY"
+          ahead=$(gh api "repos/$GITHUB_REPOSITORY/compare/v2...nvg-develop" --jq '.ahead_by')
+          if [ "$ahead" = 0 ]; then
+            echo 'No commits to promote.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          url=$(gh pr list --repo "$GITHUB_REPOSITORY" --base v2 --head nvg-develop --state open --json url --jq '.[0].url // empty')
+          if [ -z "$url" ]; then
+            cat > "$RUNNER_TEMP/release-pr.md" <<'BODY'
+          Promote development to the stable major-2 branch.
+
+          Review the existing CI checks and use **Create a merge commit**.
+          Approve the workflows if GitHub requests it.
+          Merging this PR starts the release workflow.
+          BODY
+            url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base v2 --head nvg-develop --title 'chore(release): promote nvg-develop to v2' --body-file "$RUNNER_TEMP/release-pr.md")
+          fi
+          echo "Release PR: $url" >> "$GITHUB_STEP_SUMMARY"

@@ -1,99 +1,58 @@
 # Publishing releases
 
-Develop on `nvg-develop`; publish stable major 2 releases from `v2`.
-The first release is `2.0.0`. Existing version 1 tags and releases stay intact.
-Distribution uses Git tags and GitHub Releases; this workflow does not publish to PyPI.
+Develop on `nvg-develop` and publish stable major 2 releases from `v2`.
+The first release is `2.0.0`; existing version 1 tags and releases stay intact.
+Distribution uses Git tags and GitHub Releases. The workflows do not publish to PyPI.
 
-```text
-nvg-develop → release PR → v2 → version/tag/GitHub Release → synchronization PR → nvg-develop
-```
+## Release a version
 
-## Activate the circuit
-
-Merge the implementation PR into `nvg-develop`, complete the repository setup below, and ensure `v2` exists.
-That implementation merge does not publish a release. Start **Prepare release** from `nvg-develop`
-to open the first promotion PR; merging that PR into `v2` publishes `2.0.0`.
-
-## Publish a release
-
-1. Merge the changes to release into `nvg-develop` using Conventional Commits.
-   `fix:` normally produces a patch, `feat:` a minor version, and breaking changes a major version.
+1. Merge the implementation of this circuit, and then the changes to release, into `nvg-develop`.
+   Complete the one-time repository setup below before the first run.
 2. Open **Actions → Prepare release → Run workflow**, select `nvg-develop`, and run it.
-   [`release-pr.yaml`](../.github/workflows/release-pr.yaml) opens or reuses the PR from `nvg-develop` to `v2`
-   when the version calculation finds publishable changes.
-3. If GitHub shows **Approve workflows to run** on the bot-created PR, approve them.
-   Review the tests and the **Release policy** check, including its version preview.
-4. Review and approve the release PR, then select **Create a merge commit**.
-   Keep this merge method for both release and synchronization PRs so branch history is preserved.
-5. [`release.yaml`](../.github/workflows/release.yaml), named **Release**, runs when the release PR is merged.
-   It updates the version and changelog on `v2`, pushes the release commit and tag, and publishes the GitHub Release.
-6. Verify the published tag and release, then review and merge the synchronization PR from `v2` to `nvg-develop`.
-   Select **Create a merge commit** again. Finish this step before preparing the next release.
+   [`release-pr.yaml`](../.github/workflows/release-pr.yaml) creates or reuses the PR from `nvg-develop` to `v2`.
+3. Review the changes and normal CI checks. If GitHub requests **Approve workflows to run**, approve them.
+   Approve the PR and merge it with **Create a merge commit**.
+4. **Release**, defined in [`release.yaml`](../.github/workflows/release.yaml), runs after that PR is merged.
+   Its run summary shows the calculated version before publication. It updates the version and changelog on `v2`,
+   pushes the release commit and tag, publishes the GitHub Release, and creates or reuses a PR back to `nvg-develop`.
+5. Verify the published release, then review and merge that synchronization PR with **Create a merge commit**.
+   Finish this before preparing another release so development includes the release metadata and tag history.
 
-When there is no version-changing commit, **Prepare release** succeeds with `changed=false` and creates no PR or tag.
-The version preview is a calculation, not a publication.
+**Prepare release** only opens the promotion PR; version calculation happens in **Release**.
+Merging the implementation into `nvg-develop` alone does not publish anything.
 
-## Version selection
+## Versions
 
-The workflow uses Python Semantic Release `10.7.0` and `build==1.3.0`.
-Published, stable major 2 GitHub Releases provide the baseline after the first publication.
-Before that, both branches must include the latest published stable major 1 release.
-For the first major 2 release only, the version calculation uses `--major` to produce `2.0.0`.
-Later releases use normal semantic version calculation. A new major needs its own release branch and policy.
+The publication workflow uses Python Semantic Release `10.7.0` and `build==1.3.0`.
+The first major 2 publication uses `--major` to produce `2.0.0`; later releases use normal semantic versioning.
+Use Conventional Commits: `fix:` normally produces a patch and `feat:` a minor release.
+Breaking changes that require a new major need a separate release branch and policy.
+If there are no version-changing commits, a successful run creates no new release tag.
 
-An existing major 2 tag without a matching published release requires investigation;
-it is not a reason to overwrite the tag or silently bootstrap another first release.
+## Pending one-time repository setup
 
-## Repository setup
-
-A maintainer completes this setup before the first promotion:
+This setup has not been provisioned by the implementation. A maintainer must complete it before publishing:
 
 - Create `v2` from the last published version 1 tag, `v1.2.5`.
-- Create an active ruleset targeting only `refs/heads/v2`. Require a PR, one approval, resolved conversations,
-  and these checks: `Release policy`, `Tests`, `pre-commit`, and `wheel (ubuntu-latest, 3.14)`.
-  Allow merge commits only; block force pushes and branch deletion.
-- Allow the `DeployKey` actor to bypass only this `v2` ruleset so the release can push its version commit.
-  This actor covers repository deploy keys; it does not identify just `RELEASE_DEPLOY_KEY`.
-  Do not add this bypass to development rulesets.
-- Only after the `v2` ruleset is active, exclude exactly `refs/heads/v2` from the existing development rules
-  that include `refs/heads/v*`. Keep their other protections in place.
-- Create the `release-v2` environment, restricted to branch `v2`. Store the private SSH key in its
-  `RELEASE_DEPLOY_KEY` secret and register the public key as a repository deploy key with write access.
-- Under **Settings → Actions → General → Workflow permissions**, enable
-  **Allow GitHub Actions to create and approve pull requests**. PR creation uses `GITHUB_TOKEN`;
-  a maintainer still reviews and approves the PR. Use merge commits for synchronization PRs too.
+- Protect `v2` with reviewed PRs and the normal CI checks. Limit the `DeployKey` bypass to its `v2` ruleset;
+  this actor covers repository deploy keys. Keep development protections and bypass permissions separate.
+- Create environment `release-v2`, restricted to branch `v2`. Store its private SSH deploy key as
+  `RELEASE_DEPLOY_KEY` and register the public key as a repository deploy key with write access.
+- Enable **Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests**.
+  PR creation uses `GITHUB_TOKEN`; a maintainer reviews and approves the PRs.
 
-The publication job obtains the deploy key through `release-v2` and uses SSH for Git pushes.
-`GITHUB_TOKEN` is used for GitHub API operations, including PRs and releases.
-No GitHub App secret is selected automatically. If GitHub requires workflow approval for a bot-created PR,
-use **Approve workflows to run** before waiting for checks.
+Git pushes use the SSH deploy key; GitHub API operations use `GITHUB_TOKEN`.
+The workflows do not configure repository protections, create credentials, or select a GitHub App secret automatically.
 
-## If a run fails
+## Retry and recovery
 
-| Situation | Action |
-| --- | --- |
-| The release PR exists but checks have not started | Open the PR and approve its workflows when GitHub requests it. |
-| The version check says development lacks the published baseline | Merge the previous synchronization PR into `nvg-develop`, then rerun the check. |
-| Publication succeeded but creating the synchronization PR failed | Rerun the **Release** job. If `v2` still points to a published release, it creates/reuses the PR without publishing again. If the log says `v2` advanced beyond the promotion, use the latest promotion run. |
-| A tag exists without a published GitHub Release, or Git/API publication failed partway through | Inspect the remote tag, release commit, and GitHub Release before retrying; resolve the failed step without forcing or replacing tags. |
-| The synchronization PR conflicts | Resolve its conflicts, run the checks, and merge it with a merge commit before the next release. |
+If a run fails, inspect its log and the remote release, tag, and branch state before retrying.
+After publication, a failed synchronization-PR step can be retried to create or reuse that PR.
+Partial publication failures may need manual repair; do not force or replace published tags.
+Resolve synchronization-PR conflicts and merge it back before the next release.
 
-The retry path after a completed publication does not make every partial Git/API failure automatically recoverable.
-Check the workflow log and remote state for those failures.
+## Use the release
 
-## Use a published release
-
-`v2` is the release branch. Pin consumers to a published version tag, for example after `v2.0.0` is available:
-
-```yaml
-- repo: https://github.com/NovigoTechnology/test_utils
-  rev: v2.0.0
-  hooks:
-    - id: validate_override_annotations
-```
-
-For Python installation, use the same published tag:
-
-```bash
-pip install "git+https://github.com/NovigoTechnology/test_utils.git@v2.0.0"
-```
+After `v2.0.0` is published, set `rev: v2.0.0` in the `test_utils` entry of `.pre-commit-config.yaml`.
+For Python: `pip install "git+https://github.com/NovigoTechnology/test_utils.git@v2.0.0"`.
+Use a published version tag for consumers; `v2` is the publication branch.
