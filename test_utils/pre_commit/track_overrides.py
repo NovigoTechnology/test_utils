@@ -6,13 +6,14 @@ from collections.abc import Sequence
 
 import requests
 
+from test_utils.utils import local_overrides
 from test_utils.utils.local_overrides import LocalUpstreamSources, repository_root
 from test_utils.utils.override_metadata import github_repository, iter_annotations
+from test_utils.utils.override_tracking import compare_override
+from test_utils.utils.revision_sources import RevisionSources
 from test_utils.utils.track_overrides import (
 	UpstreamFetchError,
-	compare_method_diff,
 	download_file_from_commit,
-	extract_method,
 )
 
 
@@ -38,12 +39,13 @@ def get_all_python_files(repo_path):
 
 
 def get_last_commit_hash_for_file_in_branch(repo_url, file_path, base_branch):
+	"""Resolve the ref tip, including commits that only change imported modules."""
 	try:
 		username, repo_name = github_repository(repo_url)
 	except ValueError as exc:
 		raise UpstreamFetchError(str(exc)) from exc
 	api_url = f"https://api.github.com/repos/{username}/{repo_name}/commits"
-	params = {"path": file_path, "sha": base_branch}
+	params = {"sha": base_branch, "per_page": 1}
 	headers = {}
 	if token := os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
 		headers["Authorization"] = f"token {token}"
@@ -79,6 +81,8 @@ def check_tracked_methods(repo_directory, base_branch=None, apps_filter=None, *,
 	changed_methods = []
 	unverified = []
 	local = LocalUpstreamSources(repo_directory, apps_root) if base_branch is None else None
+	revisions = {}
+	remote_heads = {}
 	for file_path, source_code in get_all_python_files(repo_directory):
 		for annotation in iter_annotations(source_code):
 			app_name = annotation.get("APP")
@@ -97,36 +101,44 @@ def check_tracked_methods(repo_directory, base_branch=None, apps_filter=None, *,
 
 			try:
 				if local is not None:
-					old_file_content, new_file_content = local.compare_sources(
-						repo_url, commit_hash, original_file_path
-					)
+					checkout = local.checkout(repo_url)
+					latest_commit_hash = local.head(checkout)
+					download = local_overrides.download_file_from_commit
 				else:
-					latest_commit_hash = get_last_commit_hash_for_file_in_branch(
-						repo_url, original_file_path, base_branch
-					)
+					checkout = None
+					download = download_file_from_commit
+					if repo_url not in remote_heads:
+						remote_heads[repo_url] = get_last_commit_hash_for_file_in_branch(
+							repo_url, original_file_path, base_branch
+						)
+					latest_commit_hash = remote_heads[repo_url]
 					if not latest_commit_hash:
 						raise UpstreamFetchError(
 							f"Cannot resolve upstream revision for {original_file_path} on {base_branch}"
 						)
-					if latest_commit_hash == commit_hash:
-						continue
-					old_file_content = download_file_from_commit(repo_url, commit_hash, original_file_path)
-					new_file_content = download_file_from_commit(
-						repo_url, latest_commit_hash, original_file_path
-					)
+				for revision in (commit_hash, latest_commit_hash):
+					key = (repo_url, revision)
+					if key not in revisions:
+						revisions[key] = RevisionSources(
+							repo_url, revision, checkout=checkout, download=download
+						)
+				result = compare_override(
+					revisions[repo_url, commit_hash],
+					revisions[repo_url, latest_commit_hash],
+					original_file_path,
+					method_name,
+				)
 			except (UpstreamFetchError, requests.RequestException, OSError) as e:
 				unverified.append(f"{file_path}: {method_name}: {e}")
 				continue
 
-			method_at_hash = extract_method(old_file_content, method_name)
-			latest_method = extract_method(new_file_content, method_name)
-
-			diff = compare_method_diff(method_at_hash, latest_method)
-			if diff:
+			if result.status == "unverified":
+				unverified.append(f"{file_path}: {method_name}: {result.diagnostic}")
+			elif result.status == "changed":
 				changed_methods.append(
 					{
 						"title": f"{app_name}: `{method_name}` in `{original_file_path}` has changed:",
-						"diff": diff,
+						"diff": result.diff,
 					}
 				)
 
@@ -218,12 +230,11 @@ def main(argv: Sequence[str] | None = None):
 				print(f"  {message}")
 			print("")
 
-		# Exit 2 says nothing about drift, only that upstream could not be verified. Callers
-		# must not read it as a clean run.
-		if changed_methods:
-			sys.exit(1)
+		# Incomplete verification takes precedence even when other overrides changed.
 		if unverified:
 			sys.exit(2)
+		if changed_methods:
+			sys.exit(1)
 	sys.exit(0)
 
 

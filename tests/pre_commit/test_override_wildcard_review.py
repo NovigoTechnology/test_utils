@@ -1,6 +1,7 @@
 """Wildcard imports must not leave stale callable definitions verifiable."""
 
 import ast
+from types import SimpleNamespace
 
 import pytest
 from test_validate_override_annotations import (
@@ -64,7 +65,7 @@ def test_wildcard_import_replaces_an_earlier_explicit_reexport(bench):
 	assert SourceResolver(apps).resolve("nagus.overrides.get_coa").reference == "nagus.active.get_coa"
 
 
-def test_wildcard_rebinding_is_reported_by_tracking_instead_of_unchanged(bench, monkeypatch):
+def test_unresolved_wildcard_is_unverified_instead_of_a_confirmed_change(bench, monkeypatch):
 	register_function(bench, annotation())
 	monkeypatch.setattr(tracker, "get_last_commit_hash_for_file_in_branch", lambda *args: "b" * 40)
 	monkeypatch.setattr(
@@ -72,10 +73,23 @@ def test_wildcard_rebinding_is_reported_by_tracking_instead_of_unchanged(bench, 
 		"download_file_from_commit",
 		lambda repo, sha, path: "def get_coa(): pass\nfrom active import *",
 	)
+
+	def get(url, **kwargs):
+		assert "/git/trees/" in url
+		return SimpleNamespace(
+			status_code=200,
+			json=lambda: {
+				"truncated": False,
+				"tree": [{"type": "blob", "path": "erpnext/accounts/utils.py"}],
+			},
+		)
+
+	monkeypatch.setattr(tracker.requests, "get", get)
 	changes, unverified = tracker.check_tracked_methods(str(bench / "nagus"), "main")
-	assert not unverified
-	assert len(changes) == 1
-	assert "could not be resolved" in changes[0]["diff"]
+	assert not changes
+	assert len(unverified) == 1
+	assert "Ambiguous wildcard import" in unverified[0]
+	assert "active" in unverified[0]
 
 
 def test_unrelated_explicit_imports_do_not_shadow_module_functions(bench):

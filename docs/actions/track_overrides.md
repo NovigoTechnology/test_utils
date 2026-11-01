@@ -8,6 +8,9 @@ It automatically detects the base branch from the pull request that triggers the
 Tracking compares the annotated upstream implementation at `HASH` with the selected upstream
 revision. Different hashes alone do not imply drift: the tracked implementation must differ.
 An invalid or unavailable baseline is reported as unverified, never as unchanged.
+Tracking shares the static resolver used by `validate_override_annotations`. It reads each
+implementation and its imports from the corresponding Git revision, including wildcard
+exports, without importing apps or starting a Frappe site.
 
 
 ## Method Annotation
@@ -77,11 +80,16 @@ track_overrides
 track_overrides --apps-root ../
 ```
 
-Exit codes are 0 for no detected drift, 1 for changes/removal/unresolved tracked methods, and
-2 for unverified upstream source or invalid configuration. A scan without annotations exits 0.
+Exit codes are 0 for verified implementations without changes, 1 for confirmed changes or
+removals, and 2 for unresolved or ambiguous methods, unavailable source, or invalid
+configuration. When a scan contains both confirmed changes and unverified overrides, it
+prints both and exits 2. A scan without annotations exits 0.
 The CLI prints the scan directory and comparison target rather than silently skipping work.
 
 Use `--base-branch` to explicitly compare with a remote branch/ref instead of local HEAD.
+The target is the tip of that ref, so changes in imported files are included even when the
+annotated file itself has not changed. Remote comparisons require access to a complete
+GitHub file index; an unavailable or truncated index is reported as unverified.
 For **monorepos** (bench structure with apps/frappe, apps/erpnext, etc.), use `--directory .` to scan
 the entire workspace—matching GHA behavior. Optionally add `--app` to limit which apps are checked:
 

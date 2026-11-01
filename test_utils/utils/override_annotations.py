@@ -37,6 +37,14 @@ class ResolutionError(ValueError):
 	"""An override cannot be verified from the configured checkouts."""
 
 
+class MissingSymbolError(ResolutionError):
+	"""A readable namespace proves that the requested declaration is absent."""
+
+	def __init__(self, message, *, owner_resolved=False):
+		super().__init__(message)
+		self.owner_resolved = owner_resolved
+
+
 def read_tree(path: Path) -> ast.Module:
 	try:
 		return ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
@@ -381,13 +389,20 @@ class Symbol:
 
 
 class SourceResolver:
-	def __init__(self, apps: list[App]):
+	def __init__(self, apps: list[App], *, require_unique_definitions: bool = False):
 		self.apps = {app.name: app for app in apps}
 		self.modules: dict[Path, Module] = {}
+		# Tracking metadata requires uniqueness; MRO resolution also uses declaration-time prefixes.
+		self.require_unique_definitions = require_unique_definitions
+
+	# Revision-backed callers override source access, retaining the same analysis.
+	read_tree = staticmethod(read_tree)
+	is_file = staticmethod(Path.is_file)
+	is_dir = staticmethod(Path.is_dir)
 
 	def module(self, app: App, name: str, path: Path) -> Module:
 		if path not in self.modules:
-			self.modules[path] = Module(app, name, path, read_tree(path))
+			self.modules[path] = Module(app, name, path, self.read_tree(path))
 		return self.modules[path]
 
 	def source_module(self, reference: str, *, require_symbol: bool = False) -> tuple[Module, list[str]]:
@@ -404,10 +419,10 @@ class SourceResolver:
 		for end in ends:
 			stem = app.package.joinpath(*parts[1:end])
 			for path in (stem.with_suffix(".py"), stem / "__init__.py"):
-				if not path.is_file():
+				if not self.is_file(path):
 					continue
 				return self.module(app, ".".join(parts[:end]), path), parts[end:]
-			if stem.is_dir():
+			if self.is_dir(stem):
 				# A namespace package has no declarations of its own.
 				return Module(
 					app, ".".join(parts[:end]), stem / "__init__.py", ast.Module(body=[], type_ignores=[])
@@ -429,13 +444,7 @@ class SourceResolver:
 			raise ResolutionError(f"Ambiguous export cycle for {module.name}.{name}")
 		seen = seen | {key}
 		bindings = scope_bindings(body)
-		if any(
-			isinstance(node, ast.Call)
-			and isinstance(node.func, ast.Name)
-			and node.func.id in {"exec", "globals", "locals"}
-			for statement in body
-			for node in executable_nodes(statement)
-		):
+		if self.dynamic_namespace([body], {name, "__all__"}, module.tree):
 			raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
 		all_bindings = bindings.get("__all__", [])
 		if all_bindings:
@@ -466,13 +475,13 @@ class SourceResolver:
 					isinstance(node, ast.Name) and node.id == "__all__"
 					for statement in body
 					if statement is not assignment
-					for node in executable_nodes(statement)
+					for node in executable_nodes(statement, tree=module.tree)
 				):
 					raise ValueError
 			except (AttributeError, ValueError, TypeError, SyntaxError) as exc:
 				raise ResolutionError(f"Ambiguous dynamic __all__ in {module.path}") from exc
 			return name in values
-		if "__getattr__" in bindings:
+		if "__getattr__" in bindings or self.dynamic_namespace([body], {"__getattr__"}, module.tree):
 			raise ResolutionError(f"Ambiguous dynamic exports (__getattr__) in {module.path}")
 		if self.binding(module, body, "__all__", limits, seen) is not None:
 			raise ResolutionError(f"Ambiguous reexported __all__ in {module.path}")
@@ -524,22 +533,66 @@ class SourceResolver:
 			raise ResolutionError(f"Invalid dotted Python reference: {reference!r}")
 		return self.resolve_from(provider, name)
 
+	@staticmethod
+	def dynamic_namespace(scopes, names, tree):
+		"""Reject unsupported namespace access without interpreting its effects."""
+		namespace_calls = {"exec", "globals", "locals", "vars", "setattr", "delattr"}
+		for scope in scopes:
+			for statement in scope:
+				for node in executable_nodes(statement, tree=tree):
+					if (
+						isinstance(node, ast.Call)
+						and (
+							(isinstance(node.func, ast.Name) and node.func.id in namespace_calls)
+							or (isinstance(node.func, ast.Attribute) and node.func.attr in namespace_calls)
+						)
+					) or (
+						isinstance(node, ast.Attribute)
+						and (
+							node.attr == "__dict__"
+							or (
+								(isinstance(node.ctx, (ast.Store, ast.Del)) or node.attr == "__all__")
+								and node.attr in names
+							)
+						)
+					):
+						return True
+					if isinstance(node, ast.ClassDef):
+						body = runtime_body(tree, node)
+						# Global declarations apply even inside a typing-only branch.
+						global_names = {
+							name
+							for item in scope_statements(node.body)
+							if isinstance(item, ast.Global)
+							for name in item.names
+						}
+						if global_names.intersection(names, scope_bindings(body)):
+							return True
+		return False
+
 	def resolve_in(self, module, parts, limits, seen, *, dotted_path=False):
 		body = self.module_body(module, limits)
+		scopes = [body]
 		key = (module.path, ".".join(parts), len(body), "resolve")
 		if key in seen:
 			raise ResolutionError(f"Ambiguous cyclic import for {module.name}.{'.'.join(parts)}")
 		seen = seen | {key}
 		decorators = overload_names(body)
 		for index, name in enumerate(parts):
+			if self.dynamic_namespace(scopes, parts, module.tree):
+				raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
 			binding = self.binding(module, body, name, limits, seen, decorators)
 			if index == 0 and len(parts) > 1 and module.path.name == "__init__.py":
 				prefix = f"{module.name}.{name}"
 				stem = module.app.package.joinpath(*prefix.split(".")[1:])
-				if stem.is_dir() or stem.with_suffix(".py").is_file():
+				if self.is_dir(stem) or self.is_file(stem.with_suffix(".py")):
 					if binding is None:
 						child, _ = self.source_module(prefix)
-						return self.resolve_in(child, parts[1:], limits, seen, dotted_path=dotted_path)
+						try:
+							return self.resolve_in(child, parts[1:], limits, seen, dotted_path=dotted_path)
+						except MissingSymbolError as exc:
+							exc.owner_resolved = True
+							raise
 					if dotted_path:
 						raise ResolutionError(
 							f"Ambiguous package attribute and child module {prefix}; identify the source provider explicitly"
@@ -549,8 +602,13 @@ class SourceResolver:
 					raise ResolutionError(
 						f"Ambiguous circular import: {name!r} is not yet declared in {module.path}"
 					)
-				raise ResolutionError(
-					f"Upstream symbol {module.name}.{'.'.join(parts)} not found in {module.path}; it may have been removed or renamed"
+				if "__getattr__" in scope_bindings(body) or (
+					index == 0 and self.dynamic_namespace([body], {"__getattr__"}, module.tree)
+				):
+					raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
+				raise MissingSymbolError(
+					f"Upstream symbol {module.name}.{'.'.join(parts)} not found in {module.path}; it may have been removed or renamed",
+					owner_resolved=index > 0,
 				)
 			if isinstance(binding.node, ast.alias) and index == 0:
 				if isinstance(binding.statement, ast.ImportFrom):
@@ -575,6 +633,9 @@ class SourceResolver:
 									f"Ambiguous dotted import at {module.path}:{binding.statement.lineno}: {binding.node.name}"
 								)
 				try:
+					if isinstance(binding.statement, ast.Import) and not binding.node.asname:
+						# A root package alone does not prove the imported child exists.
+						self.source_module(binding.node.name)
 					imported, _ = self.source_module(reference)
 					return self.resolve_in(
 						imported,
@@ -584,6 +645,13 @@ class SourceResolver:
 						dotted_path=isinstance(binding.statement, ast.Import) and not binding.node.asname,
 					)
 				except ResolutionError as exc:
+					if isinstance(exc, MissingSymbolError):
+						if exc.owner_resolved or (
+							isinstance(binding.statement, ast.Import) and binding.node.asname and tail
+						):
+							# The class or imported module exists; its member is absent.
+							exc.owner_resolved = True
+							raise
 					raise ResolutionError(
 						f"Ambiguous import at {module.path}:{binding.statement.lineno} ({'.'.join([reference, *tail])}): {exc}"
 					) from exc
@@ -592,11 +660,17 @@ class SourceResolver:
 					f"Ambiguous non-definition {name!r} in {module.path}:{binding.statement.lineno}"
 				)
 			node = binding.node
+			qualname = ".".join(parts[: index + 1])
+			if self.require_unique_definitions and unique_definition(module.tree, qualname) is not node:
+				raise ResolutionError(
+					f"Ambiguous declarations for {module.name}.{qualname}; METHOD must identify one implementation"
+				)
 			if index == len(parts) - 1:
-				return Symbol(module, ".".join(parts), node, limits)
+				return Symbol(module, qualname, node, limits)
 			if not isinstance(node, ast.ClassDef):
 				break
 			body = runtime_body(module.tree, node)
+			scopes.append(body)
 			decorators |= overload_names(body)
 		raise ResolutionError(f"Cannot resolve definition {module.name}.{'.'.join(parts)}")
 

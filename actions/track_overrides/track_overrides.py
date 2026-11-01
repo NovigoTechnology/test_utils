@@ -1,93 +1,27 @@
+"""Compatibility entry point for the shared override tracker."""
+
 import os
 import sys
 
-import requests
-
-from test_utils.utils.override_metadata import github_repository, iter_annotations
-from test_utils.utils.track_overrides import (
-	UpstreamFetchError,
-	compare_method_diff,
-	download_file_from_commit,
-	extract_method,
-)
+from test_utils.pre_commit import track_overrides as tracker
+from test_utils.utils.track_overrides import UpstreamFetchError
 
 
 def get_last_commit_hash_for_file_in_branch(repo_url, file_path):
-	try:
-		username, repo_name = github_repository(repo_url)
-	except ValueError as exc:
-		raise UpstreamFetchError(str(exc)) from exc
-	api_url = f"https://api.github.com/repos/{username}/{repo_name}/commits"
-	branch = os.getenv("GITHUB_BASE_REF", "develop")
-	params = {"path": file_path, "sha": branch}
-	response = requests.get(
-		api_url,
-		params=params,
-		headers={"Authorization": f"token {os.getenv('GITHUB_TOKEN')}"},
+	return tracker.get_last_commit_hash_for_file_in_branch(
+		repo_url, file_path, os.getenv("GITHUB_BASE_REF") or "develop"
 	)
-
-	if response.status_code != 200:
-		print(f"Failed to fetch commits: {response.status_code} - {response.reason}")
-		return None
-
-	commits = response.json()
-	return commits[0]["sha"] if commits else None
 
 
 def compare_commit_hashes(directory):
-	changed_methods = []
-	for root, _, files in os.walk(directory):
-		for file_name in files:
-			if not file_name.endswith(".py"):
-				continue
-
-			abs_path = os.path.join(root, file_name)
-			rel_path = os.path.relpath(abs_path, directory)
-			try:
-				with open(abs_path, encoding="utf-8", errors="replace") as file:
-					source_code = file.read()
-			except OSError:
-				continue
-
-			for annotation in iter_annotations(source_code):
-				app_name = annotation.get("APP")
-				commit_hash = annotation["HASH"]
-				repo = annotation["REPO"]
-				file_path = annotation["PATH"]
-				method_name = annotation["METHOD"]
-				# Infer app from path if APP not in annotation
-				if not app_name and "/" in rel_path:
-					parts = rel_path.replace("\\", "/").split("/")
-					app_name = parts[1] if parts[0] == "apps" and len(parts) > 1 else parts[0]
-				elif not app_name:
-					app_name = "unknown"
-
-				latest_commit_hash = get_last_commit_hash_for_file_in_branch(repo, file_path)
-				if not latest_commit_hash or latest_commit_hash == commit_hash:
-					continue
-
-				old_file_content = download_file_from_commit(repo, commit_hash, file_path)
-				new_file_content = download_file_from_commit(repo, latest_commit_hash, file_path)
-
-				if not old_file_content or not new_file_content:
-					changed_methods.append(
-						f"- **{app_name}**: `{method_name}` in `{file_path}` changed, but could not fetch file contents."
-					)
-					continue
-
-				old_method = extract_method(old_file_content, method_name)
-				new_method = extract_method(new_file_content, method_name)
-
-				diff = compare_method_diff(old_method, new_method)
-				if diff:
-					changed_methods.append(
-						f"### **{app_name}**: `{method_name}` in `{file_path}` has changed:\n\n```diff\n{diff}\n```"
-					)
-
-	return changed_methods
+	changes, unverified = tracker.check_tracked_methods(directory, os.getenv("GITHUB_BASE_REF") or "develop")
+	reports = [f"### {change['title']}\n\n```diff\n{change['diff']}\n```" for change in changes]
+	if unverified:
+		raise UpstreamFetchError("\n\n".join([*reports, *unverified]))
+	return reports
 
 
 if __name__ == "__main__":
-	changed_methods = compare_commit_hashes(sys.argv[1])
-	if changed_methods:
-		print("\n".join(changed_methods))
+	tracker.main(
+		["--directory", sys.argv[1], "--base-branch", os.getenv("GITHUB_BASE_REF") or "develop", "--no-color"]
+	)
