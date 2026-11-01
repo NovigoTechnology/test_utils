@@ -534,14 +534,85 @@ class SourceResolver:
 		return self.resolve_from(provider, name)
 
 	@staticmethod
+	def _class_namespace_reads(statement, tree, module_bindings):
+		"""Recognize immediate items() enumeration of a uniquely declared local class."""
+		if isinstance(statement, DEFINITION_NODES):
+			return {}
+		nodes = list(executable_nodes(statement, tree=tree))
+		if any(isinstance(node, DEFINITION_NODES) for node in nodes):
+			return {}
+		written = {
+			node.id for node in nodes if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+		}
+		if "vars" in written:
+			return {}
+
+		def ordinary_class(owner):
+			if not isinstance(owner, ast.ClassDef) or owner.decorator_list or owner.keywords:
+				return None
+			dependencies = {owner.name}
+			for base in owner.bases:
+				if not isinstance(base, ast.Name):
+					return None
+				if base.id == "object" and "object" not in module_bindings:
+					dependencies.add("object")
+					continue
+				parent = unique_definition(tree, base.id)
+				if not isinstance(parent, ast.ClassDef) or parent.end_lineno >= owner.lineno:
+					return None
+				inherited = ordinary_class(parent)
+				if inherited is None:
+					return None
+				dependencies.update(inherited)
+			return dependencies
+
+		reads = {}
+		for node in nodes:
+			if not (
+				isinstance(node, ast.Call)
+				and not node.args
+				and not node.keywords
+				and isinstance(node.func, ast.Attribute)
+				and node.func.attr == "items"
+			):
+				continue
+			call = node.func.value
+			if not (
+				isinstance(call, ast.Call)
+				and isinstance(call.func, ast.Name)
+				and call.func.id == "vars"
+				and len(call.args) == 1
+				and not call.keywords
+				and isinstance(call.args[0], ast.Name)
+				and call.args[0].id not in written
+			):
+				continue
+			owner = unique_definition(tree, call.args[0].id)
+			dependencies = ordinary_class(owner)
+			if dependencies and owner.end_lineno < call.lineno:
+				reads[call] = dependencies
+		return reads
+
+	@staticmethod
 	def dynamic_namespace(scopes, names, tree):
 		"""Reject unsupported namespace access without interpreting its effects."""
 		namespace_calls = {"exec", "globals", "locals", "vars", "setattr", "delattr"}
+		module_bindings = scope_bindings(scopes[0])
+		class_reads = {}
+		if isinstance(tree, ast.Module) and not {"vars", "*"}.intersection(module_bindings):
+			for statement in scopes[0]:
+				class_reads.update(SourceResolver._class_namespace_reads(statement, tree, module_bindings))
+		names = set(names)
+		if class_reads:
+			names.add("vars")
+			for dependencies in class_reads.values():
+				names.update(dependencies)
 		for scope in scopes:
 			for statement in scope:
 				for node in executable_nodes(statement, tree=tree):
 					if (
 						isinstance(node, ast.Call)
+						and node not in class_reads
 						and (
 							(isinstance(node.func, ast.Name) and node.func.id in namespace_calls)
 							or (isinstance(node.func, ast.Attribute) and node.func.attr in namespace_calls)
@@ -566,7 +637,8 @@ class SourceResolver:
 							if isinstance(item, ast.Global)
 							for name in item.names
 						}
-						if global_names.intersection(names, scope_bindings(body)):
+						bindings = scope_bindings(body)
+						if global_names.intersection(names, bindings):
 							return True
 		return False
 
