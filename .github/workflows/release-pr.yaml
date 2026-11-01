@@ -1,0 +1,47 @@
+name: Prepare release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: prepare-release-v2
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/nvg-develop'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Install release tools
+        run: python -m pip install python-semantic-release==10.7.0
+      - name: Prepare local promotion
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c v2 origin/v2
+          git merge --no-ff origin/nvg-develop -m 'chore: preview release promotion'
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+      - name: Calculate next version
+        id: version
+        run: python .github/scripts/release_version.py --published-releases "$RUNNER_TEMP/releases.json" --source-sha origin/nvg-develop
+      - name: Open or update release PR
+        if: steps.version.outputs.changed == 'true'
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.version }}
+        run: python .github/scripts/release_flow.py open-promotion --version "$NEXT_VERSION"
+      - name: Nothing to publish
+        if: steps.version.outputs.changed != 'true'
+        run: echo 'No publishable changes; no release PR or tag was created.' >> "$GITHUB_STEP_SUMMARY"

@@ -2,6 +2,8 @@
 
 Test Utils is a collection of development tools for [Frappe](https://frappeframework.com) apps: test fixtures, pre-commit hooks, GitHub Action templates, and static analysis. This fork is maintained by Novigo Technology at [github.com/NovigoTechnology/test_utils](https://github.com/NovigoTechnology/test_utils), based on the original project by [AgriTheory](https://github.com/agritheory/test_utils).
 
+[Publishing releases](releases.md) explains the `nvg-develop` → `v2` release workflow, maintainer setup, synchronization PRs, and recovery.
+
 ---
 
 ## Tools

@@ -3,7 +3,8 @@ name: Pre-commit
 on:
     push:
         branches:
-            main
+            - nvg-develop
+            - v2
     pull_request:
 
 jobs:

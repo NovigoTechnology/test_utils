@@ -4,6 +4,8 @@ Development tools for [Frappe](https://frappeframework.com) apps: test fixtures,
 
 See [docs/index.md](docs/index.md) for a full overview of every tool.
 
+Maintainers: see [Publishing releases](docs/releases.md) for the `nvg-develop` → `v2` release and synchronization workflow.
+
 ---
 
 ## Installation
