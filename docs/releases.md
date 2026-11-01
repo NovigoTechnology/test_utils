@@ -46,15 +46,22 @@ it is not a reason to overwrite the tag or silently bootstrap another first rele
 
 ## Repository setup
 
-A maintainer configures these once:
+A maintainer completes this setup before the first promotion:
 
+- Create `v2` from the last published version 1 tag, `v1.2.5`.
+- Create an active ruleset targeting only `refs/heads/v2`. Require a PR, one approval, resolved conversations,
+  and these checks: `Release policy`, `Tests`, `pre-commit`, and `wheel (ubuntu-latest, 3.14)`.
+  Allow merge commits only; block force pushes and branch deletion.
+- Allow the `DeployKey` actor to bypass only this `v2` ruleset so the release can push its version commit.
+  This actor covers repository deploy keys; it does not identify just `RELEASE_DEPLOY_KEY`.
+  Do not add this bypass to development rulesets.
+- Only after the `v2` ruleset is active, exclude exactly `refs/heads/v2` from the existing development rules
+  that include `refs/heads/v*`. Keep their other protections in place.
+- Create the `release-v2` environment, restricted to branch `v2`. Store the private SSH key in its
+  `RELEASE_DEPLOY_KEY` secret and register the public key as a repository deploy key with write access.
 - Under **Settings → Actions → General → Workflow permissions**, enable
-  **Allow GitHub Actions to create and approve pull requests**.
-  PR creation uses `GITHUB_TOKEN`; a maintainer still reviews and approves the PR.
-- Create the `release-v2` environment and restrict its deployment branch to `v2`.
-- Add the private SSH deploy key as environment secret `RELEASE_DEPLOY_KEY`, and register its public key
-  as a deploy key with write access to this repository.
-- Keep the required PR checks and merge-commit option enabled.
+  **Allow GitHub Actions to create and approve pull requests**. PR creation uses `GITHUB_TOKEN`;
+  a maintainer still reviews and approves the PR. Use merge commits for synchronization PRs too.
 
 The publication job obtains the deploy key through `release-v2` and uses SSH for Git pushes.
 `GITHUB_TOKEN` is used for GitHub API operations, including PRs and releases.
