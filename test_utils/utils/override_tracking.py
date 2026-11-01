@@ -13,7 +13,7 @@ from test_utils.utils.override_annotations import (
 	ResolutionError,
 	SourceResolver,
 )
-from test_utils.utils.python_source import FUNCTION_NODES, runtime_body, scope_statements, unique_definition
+from test_utils.utils.python_source import FUNCTION_NODES, runtime_body, scope_statements
 from test_utils.utils.track_overrides import UpstreamFetchError, compare_method_diff
 
 
@@ -40,7 +40,10 @@ class RevisionResolver(SourceResolver):
 			name = provider.parts[0] if len(provider.parts) > 1 else provider.stem
 			if name.isidentifier():
 				roots.add(name)
-		super().__init__([App(name, self.root, self.root / name) for name in sorted(roots)])
+		super().__init__(
+			[App(name, self.root, self.root / name) for name in sorted(roots)],
+			require_unique_definitions=True,
+		)
 
 	def relative(self, path):
 		return path.relative_to(self.root).as_posix()
@@ -94,10 +97,6 @@ class RevisionResolver(SourceResolver):
 			symbol = self.resolve_from(self.reference, next(iter(candidates)))
 		if not isinstance(symbol.node, FUNCTION_NODES):
 			raise ResolutionError(f"METHOD {method!r} does not resolve to a function")
-		if unique_definition(symbol.module.tree, symbol.qualname) is not symbol.node:
-			raise ResolutionError(
-				f"Ambiguous declarations for {symbol.reference}; METHOD must identify one implementation"
-			)
 		source = self.sources.read(self.relative(symbol.module.path))
 		start = min([symbol.node.lineno, *(dec.lineno for dec in symbol.node.decorator_list)])
 		return "\n".join(source.splitlines()[start - 1 : symbol.node.end_lineno])
