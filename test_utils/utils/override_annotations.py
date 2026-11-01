@@ -794,6 +794,190 @@ class SourceResolver:
 		bases = self.base_classes(symbol)
 		return [symbol, *self.compose(bases, seen | {symbol.identity})]
 
+	def controller_variants(self, controller: Symbol) -> list[Symbol]:
+		"""Resolve explicit class selections without executing a controller factory."""
+		hierarchy = self.hierarchy(controller)
+		owner = next(
+			(
+				s
+				for s in hierarchy
+				if "resolve_controller" in scope_bindings(runtime_body(s.module.tree, s.node))
+			),
+			None,
+		)
+		if owner is None:
+			return []
+		factory = self.method(owner, "resolve_controller")
+		if (
+			not isinstance(factory, ast.FunctionDef)
+			or len(factory.decorator_list) != 1
+			or not any(isinstance(d, ast.Name) and d.id == "classmethod" for d in factory.decorator_list)
+		):
+			raise ResolutionError(f"Cannot statically inspect {owner.reference}.resolve_controller")
+		body = factory.body
+		bindings = scope_bindings(body)
+		parameters = [*factory.args.posonlyargs, *factory.args.args]
+		receiver = parameters[0].arg if parameters else None
+		if (
+			len(parameters) != 1
+			or factory.args.kwonlyargs
+			or factory.args.vararg
+			or factory.args.kwarg
+			or bindings.get(receiver)
+			or "*" in bindings
+			or any(
+				isinstance(node, (ast.Yield, ast.YieldFrom, ast.Await))
+				for statement in body
+				for node in executable_nodes(statement)
+			)
+		):
+			raise ResolutionError(f"Reassigned controller receiver in {owner.reference}.resolve_controller")
+		imports = {
+			alias: statement
+			for statement in scope_statements(body)
+			if isinstance(statement, (ast.Import, ast.ImportFrom))
+			for alias in statement.names
+		}
+		controller_ids = {s.identity for s in hierarchy}
+		referenced_classes = set()
+
+		def resolve_class(name, position):
+			referenced_classes.add(name)
+			definitions = bindings.get(name, [])
+			if definitions:
+				alias = definitions[0]
+				statement = imports.get(alias)
+				if (
+					len(definitions) != 1
+					or not isinstance(statement, ast.ImportFrom)
+					or statement not in body
+					or statement.lineno >= position
+					or alias.name == "*"
+				):
+					raise ResolutionError(f"Unavailable controller class {name!r} in {owner.reference}")
+				symbol = self.resolve_registration(owner.module.import_reference(statement, alias))
+			else:
+				symbol = self.resolve_from(owner.module.name, name)
+			if not isinstance(symbol.node, ast.ClassDef):
+				raise ResolutionError(f"Controller implementation {symbol.reference} is not a class")
+			return symbol
+
+		def class_names(expression):
+			if isinstance(expression, ast.Name):
+				return [expression]
+			if isinstance(expression, ast.IfExp):
+				try:
+					condition = bool(ast.literal_eval(expression.test))
+				except ValueError, TypeError, SyntaxError:
+					return class_names(expression.body) + class_names(expression.orelse)
+				return class_names(expression.body if condition else expression.orelse)
+			raise ResolutionError(f"Unsupported controller selection in {owner.reference}.resolve_controller")
+
+		def subclass_names(expression):
+			if isinstance(expression, ast.Name):
+				return [expression]
+			if isinstance(expression, ast.BinOp) and isinstance(expression.op, ast.BitOr):
+				return subclass_names(expression.left) + subclass_names(expression.right)
+			raise ResolutionError(f"Unsupported subclass guard in {owner.reference}.resolve_controller")
+
+		def known_test(test):
+			try:
+				return bool(ast.literal_eval(test))
+			except ValueError, TypeError, SyntaxError:
+				pass
+			if (
+				isinstance(test, ast.Compare)
+				and isinstance(test.left, ast.Name)
+				and test.left.id == receiver
+				and len(test.ops) == 1
+				and isinstance(test.comparators[0], ast.Name)
+				and isinstance(test.ops[0], (ast.Is, ast.IsNot))
+			):
+				target = resolve_class(test.comparators[0].id, test.lineno)
+				matches = target.identity == controller.identity
+				return not matches if isinstance(test.ops[0], ast.IsNot) else matches
+			if (
+				isinstance(test, ast.Call)
+				and isinstance(test.func, ast.Name)
+				and test.func.id == "issubclass"
+				and len(test.args) == 2
+				and not test.keywords
+				and isinstance(test.args[0], ast.Name)
+				and test.args[0].id == receiver
+			):
+				if "issubclass" in bindings or "issubclass" in scope_bindings(
+					runtime_body(owner.module.tree)
+				):
+					raise ResolutionError(f"Shadowed issubclass in {owner.reference}")
+				targets = [resolve_class(n.id, n.lineno) for n in subclass_names(test.args[1])]
+				return any(target.identity in controller_ids for target in targets)
+			return None
+
+		returns = []
+
+		def collect(statements):
+			for statement in statements:
+				if isinstance(statement, ast.Return):
+					returns.append(statement)
+					return True
+				if isinstance(statement, ast.If):
+					known = known_test(statement.test)
+					if known is not None:
+						if collect(statement.body if known else statement.orelse):
+							return True
+					else:
+						left = collect(statement.body)
+						right = collect(statement.orelse)
+						if left and right:
+							return True
+				elif not isinstance(
+					statement,
+					(ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign, ast.Expr, ast.Pass, ast.Global),
+				):
+					raise ResolutionError(f"Unsupported controller control flow in {owner.reference}")
+			return False
+
+		if not collect(body) or not returns:
+			raise ResolutionError(f"Cannot determine implementations of {owner.reference}.resolve_controller")
+		variants = {}
+		for statement in returns:
+			value = statement.value
+			if isinstance(value, ast.Name) and value.id == receiver:
+				continue
+			if (
+				isinstance(value, ast.Name)
+				and bindings.get(value.id)
+				and not isinstance(bindings[value.id][0], ast.alias)
+			):
+				definitions = bindings[value.id]
+				if (
+					len(definitions) != 1
+					or not isinstance(definitions[0], (ast.Assign, ast.AnnAssign))
+					or definitions[0] not in body
+					or definitions[0].lineno >= statement.lineno
+				):
+					raise ResolutionError(
+						f"Unavailable controller selection {value.id!r} in {owner.reference}"
+					)
+				value = definitions[0].value
+			for name in class_names(value):
+				variant = resolve_class(name.id, name.lineno)
+				if owner.identity not in {s.identity for s in self.hierarchy(variant)}:
+					raise ResolutionError(
+						f"Controller implementation {variant.reference} must inherit {owner.reference}"
+					)
+				if variant.identity != controller.identity:
+					variants[variant.identity] = variant
+		if self.dynamic_namespace(
+			[body], set(bindings) | referenced_classes | {receiver, owner.node.name}, owner.module.tree
+		) or any(
+			isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del))
+			for statement in body
+			for node in executable_nodes(statement, tree=owner.module.tree)
+		):
+			raise ResolutionError(f"Dynamic controller selection in {owner.reference}.resolve_controller")
+		return list(variants.values())
+
 	def compose(self, bases: list[Symbol], seen: frozenset[DeclarationId] = frozenset()) -> list[Symbol]:
 		"""Linearize the bases of a synthetic Frappe extended controller."""
 		sequences = [self.hierarchy(base, seen) for base in bases] + [bases[:]]
@@ -954,11 +1138,15 @@ class AnnotationValidator:
 				raise ResolutionError(
 					f"Cannot resolve upstream controller or base class for DocType {doctype!r}"
 				)
+			controller = self.extension_controller(doctype, hooks) if extension else custom
+			variant_hierarchies = [
+				self.resolver.hierarchy(v) for v in self.resolver.controller_variants(controller)
+			]
 			# Include inherited methods from local mixins, not just the registered class.
 			methods = {}
 			class_bindings = {
 				owner.identity: scope_bindings(runtime_body(owner.module.tree, owner.node))
-				for owner in hierarchy
+				for owner in [*hierarchy, *(s for variant in variant_hierarchies for s in variant)]
 			}
 			for owner in hierarchy:
 				for name, declarations in class_bindings[owner.identity].items():
@@ -987,6 +1175,38 @@ class AnnotationValidator:
 					if isinstance(node, FUNCTION_NODES)
 				]
 				annotated = any(parse_annotation(ast.get_docstring(node) or "")[0] for node in definitions)
+				if upstream_owner is None:
+					candidates = {}
+					for variant in variant_hierarchies:
+						for owner in variant:
+							if owner.module.app.name == self.app.name:
+								continue
+							if name not in class_bindings[owner.identity]:
+								continue
+							node = self.resolver.method(owner, name)
+							if isinstance(node, FUNCTION_NODES):
+								symbol = Symbol(owner.module, f"{owner.qualname}.{name}", node)
+								candidates[symbol.identity] = (owner, symbol)
+							break
+					if candidates:
+						choices = list(candidates.values())
+						if len(choices) > 1 and annotated:
+							fields, _ = parse_annotation(ast.get_docstring(definitions[-1]) or "")
+							choices = [
+								(owner, symbol)
+								for owner, symbol in choices
+								if fields.get("METHOD") == symbol.qualname
+								and fields.get("PATH")
+								== symbol.module.path.relative_to(symbol.module.app.root).as_posix()
+							]
+						if len(choices) != 1 and annotated:
+							self.error(
+								method,
+								f"DocType {doctype}",
+								"Ambiguous controller implementation; specify its qualified METHOD and PATH",
+							)
+							continue
+						upstream_owner, original = choices[0]
 				if upstream_owner is None and not annotated:
 					# Helper descriptors may define a getter and setter with the same name.
 					continue
