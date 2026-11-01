@@ -139,6 +139,67 @@ class Later:
 """
 		},
 	)
+
+
+def test_enclosing_bindings_never_fall_back_to_module_decorator_imports(tmp_path):
+	source = "from .decorators import expose\nclass Document:\n    @expose()\n    def method(self): pass\n"
+	for signature, outer_binding, inner_declaration in (
+		("functools=replacement", "", ""),
+		("", "from .hostile import functools", ""),
+		("", "", "global functools"),
+		("", "functools = replacement", "nonlocal functools"),
+	):
+		decorator = (
+			"import functools\ndef expose("
+			+ signature
+			+ "):\n"
+			+ ("    " + outer_binding + "\n" if outer_binding else "")
+			+ "    def decorate(fn):\n"
+			+ ("        " + inner_declaration + "\n" if inner_declaration else "")
+			+ "        @functools.wraps(fn)\n        def wrapper(): pass\n"
+			+ "        return wrapper\n    return decorate\n"
+		)
+		assert not prove(tmp_path, source, {"decorators": decorator}), decorator
+
+
+def test_decorator_return_proof_rejects_mutated_callable_state_in_every_provider(tmp_path):
+	source = "from .decorators import expose\nclass Document:\n    @expose()\n    def method(self): pass\n"
+	identity = "def expose():\n    def decorate(fn): return fn\n    return decorate\n"
+	assert prove(tmp_path, source, {"decorators": identity})
+	for state in ("__code__", "__defaults__", "__kwdefaults__"):
+		assert not prove(tmp_path, source, {"decorators": identity + f"expose.{state} = replacement\n"}), (
+			state
+		)
+		mutated_local = identity.replace(
+			"    return decorate", f"    decorate.{state} = replacement\n    return decorate"
+		)
+		assert not prove(tmp_path, source, {"decorators": mutated_local}), state
+	helpers = {
+		"decorators": "def expose():\n    def decorate(fn):\n        from .validation import validate\n        fn = validate(fn)\n        return fn\n    return decorate\n",
+		"validation": "def validate(func):\n    def wrapper(): pass\n    return wrapper\nvalidate.__code__ = replacement\n",
+	}
+	assert not prove(tmp_path, source, helpers)
+
+
+def test_returned_decorator_definition_must_be_unconditional_and_local(tmp_path):
+	source = "from .decorators import expose\nclass Document:\n    @expose()\n    def method(self): pass\n"
+	for decorator in (
+		"def expose():\n    if False:\n        def decorate(fn): return fn\n    return decorate\n",
+		"def expose():\n    global decorate\n    def decorate(fn): return fn\n    return decorate\n",
+	):
+		assert not prove(tmp_path, source, {"decorators": decorator}), decorator
+
+
+def test_local_constructor_must_remain_unchanged_at_its_use(tmp_path):
+	assert prove(tmp_path, COLLECTION)
+	for mutation in (
+		"class Binder:\n    global Collection\n    Collection = replacement\n",
+		"Collection.__getattribute__ = replacement\n",
+		"Collection.__set_name__.__code__ = replacement\n",
+	):
+		assert not prove(tmp_path, COLLECTION.replace("class Document:", mutation + "class Document:")), (
+			mutation
+		)
 	# Reassigning a property invalidates its setter/deleter proof.
 	assert not prove(
 		tmp_path,

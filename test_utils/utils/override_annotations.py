@@ -623,8 +623,10 @@ class SourceResolver:
 		):
 			return {}
 
-		def ordinary_class(owner):
+		def ordinary_class(owner, *, ancestor=False):
 			if not isinstance(owner, ast.ClassDef) or owner.decorator_list or owner.keywords:
+				return None
+			if ancestor and "__init_subclass__" in scope_bindings(runtime_body(tree, owner)):
 				return None
 			dependencies = {owner.name}
 			for base in owner.bases:
@@ -636,7 +638,7 @@ class SourceResolver:
 				parent = unique_definition(tree, base.id)
 				if not isinstance(parent, ast.ClassDef) or parent.end_lineno >= owner.lineno:
 					return None
-				inherited = ordinary_class(parent)
+				inherited = ordinary_class(parent, ancestor=True)
 				if inherited is None:
 					return None
 				dependencies.update(inherited)
@@ -817,7 +819,18 @@ class SourceResolver:
 			decorators |= overload_names(body)
 		raise ResolutionError(f"Cannot resolve definition {module.name}.{'.'.join(parts)}")
 
-	def base_classes(self, symbol: Symbol) -> list[Symbol]:
+	def base_classes(self, symbol: Symbol, *, ordinary_metaclass=False) -> list[Symbol]:
+		if ordinary_metaclass and (
+			symbol.node.decorator_list
+			or symbol.node.keywords
+			or self.dynamic_namespace(
+				[runtime_body(symbol.module.tree), runtime_body(symbol.module.tree, symbol.node)],
+				{"__bases__", "__class__", "__subclasscheck__"},
+				symbol.module.tree,
+				module=symbol.module,
+			)
+		):
+			raise ResolutionError(f"Unverified metaclass behavior for {symbol.reference}")
 		result = []
 		for base in symbol.node.bases:
 			name = dotted_name(base)
@@ -839,6 +852,8 @@ class SourceResolver:
 				prefix = symbol.module.import_reference(binding.statement, binding.node)
 				reference = ".".join([prefix, *(name.split(".") if binding.node.name == "*" else rest)])
 			if reference in {"abc.ABC", "typing.Protocol", "typing_extensions.Protocol", "builtins.object"}:
+				if ordinary_metaclass and reference != "builtins.object":
+					raise ResolutionError(f"Unverified metaclass behavior for {symbol.reference}")
 				continue
 			resolved = self.resolve_in(symbol.module, name.split("."), limits, frozenset())
 			if not isinstance(resolved.node, ast.ClassDef):
@@ -1023,6 +1038,9 @@ class SourceResolver:
 				):
 					raise ResolutionError(f"Shadowed issubclass in {owner.reference}")
 				targets = [resolve_class(n.id, n.lineno) for n in subclass_names(test.args[1])]
+				for target in targets:
+					for ancestor in self.hierarchy(target):
+						self.base_classes(ancestor, ordinary_metaclass=True)
 				return any(target.identity in controller_ids for target in targets)
 			return None
 

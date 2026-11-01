@@ -19,32 +19,54 @@ from test_utils.utils.python_source import (
 def class_values_are_safe(resolver, module, owner):
 	"""Return False whenever an enumerated value could customize ``__class__`` lookup."""
 	checking = set()
+	callable_state = {"__code__", "__defaults__", "__kwdefaults__", "__annotations__"}
+	lexical_cache = {}
+
+	def function_scopes(provider, body):
+		key = (provider.path, id(body))
+		if key not in lexical_cache:
+			parents = {
+				child: parent for parent in ast.walk(provider.tree) for child in ast.iter_child_nodes(parent)
+			}
+			node = next(
+				(
+					n
+					for n in parents
+					if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.body is body
+				),
+				None,
+			)
+			scopes = []
+			while node is not None:
+				if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+					scopes.append(node)
+				node = parents.get(node)
+			lexical_cache[key] = scopes
+		return lexical_cache[key]
 
 	def parameter_shadow(name, provider, body):
-		for function in ast.walk(provider.tree):
-			if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)) and function.body is body:
-				parameters = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
-				return (
-					any(p.arg == name for p in parameters)
-					or any(p and p.arg == name for p in (function.args.vararg, function.args.kwarg))
-					or (
-						name not in scope_bindings(body)
-						and any(
-							isinstance(statement, ast.AnnAssign)
-							and statement.value is None
-							and isinstance(statement.target, ast.Name)
-							and statement.target.id == name
-							for statement in scope_statements(body)
-						)
-					)
-				)
+		for function in function_scopes(provider, body):
+			parameters = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
+			if any(p.arg == name for p in parameters) or any(
+				p and p.arg == name for p in (function.args.vararg, function.args.kwarg)
+			):
+				return True
+			if function.body is not body and name in scope_bindings(function.body):
+				return True
+			for statement in scope_statements(function.body):
+				if isinstance(statement, (ast.Global, ast.Nonlocal)) and name in statement.names:
+					return True
+				if (
+					isinstance(statement, ast.AnnAssign)
+					and statement.value is None
+					and isinstance(statement.target, ast.Name)
+					and statement.target.id == name
+				):
+					return True
 		return False
 
 	def namespace_safe(expression, provider, local_body, names):
-		deferred = any(
-			isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)) and function.body is local_body
-			for function in ast.walk(provider.tree)
-		)
+		deferred = bool(function_scopes(provider, local_body))
 		prefix = runtime_body(provider.tree)
 		if not deferred:
 			prefix = [statement for statement in prefix if statement.lineno < expression.lineno]
@@ -158,14 +180,22 @@ def class_values_are_safe(resolver, module, owner):
 		if any(
 			isinstance(n, ast.Nonlocal) and {name, parameter}.intersection(n.names)
 			for n in ast.walk(function)
+		) or any(
+			isinstance(n, ast.Global) and {name, parameter}.intersection(n.names)
+			for n in scope_statements(body)
 		):
 			return None
-		if resolver.dynamic_namespace([body], {name, parameter}, provider.tree, module=provider):
+		if resolver.dynamic_namespace(
+			[runtime_body(provider.tree), body],
+			{name, parameter, function.name, *callable_state},
+			provider.tree,
+			module=provider,
+		):
 			return None
 		definitions = scope_bindings(body).get(name, [])
 		if len(definitions) == 1 and isinstance(definitions[0], ast.FunctionDef):
 			returned = definitions[0]
-			if function_descriptor(returned, provider, body, seen) == "function":
+			if returned in body and function_descriptor(returned, provider, body, seen) == "function":
 				return provider, returned
 		if name != parameter:
 			return None
@@ -192,12 +222,31 @@ def class_values_are_safe(resolver, module, owner):
 			return False
 		if call.func.id in scope_bindings(class_body):
 			return False
+		if parameter_shadow(call.func.id, module, class_body) or not namespace_safe(
+			call,
+			module,
+			class_body,
+			{
+				call.func.id,
+				"__class__",
+				"__getattribute__",
+				"__getattr__",
+				"__new__",
+				"__init__",
+				"__setattr__",
+				"__set_name__",
+				"__slots__",
+				*callable_state,
+			},
+		):
+			return False
 		constructor = unique_definition(module.tree, call.func.id)
 		if (
 			not isinstance(constructor, ast.ClassDef)
 			or constructor.bases
 			or constructor.decorator_list
 			or constructor.keywords
+			or constructor.lineno >= call.lineno
 		):
 			return False
 		body = runtime_body(module.tree, constructor)
