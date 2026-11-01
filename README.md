@@ -4,6 +4,8 @@ Development tools for [Frappe](https://frappeframework.com) apps: test fixtures,
 
 See [docs/index.md](docs/index.md) for a full overview of every tool.
 
+Maintainers: see the [release circuit](docs/releases.md).
+
 ---
 
 ## Installation
