@@ -345,6 +345,10 @@ def test_typing_only_and_deferred_writes_do_not_make_runtime_methods_ambiguous(r
 		"from typing import TYPE_CHECKING\nclass Other:\n"
 		"    if TYPE_CHECKING:\n        exec('pass')\n" + SOURCE,
 		SOURCE + "def later():\n    File.save_file = replacement\n",
+		SOURCE
+		+ "import sys\nfrom typing import TYPE_CHECKING\n"
+		+ "if TYPE_CHECKING:\n    sys.modules[__name__].File = Replacement\n",
+		"import sys\n" + SOURCE + "def later():\n    sys.modules[__name__].File = Replacement\n",
 	):
 		(upstream / "upstream/controller.py").write_text(source)
 		commit(upstream)
@@ -378,3 +382,89 @@ def test_dynamic_module_writes_do_not_verify_existing_functions_or_reexports(rev
 			output = capsys.readouterr().out
 			assert "has changed" not in output
 			assert "dynamic" in output.lower()
+
+
+def test_module_attribute_writes_do_not_verify_replaced_class_owners(revision_bench, capsys):
+	custom, upstream, _ = revision_bench
+	(upstream / "upstream/provider.py").write_text(SOURCE)
+	for source, method, owner in (
+		(SOURCE, "File.save_file", "File"),
+		("import upstream.provider as provider\n", "provider.File.save_file", "provider.File"),
+		(
+			"class Outer:\n    class File:\n        def save_file(self):\n            return 'original'\n",
+			"Outer.File.save_file",
+			"Outer.File",
+		),
+	):
+		controller = upstream / "upstream/controller.py"
+		controller.write_text("import sys\n" + source)
+		sha = commit(upstream)
+		annotate(custom, sha, (method,))
+		controller.write_text(controller.read_text() + f"sys.modules[__name__].{owner} = Replacement\n")
+		commit(upstream)
+		assert run() == 2, method
+		output = capsys.readouterr().out
+		assert "has changed" not in output
+		assert "dynamic" in output.lower()
+
+
+def test_imported_module_members_are_distinct_from_missing_modules_and_dangling_from_imports(
+	revision_bench, capsys
+):
+	custom, upstream, _ = revision_bench
+	function = "def value():\n    return 'original'\n"
+	file_class = "class File:\n    def save_file(self):\n        return 'original'\n"
+	provider = upstream / "upstream/provider.py"
+	for statement, method, source, removed, expected, module_missing in (
+		("import upstream.provider as provider", "provider.value", function, "pass\n", 1, 2),
+		("import upstream.provider", "upstream.provider.value", function, "pass\n", 1, 2),
+		("from upstream import provider", "provider.value", function, "pass\n", 1, 2),
+		("import upstream as root", "root.provider.value", function, "pass\n", 1, 1),
+		(
+			"import upstream.provider as provider",
+			"provider.File.save_file",
+			file_class,
+			"class File: pass\n",
+			1,
+			2,
+		),
+		("import upstream.provider as provider", "provider.File.save_file", file_class, "pass\n", 1, 2),
+		("import upstream as root", "root.provider.File.save_file", file_class, "class File: pass\n", 1, 1),
+		("from .provider import value", "value", function, "pass\n", 2, 2),
+		("from .provider import File", "File.save_file", file_class, "pass\n", 2, 2),
+	):
+		(upstream / "upstream/controller.py").write_text(statement + "\n")
+		provider.write_text(source)
+		sha = commit(upstream)
+		annotate(custom, sha, (method,))
+		provider.write_text(removed)
+		commit(upstream)
+		assert run() == expected, method
+		output = capsys.readouterr().out
+		if expected == 1:
+			assert "has changed" in output
+			assert "return 'original'" in output
+		else:
+			assert "has changed" not in output
+			assert "Could not check" in output
+		provider.unlink()
+		commit(upstream)
+		assert run() == module_missing, method
+		assert ("has changed" in capsys.readouterr().out) == (module_missing == 1)
+
+
+def test_wildcard_export_checks_ignore_typing_only_class_effects_but_reject_active_effects(
+	revision_bench, capsys
+):
+	_, upstream, _ = revision_bench
+	for effect in ("exec('pass')", "__all__.append('File')"):
+		for typing_only, expected in ((True, 0), (False, 2)):
+			body = f"    if TYPE_CHECKING:\n        {effect}\n" if typing_only else f"    {effect}\n"
+			(upstream / "upstream/after.py").write_text(
+				"from typing import TYPE_CHECKING\n__all__ = []\nclass Other:\n" + body
+			)
+			commit(upstream)
+			assert run() == expected, (effect, typing_only)
+			output = capsys.readouterr().out
+			assert "has changed" not in output
+			assert ("Could not check" in output) == (expected == 2)

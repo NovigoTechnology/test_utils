@@ -447,7 +447,7 @@ class SourceResolver:
 			and isinstance(node.func, ast.Name)
 			and node.func.id in {"exec", "globals", "locals"}
 			for statement in body
-			for node in executable_nodes(statement)
+			for node in executable_nodes(statement, tree=module.tree)
 		):
 			raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
 		all_bindings = bindings.get("__all__", [])
@@ -479,7 +479,7 @@ class SourceResolver:
 					isinstance(node, ast.Name) and node.id == "__all__"
 					for statement in body
 					if statement is not assignment
-					for node in executable_nodes(statement)
+					for node in executable_nodes(statement, tree=module.tree)
 				):
 					raise ValueError
 			except (AttributeError, ValueError, TypeError, SyntaxError) as exc:
@@ -538,7 +538,7 @@ class SourceResolver:
 		return self.resolve_from(provider, name)
 
 	@staticmethod
-	def dynamic_namespace(scopes, name, tree):
+	def dynamic_namespace(scopes, names, tree):
 		"""Reject unsupported namespace writes without interpreting their effects."""
 		return any(
 			(
@@ -549,7 +549,7 @@ class SourceResolver:
 			or (
 				isinstance(node, ast.Attribute)
 				and isinstance(node.ctx, (ast.Store, ast.Del))
-				and node.attr == name
+				and node.attr in names
 			)
 			for scope in scopes
 			for statement in scope
@@ -565,7 +565,7 @@ class SourceResolver:
 		seen = seen | {key}
 		decorators = overload_names(body)
 		for index, name in enumerate(parts):
-			if self.dynamic_namespace(scopes, name if index else parts[-1], module.tree):
+			if self.dynamic_namespace(scopes, parts, module.tree):
 				raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
 			binding = self.binding(module, body, name, limits, seen, decorators)
 			if index == 0 and len(parts) > 1 and module.path.name == "__init__.py":
@@ -574,7 +574,11 @@ class SourceResolver:
 				if self.is_dir(stem) or self.is_file(stem.with_suffix(".py")):
 					if binding is None:
 						child, _ = self.source_module(prefix)
-						return self.resolve_in(child, parts[1:], limits, seen, dotted_path=dotted_path)
+						try:
+							return self.resolve_in(child, parts[1:], limits, seen, dotted_path=dotted_path)
+						except MissingSymbolError as exc:
+							exc.owner_resolved = True
+							raise
 					if dotted_path:
 						raise ResolutionError(
 							f"Ambiguous package attribute and child module {prefix}; identify the source provider explicitly"
@@ -584,7 +588,7 @@ class SourceResolver:
 					raise ResolutionError(
 						f"Ambiguous circular import: {name!r} is not yet declared in {module.path}"
 					)
-				if "__getattr__" in scope_bindings(body) or self.dynamic_namespace(scopes, name, module.tree):
+				if "__getattr__" in scope_bindings(body):
 					raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
 				raise MissingSymbolError(
 					f"Upstream symbol {module.name}.{'.'.join(parts)} not found in {module.path}; it may have been removed or renamed",
@@ -613,6 +617,9 @@ class SourceResolver:
 									f"Ambiguous dotted import at {module.path}:{binding.statement.lineno}: {binding.node.name}"
 								)
 				try:
+					if isinstance(binding.statement, ast.Import) and not binding.node.asname:
+						# A root package alone does not prove the imported child exists.
+						self.source_module(binding.node.name)
 					imported, _ = self.source_module(reference)
 					return self.resolve_in(
 						imported,
@@ -622,10 +629,13 @@ class SourceResolver:
 						dotted_path=isinstance(binding.statement, ast.Import) and not binding.node.asname,
 					)
 				except ResolutionError as exc:
-					if isinstance(exc, MissingSymbolError) and exc.owner_resolved:
-						# The imported class was resolved; its missing member is
-						# distinct from an import whose target cannot be resolved.
-						raise
+					if isinstance(exc, MissingSymbolError):
+						if exc.owner_resolved or (
+							isinstance(binding.statement, ast.Import) and binding.node.asname and tail
+						):
+							# The class or imported module exists; its member is absent.
+							exc.owner_resolved = True
+							raise
 					raise ResolutionError(
 						f"Ambiguous import at {module.path}:{binding.statement.lineno} ({'.'.join([reference, *tail])}): {exc}"
 					) from exc
