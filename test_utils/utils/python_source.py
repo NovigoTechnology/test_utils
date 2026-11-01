@@ -150,6 +150,17 @@ class AmbiguousBinding(ValueError):
 
 def runtime_body(tree: ast.Module | ast.ClassDef, owner=None) -> list[ast.stmt]:
 	"""Prune proven typing-only branches; mutation makes further guard proofs unsupported."""
+	# Parsed source trees stay immutable during analysis. Keep the map with its
+	# root so revisions and standalone class contexts cannot share guard proofs.
+	bodies = getattr(tree, "_test_utils_runtime_bodies", None)
+	if bodies is None:
+		bodies = _runtime_body_mapping(tree)
+		tree._test_utils_runtime_bodies = bodies
+	# Callers may edit their list without changing the cached analysis.
+	return list(bodies.get(owner or tree, (owner or tree).body))
+
+
+def _runtime_body_mapping(tree):
 	bodies = {}
 	module_guards = set()
 	unsupported = False
@@ -227,7 +238,7 @@ def runtime_body(tree: ast.Module | ast.ClassDef, owner=None) -> list[ast.stmt]:
 	bodies[tree] = collect(
 		tree.body, module_guards if isinstance(tree, ast.Module) else set(), globals_in(tree.body)
 	)
-	return bodies.get(owner or tree, (owner or tree).body)
+	return bodies
 
 
 def runtime_statements(body: list[ast.stmt]) -> list[ast.stmt]:
