@@ -56,17 +56,17 @@ def definition_expressions(node):
 		yield from (value for value in node.args.kw_defaults if value is not None)
 
 
-def executable_nodes(node):
+def executable_nodes(node, *, tree=None):
 	"""Walk definition-time expressions and class bodies, excluding deferred function bodies."""
 	yield node
 	if isinstance(node, (*DEFINITION_NODES, ast.Lambda)):
 		children = list(definition_expressions(node))
 		if isinstance(node, ast.ClassDef):
-			children.extend(node.body)
+			children.extend(runtime_body(tree, node) if tree is not None else node.body)
 	else:
 		children = ast.iter_child_nodes(node)
 	for child in children:
-		yield from executable_nodes(child)
+		yield from executable_nodes(child, tree=tree)
 
 
 def scope_bindings(body):

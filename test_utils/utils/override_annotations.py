@@ -537,14 +537,36 @@ class SourceResolver:
 			raise ResolutionError(f"Invalid dotted Python reference: {reference!r}")
 		return self.resolve_from(provider, name)
 
+	@staticmethod
+	def dynamic_namespace(scopes, name, tree):
+		"""Reject unsupported namespace writes without interpreting their effects."""
+		return any(
+			(
+				isinstance(node, ast.Call)
+				and isinstance(node.func, ast.Name)
+				and node.func.id in {"exec", "globals", "locals", "setattr", "delattr"}
+			)
+			or (
+				isinstance(node, ast.Attribute)
+				and isinstance(node.ctx, (ast.Store, ast.Del))
+				and node.attr == name
+			)
+			for scope in scopes
+			for statement in scope
+			for node in executable_nodes(statement, tree=tree)
+		)
+
 	def resolve_in(self, module, parts, limits, seen, *, dotted_path=False):
 		body = self.module_body(module, limits)
+		scopes = [body]
 		key = (module.path, ".".join(parts), len(body), "resolve")
 		if key in seen:
 			raise ResolutionError(f"Ambiguous cyclic import for {module.name}.{'.'.join(parts)}")
 		seen = seen | {key}
 		decorators = overload_names(body)
 		for index, name in enumerate(parts):
+			if self.dynamic_namespace(scopes, name if index else parts[-1], module.tree):
+				raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
 			binding = self.binding(module, body, name, limits, seen, decorators)
 			if index == 0 and len(parts) > 1 and module.path.name == "__init__.py":
 				prefix = f"{module.name}.{name}"
@@ -562,13 +584,7 @@ class SourceResolver:
 					raise ResolutionError(
 						f"Ambiguous circular import: {name!r} is not yet declared in {module.path}"
 					)
-				if "__getattr__" in scope_bindings(body) or any(
-					isinstance(node, ast.Call)
-					and isinstance(node.func, ast.Name)
-					and node.func.id in {"exec", "globals", "locals"}
-					for statement in body
-					for node in executable_nodes(statement)
-				):
+				if "__getattr__" in scope_bindings(body) or self.dynamic_namespace(scopes, name, module.tree):
 					raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
 				raise MissingSymbolError(
 					f"Upstream symbol {module.name}.{'.'.join(parts)} not found in {module.path}; it may have been removed or renamed",
@@ -623,6 +639,7 @@ class SourceResolver:
 			if not isinstance(node, ast.ClassDef):
 				break
 			body = runtime_body(module.tree, node)
+			scopes.append(body)
 			decorators |= overload_names(body)
 		raise ResolutionError(f"Cannot resolve definition {module.name}.{'.'.join(parts)}")
 

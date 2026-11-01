@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from test_utils.pre_commit import track_overrides
-from test_utils.utils.track_overrides import compare_method_diff, extract_method
+from test_utils.utils.track_overrides import UpstreamFetchError, compare_method_diff, extract_method
 
 SOURCE = """
 class One:
@@ -80,3 +80,24 @@ def custom():
 	assert len(changes) == 1
 	assert "One.validate" in str(changes)
 	assert '-        return "one"' in str(changes)
+
+
+def test_action_preserves_confirmed_changes_when_another_override_is_unverified(monkeypatch):
+	path = Path(__file__).resolve().parents[2] / "actions/track_overrides/track_overrides.py"
+	spec = importlib.util.spec_from_file_location("track_overrides_action", path)
+	module = importlib.util.module_from_spec(spec)
+	spec.loader.exec_module(module)
+	monkeypatch.setattr(
+		track_overrides,
+		"check_tracked_methods",
+		lambda *args: (
+			[{"title": "One.validate has changed", "diff": "-before\n+after"}],
+			["Two.validate: ambiguous"],
+		),
+	)
+	with pytest.raises(UpstreamFetchError) as result:
+		module.compare_commit_hashes("unused")
+	message = str(result.value)
+	assert "One.validate has changed" in message
+	assert "-before\n+after" in message
+	assert "Two.validate: ambiguous" in message

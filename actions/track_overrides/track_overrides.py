@@ -15,9 +15,10 @@ def get_last_commit_hash_for_file_in_branch(repo_url, file_path):
 
 def compare_commit_hashes(directory):
 	changes, unverified = tracker.check_tracked_methods(directory, os.getenv("GITHUB_BASE_REF") or "develop")
+	reports = [f"### {change['title']}\n\n```diff\n{change['diff']}\n```" for change in changes]
 	if unverified:
-		raise UpstreamFetchError("\n".join(unverified))
-	return [f"### {change['title']}\n\n```diff\n{change['diff']}\n```" for change in changes]
+		raise UpstreamFetchError("\n\n".join([*reports, *unverified]))
+	return reports
 
 
 if __name__ == "__main__":

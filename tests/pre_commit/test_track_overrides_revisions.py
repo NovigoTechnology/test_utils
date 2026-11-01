@@ -272,3 +272,109 @@ def test_explicit_package_path_does_not_select_a_colliding_module(revision_bench
 	assert "-    return 'before'" in output
 	assert "+    return 'after'" in output
 	assert "decoy" not in output
+
+
+def test_duplicate_owners_are_unverified_for_qualified_legacy_and_reexported_methods(revision_bench, capsys):
+	custom, upstream, _ = revision_bench
+	provider = upstream / "upstream/provider.py"
+	provider.write_text(
+		"class Base:\n    def validate(self):\n        return 'first'\n"
+		"class Controller(Base): pass\n"
+		"class Base:\n    def validate(self):\n        return 'second'\n"
+	)
+	(upstream / "upstream/controller.py").write_text("from .provider import Base\n")
+	sha = commit(upstream)
+	provider.write_text(provider.read_text().replace("'first'", "'changed'"))
+	commit(upstream)
+	for path, method in (
+		("upstream/provider.py", "Base.validate"),
+		("upstream/provider.py", "validate"),
+		("upstream/controller.py", "Base.validate"),
+	):
+		annotate(custom, sha, (method,), path=path)
+		assert run() == 2
+		output = capsys.readouterr().out
+		assert "has changed" not in output
+		assert "Ambiguous" in output
+
+
+def test_wildcards_can_resolve_other_module_roots_from_the_same_revision(revision_bench, capsys):
+	custom, upstream, _ = revision_bench
+	(upstream / "helpers.py").write_text("__all__ = []\n")
+	(upstream / "support").mkdir()
+	(upstream / "support/exports.py").write_text("__all__ = []\n")
+	controller = upstream / "upstream/controller.py"
+	controller.write_text(SOURCE + "from helpers import *\nfrom support.exports import *\n")
+	sha = commit(upstream)
+	annotate(custom, sha, ("File.save_file",))
+	assert run() == 0
+	assert "Could not check" not in capsys.readouterr().out
+	(upstream / "helpers.py").write_text(
+		"__all__ = ['File']\nclass File:\n    def save_file(self):\n        return 'replacement'\n"
+	)
+	commit(upstream)
+	assert run() == 1
+	assert "+        return 'replacement'" in capsys.readouterr().out
+
+
+def test_enclosing_mutations_do_not_prove_class_member_deletion(revision_bench, capsys):
+	custom, upstream, sha = revision_bench
+	annotate(custom, sha, ("File.save_file",))
+	for mutation in (
+		"File.save_file = replacement\n",
+		"Alias = File\nAlias.save_file = replacement\n",
+		"if enabled:\n    File.save_file = replacement\n",
+		"setattr(File, 'save_file', replacement)\n",
+		"exec('File.save_file = replacement')\n",
+	):
+		(upstream / "upstream/controller.py").write_text("class File: pass\n" + mutation)
+		commit(upstream)
+		assert run() == 2
+		output = capsys.readouterr().out
+		assert "has changed" not in output
+		assert "dynamic" in output.lower()
+
+
+def test_typing_only_and_deferred_writes_do_not_make_runtime_methods_ambiguous(revision_bench, capsys):
+	_, upstream, _ = revision_bench
+	for source in (
+		SOURCE.replace(
+			"class File:\n",
+			"from typing import TYPE_CHECKING\nclass File:\n    if TYPE_CHECKING:\n        exec('pass')\n",
+		),
+		"from typing import TYPE_CHECKING\nclass Other:\n"
+		"    if TYPE_CHECKING:\n        exec('pass')\n" + SOURCE,
+		SOURCE + "def later():\n    File.save_file = replacement\n",
+	):
+		(upstream / "upstream/controller.py").write_text(source)
+		commit(upstream)
+		assert run() == 0
+		assert "Could not check" not in capsys.readouterr().out
+
+
+def test_dynamic_writes_do_not_verify_a_stale_method_body(revision_bench, capsys):
+	_, upstream, _ = revision_bench
+	(upstream / "upstream/controller.py").write_text(SOURCE + "File.save_file = replacement\n")
+	commit(upstream)
+	assert run() == 2
+	output = capsys.readouterr().out
+	assert "has changed" not in output
+	assert "dynamic" in output.lower()
+
+
+def test_dynamic_module_writes_do_not_verify_existing_functions_or_reexports(revision_bench, capsys):
+	custom, upstream, _ = revision_bench
+	provider = upstream / "upstream/provider.py"
+	source = "def value():\n    return 'original'\n"
+	provider.write_text(source)
+	(upstream / "upstream/controller.py").write_text("from .provider import value\n")
+	sha = commit(upstream)
+	for mutation in ("exec('pass')\n", "globals()['value'] = replacement\n"):
+		provider.write_text(source + mutation)
+		commit(upstream)
+		for path in ("upstream/provider.py", "upstream/controller.py"):
+			annotate(custom, sha, ("value",), path=path)
+			assert run() == 2
+			output = capsys.readouterr().out
+			assert "has changed" not in output
+			assert "dynamic" in output.lower()
