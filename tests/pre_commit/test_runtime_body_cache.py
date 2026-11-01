@@ -39,7 +39,7 @@ def test_runtime_views_and_namespace_checks_build_each_tree_once(monkeypatch):
 	for owner in owners:
 		assert [node.name for node in python_source.runtime_body(tree, owner)] == ["value"]
 		list(python_source.executable_nodes(owner, tree=tree))
-		assert not SourceResolver.dynamic_namespace([python_source.runtime_body(tree)], {"value"}, tree)
+		assert not SourceResolver([]).dynamic_namespace([python_source.runtime_body(tree)], {"value"}, tree)
 	assert anchor_scans == 1
 
 

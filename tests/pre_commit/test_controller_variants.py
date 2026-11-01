@@ -235,9 +235,64 @@ def test_unavailable_imports_receivers_and_return_values_fail_closed(bench):
 	cases["generator callback"] = prefix + textwrap.indent(
 		"from .legacy import LegacyLedger\nyield LegacyLedger\nreturn LegacyLedger\n", "        "
 	)
+	cases["unassigned local annotation"] = (
+		CONTROLLER.replace("        from .legacy import LegacyLedger", "        LegacyLedger: type")
+		+ "\nfrom .legacy import LegacyLedger\n"
+	)
 	for name, source in cases.items():
 		write(bench / "erpnext" / PACKAGE / "ledger.py", source)
 		assert validate(bench).errors, name
+	for local_annotation in ("LegacyLedger: type", "cls: type"):
+		write(
+			bench / "erpnext" / PACKAGE / "ledger.py",
+			CONTROLLER.replace(
+				"        from .modern import ModernLedger",
+				"        from .modern import ModernLedger\n        " + local_annotation,
+			),
+		)
+		result = validate(bench)
+		assert result.checked == 1, local_annotation
+		assert not result.errors, (local_annotation, result.errors)
+
+
+def test_controller_factory_requires_unshadowed_builtin_decorator_and_subclass_guard(bench):
+	controllers(bench)
+	mixin(bench, backend_annotation())
+	write(bench / "erpnext" / PACKAGE / "decorators.py", "classmethod = lambda value: value\n")
+	cases = {
+		"module decorator": "classmethod = lambda value: value\n" + CONTROLLER,
+		"class decorator": CONTROLLER.replace(
+			"class Ledger(Document):", "class Ledger(Document):\n    classmethod = lambda value: value"
+		),
+		"decorator global write": (
+			"class Shadow:\n    global classmethod\n    classmethod = lambda value: value\n" + CONTROLLER
+		),
+		"decorator wildcard": "from .decorators import *\n" + CONTROLLER,
+		"subclass guard receiver parameter": CONTROLLER.replace("cls", "issubclass"),
+		"subclass guard module global write": (
+			"class Shadow:\n    global issubclass\n    issubclass = lambda *args: True\n" + CONTROLLER
+		),
+		"subclass guard factory global write": CONTROLLER.replace(
+			"        if issubclass",
+			"        if False:\n"
+			"            class Shadow:\n"
+			"                global issubclass\n"
+			"                issubclass = lambda *args: True\n"
+			"        if issubclass",
+		),
+	}
+	accepted = []
+	for name, source in cases.items():
+		write(bench / "erpnext" / PACKAGE / "ledger.py", source)
+		if not validate(bench).errors:
+			accepted.append(name)
+	assert not accepted, accepted
+	# Wildcards that do not export the builtin leave normal controller selection intact.
+	write(bench / "erpnext" / PACKAGE / "decorators.py", "utility = 1\n")
+	write(bench / "erpnext" / PACKAGE / "ledger.py", "from .decorators import *\n" + CONTROLLER)
+	result = validate(bench)
+	assert result.checked == 1
+	assert not result.errors
 
 
 def test_concrete_and_local_controllers_do_not_borrow_unrelated_variant_metadata(bench):

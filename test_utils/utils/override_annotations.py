@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path, PurePosixPath
 
+from test_utils.utils.namespace_types import class_values_are_safe
 from test_utils.utils.override_metadata import (
 	FIELDS,
 	github_repository,
@@ -392,6 +393,8 @@ class SourceResolver:
 	def __init__(self, apps: list[App], *, require_unique_definitions: bool = False):
 		self.apps = {app.name: app for app in apps}
 		self.modules: dict[Path, Module] = {}
+		self._verified_class_namespaces = set()
+		self._checking_class_namespaces = set()
 		# Tracking metadata requires uniqueness; MRO resolution also uses declaration-time prefixes.
 		self.require_unique_definitions = require_unique_definitions
 
@@ -444,7 +447,7 @@ class SourceResolver:
 			raise ResolutionError(f"Ambiguous export cycle for {module.name}.{name}")
 		seen = seen | {key}
 		bindings = scope_bindings(body)
-		if self.dynamic_namespace([body], {name, "__all__"}, module.tree):
+		if self.dynamic_namespace([body], {name, "__all__"}, module.tree, module=module):
 			raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
 		all_bindings = bindings.get("__all__", [])
 		if all_bindings:
@@ -481,7 +484,9 @@ class SourceResolver:
 			except (AttributeError, ValueError, TypeError, SyntaxError) as exc:
 				raise ResolutionError(f"Ambiguous dynamic __all__ in {module.path}") from exc
 			return name in values
-		if "__getattr__" in bindings or self.dynamic_namespace([body], {"__getattr__"}, module.tree):
+		if "__getattr__" in bindings or self.dynamic_namespace(
+			[body], {"__getattr__"}, module.tree, module=module
+		):
 			raise ResolutionError(f"Ambiguous dynamic exports (__getattr__) in {module.path}")
 		if self.binding(module, body, "__all__", limits, seen) is not None:
 			raise ResolutionError(f"Ambiguous reexported __all__ in {module.path}")
@@ -533,8 +538,7 @@ class SourceResolver:
 			raise ResolutionError(f"Invalid dotted Python reference: {reference!r}")
 		return self.resolve_from(provider, name)
 
-	@staticmethod
-	def _class_namespace_reads(statement, tree, module_bindings):
+	def _class_namespace_reads(self, statement, tree, module_bindings, module):
 		"""Allow an eager tuple of class keys filtered by the standard cached-property type."""
 		if statement not in runtime_body(tree) or not isinstance(statement, (ast.Assign, ast.AnnAssign)):
 			return {}
@@ -640,19 +644,34 @@ class SourceResolver:
 
 		owner = unique_definition(tree, call.args[0].id)
 		dependencies = ordinary_class(owner)
-		if dependencies and owner.end_lineno < call.lineno:
-			return {call: dependencies | builtins | {type_name}}
+		if dependencies and owner.end_lineno < call.lineno and module is not None:
+			key = (tree, owner)
+			if key not in self._verified_class_namespaces:
+				if key in self._checking_class_namespaces:
+					return {}
+				self._checking_class_namespaces.add(key)
+				try:
+					if not class_values_are_safe(self, module, owner):
+						return {}
+					# Source trees stay immutable for this resolver, including revisions.
+					self._verified_class_namespaces.add(key)
+				finally:
+					self._checking_class_namespaces.remove(key)
+			return {
+				call: dependencies
+				| builtins
+				| {type_name, "__class__", "__getattribute__", "__getattr__", "__slots__", "__new__"}
+			}
 		return {}
 
-	@staticmethod
-	def dynamic_namespace(scopes, names, tree):
+	def dynamic_namespace(self, scopes, names, tree, *, module=None):
 		"""Reject unsupported namespace access without interpreting its effects."""
 		namespace_calls = {"exec", "globals", "locals", "vars", "setattr", "delattr"}
 		module_bindings = scope_bindings(runtime_body(tree))
 		class_reads = {}
 		if isinstance(tree, ast.Module) and not {"vars", "*"}.intersection(module_bindings):
 			for statement in scopes[0]:
-				class_reads.update(SourceResolver._class_namespace_reads(statement, tree, module_bindings))
+				class_reads.update(self._class_namespace_reads(statement, tree, module_bindings, module))
 		names = set(names)
 		if class_reads:
 			names.add("vars")
@@ -672,6 +691,7 @@ class SourceResolver:
 						isinstance(node, ast.Attribute)
 						and (
 							node.attr == "__dict__"
+							or (class_reads and isinstance(node.ctx, (ast.Store, ast.Del)))
 							or (
 								(isinstance(node.ctx, (ast.Store, ast.Del)) or node.attr == "__all__")
 								and node.attr in names
@@ -702,7 +722,7 @@ class SourceResolver:
 		seen = seen | {key}
 		decorators = overload_names(body)
 		for index, name in enumerate(parts):
-			if self.dynamic_namespace(scopes, parts, module.tree):
+			if self.dynamic_namespace(scopes, parts, module.tree, module=module):
 				raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
 			binding = self.binding(module, body, name, limits, seen, decorators)
 			if index == 0 and len(parts) > 1 and module.path.name == "__init__.py":
@@ -726,7 +746,7 @@ class SourceResolver:
 						f"Ambiguous circular import: {name!r} is not yet declared in {module.path}"
 					)
 				if "__getattr__" in scope_bindings(body) or (
-					index == 0 and self.dynamic_namespace([body], {"__getattr__"}, module.tree)
+					index == 0 and self.dynamic_namespace([body], {"__getattr__"}, module.tree, module=module)
 				):
 					raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
 				raise MissingSymbolError(
@@ -828,11 +848,29 @@ class SourceResolver:
 
 	def method(self, owner: Symbol, name: str):
 		"""Inspect the selected class body, retaining module-level overload aliases."""
+		module_body = self.module_body(owner.module, owner.import_limits)
+		class_body = runtime_body(owner.module.tree, owner.node)
+		if self.dynamic_namespace(
+			[module_body, class_body],
+			[
+				*owner.qualname.split("."),
+				name,
+				"__code__",
+				"__defaults__",
+				"__kwdefaults__",
+				"__annotations__",
+			],
+			owner.module.tree,
+			module=owner.module,
+		):
+			raise ResolutionError(
+				f"Ambiguous dynamic namespace in {owner.module.path} for {owner.reference}.{name}"
+			)
 		try:
 			binding = select_binding(
-				runtime_body(owner.module.tree, owner.node),
+				class_body,
 				name,
-				decorators=overload_names(runtime_body(owner.module.tree)),
+				decorators=overload_names(module_body),
 			)
 		except AmbiguousBinding:
 			return None
@@ -865,10 +903,29 @@ class SourceResolver:
 			or not any(isinstance(d, ast.Name) and d.id == "classmethod" for d in factory.decorator_list)
 		):
 			raise ResolutionError(f"Cannot statically inspect {owner.reference}.resolve_controller")
+		module_body = runtime_body(owner.module.tree)
+		class_body = runtime_body(owner.module.tree, owner.node)
+		if (
+			self.binding(owner.module, module_body, "classmethod", (), frozenset()) is not None
+			or {"classmethod", "*"}.intersection(scope_bindings(class_body))
+			or self.dynamic_namespace(
+				[module_body, class_body], {"classmethod"}, owner.module.tree, module=owner.module
+			)
+		):
+			raise ResolutionError(f"Shadowed classmethod in {owner.reference}")
 		body = factory.body
 		bindings = scope_bindings(body)
 		parameters = [*factory.args.posonlyargs, *factory.args.args]
 		receiver = parameters[0].arg if parameters else None
+		# A bare annotation creates a function local even though it assigns no value.
+		for statement in scope_statements(body):
+			if (
+				isinstance(statement, ast.AnnAssign)
+				and statement.value is None
+				and isinstance(statement.target, ast.Name)
+				and statement.target.id != receiver
+			):
+				bindings.setdefault(statement.target.id, [statement])
 		if (
 			len(parameters) != 1
 			or factory.args.kwonlyargs
@@ -956,8 +1013,13 @@ class SourceResolver:
 				and isinstance(test.args[0], ast.Name)
 				and test.args[0].id == receiver
 			):
-				if "issubclass" in bindings or "issubclass" in scope_bindings(
-					runtime_body(owner.module.tree)
+				if (
+					receiver == "issubclass"
+					or "issubclass" in bindings
+					or self.binding(owner.module, module_body, "issubclass", (), frozenset()) is not None
+					or self.dynamic_namespace(
+						[module_body, body], {"issubclass"}, owner.module.tree, module=owner.module
+					)
 				):
 					raise ResolutionError(f"Shadowed issubclass in {owner.reference}")
 				targets = [resolve_class(n.id, n.lineno) for n in subclass_names(test.args[1])]
@@ -1020,7 +1082,10 @@ class SourceResolver:
 				if variant.identity != controller.identity:
 					variants[variant.identity] = variant
 		if self.dynamic_namespace(
-			[body], set(bindings) | referenced_classes | {receiver, owner.node.name}, owner.module.tree
+			[body],
+			set(bindings) | referenced_classes | {receiver, owner.node.name},
+			owner.module.tree,
+			module=owner.module,
 		) or any(
 			isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del))
 			for statement in body

@@ -2,6 +2,7 @@
 
 import ast
 import textwrap
+from pathlib import Path
 
 from test_track_overrides_defaults import commit
 from test_track_overrides_revisions import annotate, run
@@ -9,7 +10,7 @@ from test_track_overrides_revisions import revision_bench as revision_bench
 from test_validate_override_annotations import annotation, function_source, register_class, validate, write
 from test_validate_override_annotations import bench as bench
 
-from test_utils.utils.override_annotations import SourceResolver
+from test_utils.utils.override_annotations import App, Module, SourceResolver
 
 DOCUMENT = """from functools import cached_property
 
@@ -36,8 +37,11 @@ ENUMERATION = """CACHED_PROPERTIES = tuple(
 def test_class_namespace_read_exemption_only_applies_to_module_statements():
 	source = DOCUMENT + ENUMERATION + "class File(Document): pass\n"
 	tree = ast.parse(source)
+	app = App("upstream", Path("/upstream"), Path("/upstream"))
+	module = Module(app, "upstream.controller", app.root / "controller.py", tree)
+	resolver = SourceResolver([app])
 	# A declaration-time module prefix must retain the same verified read.
-	assert not SourceResolver.dynamic_namespace([tree.body[:-1]], {"File"}, tree)
+	assert not resolver.dynamic_namespace([tree.body[:-1]], {"File"}, tree, module=module)
 	for prefix, local_import in (
 		("", ""),
 		("def vars(value): return {}\n", ""),
@@ -47,7 +51,7 @@ def test_class_namespace_read_exemption_only_applies_to_module_statements():
 			DOCUMENT + prefix + "def factory():\n" + textwrap.indent(local_import + ENUMERATION, "    ")
 		)
 		factory = tree.body[-1]
-		assert SourceResolver.dynamic_namespace([factory.body], {"Document"}, tree)
+		assert resolver.dynamic_namespace([factory.body], {"Document"}, tree)
 
 
 def test_doctype_mro_allows_frappe_cached_property_enumeration(bench):
@@ -167,3 +171,39 @@ def test_shadowed_vars_or_class_arguments_remain_unverified(revision_bench, caps
 		output = capsys.readouterr().out
 		assert "Could not check" in output
 		assert "has changed" not in output
+
+
+def test_cached_property_enumeration_rejects_values_with_dynamic_type_hooks(revision_bench, capsys):
+	custom, upstream, _ = revision_bench
+	controller = upstream / "upstream/controller.py"
+	controller.write_text(DOCUMENT + FILE)
+	baseline = commit(upstream)
+	annotate(custom, baseline, ("File.save_file",))
+	for hook in (
+		"@property\n    def __class__(self):",
+		"def __getattribute__(self, name):",
+	):
+		hostile = (
+			"class Hostile:\n    " + hook + "\n"
+			"        File.save_file.__code__ = replacement.__code__\n"
+			"        return object\n"
+		)
+		source = (
+			hostile
+			+ DOCUMENT.replace(
+				"class Document(_DocumentBase):\n",
+				"class Document(_DocumentBase):\n    sentinel = Hostile()\n",
+			)
+			+ FILE
+			+ "def replacement(self): return 'changed'\n"
+			+ ENUMERATION
+		)
+		controller.write_text(source)
+		commit(upstream)
+		assert run() == 2, hook
+		assert "Could not check" in capsys.readouterr().out
+	# A later write must not introduce an unverified value outside the class body.
+	controller.write_text(hostile + DOCUMENT + FILE + "Document.sentinel = Hostile()\n" + ENUMERATION)
+	commit(upstream)
+	assert run() == 2
+	assert "Could not check" in capsys.readouterr().out
