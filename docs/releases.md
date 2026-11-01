@@ -24,10 +24,25 @@ Later versions follow Conventional Commits:
 | --- | --- |
 | `fix:` or `perf:` | Patch: `2.0.0 → 2.0.1` |
 | `feat:` | Minor: `2.0.1 → 2.1.0` |
-| `!` or `BREAKING CHANGE:` | Major; publication stops if the result leaves major 2 |
+| `!` or `BREAKING CHANGE:` | Major; publication stops if the result leaves the destination branch's major |
 | `docs:`, `test:`, `chore:`, `ci:`, `style:`, `refactor:`, `build:` | No release unless they declare a breaking change |
 
 The highest required change wins. Without version-changing commits, no new tag or release is created.
+
+## Prepare the next major release
+
+For example, to move from `v2` to `v3`:
+
+1. Create `v3` from the latest published `v2` tag, preserving the release history and existing tags.
+2. Prepare a reviewed PR into `nvg-develop` with the new major's changes and configuration:
+   - In `.github/workflows/release.yaml`, change `pull_request.branches` to `[v3]` and `env.BASE_BRANCH` to `v3`.
+   - In `.github/workflows/prepare-release.yaml`, change `env.BASE_BRANCH` to `v3`.
+   - In `pyproject.toml`, change `[tool.semantic_release.branches.stable].match` from `"^v2$"` to `"^v3$"`. This is a manual preparation step; the workflow does not edit that configuration.
+3. Check that branch protections cover `v3` and the publication token is permitted to push its release commit and tag.
+4. After merging the preparation PR into `nvg-develop`, run **Prepare release PR**, review the `nvg-develop → v3` promotion and merge it with **Create a merge commit**.
+5. Verify the Release run, tag and GitHub Release for `v3.0.0`.
+
+The publication step derives the major from `BASE_BRANCH`: `v3` selects tags `v3.*`, permits versions `3.x`, and requires `3.0.0` for its first publication. No manual version edit is needed. A later breaking change that requires `4.x` stops publication from `v3` until the next major is prepared.
 
 ## Requirements and failures
 
