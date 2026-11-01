@@ -535,16 +535,88 @@ class SourceResolver:
 
 	@staticmethod
 	def _class_namespace_reads(statement, tree, module_bindings):
-		"""Recognize immediate items() enumeration of a uniquely declared local class."""
-		if isinstance(statement, DEFINITION_NODES):
+		"""Allow an eager tuple of class keys filtered by the standard cached-property type."""
+		if statement not in runtime_body(tree) or not isinstance(statement, (ast.Assign, ast.AnnAssign)):
 			return {}
-		nodes = list(executable_nodes(statement, tree=tree))
-		if any(isinstance(node, DEFINITION_NODES) for node in nodes):
+		targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+		if not all(isinstance(target, ast.Name) for target in targets):
 			return {}
-		written = {
-			node.id for node in nodes if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
-		}
-		if "vars" in written:
+		builtins = {"tuple", "vars", "isinstance"}
+		if (builtins | {"*"}).intersection(module_bindings):
+			return {}
+		consumer = statement.value
+		if not (
+			isinstance(consumer, ast.Call)
+			and isinstance(consumer.func, ast.Name)
+			and consumer.func.id == "tuple"
+			and len(consumer.args) == 1
+			and not consumer.keywords
+			and isinstance(consumer.args[0], ast.GeneratorExp)
+		):
+			return {}
+		generator = consumer.args[0]
+		if len(generator.generators) != 1:
+			return {}
+		clause = generator.generators[0]
+		if (
+			clause.is_async
+			or not isinstance(clause.target, ast.Tuple)
+			or len(clause.target.elts) != 2
+			or not all(isinstance(target, ast.Name) for target in clause.target.elts)
+			or len(clause.ifs) != 1
+		):
+			return {}
+		key, value = (target.id for target in clause.target.elts)
+		if key == value or not isinstance(generator.elt, ast.Name) or generator.elt.id != key:
+			return {}
+		predicate = clause.ifs[0]
+		if not (
+			isinstance(predicate, ast.Call)
+			and isinstance(predicate.func, ast.Name)
+			and predicate.func.id == "isinstance"
+			and len(predicate.args) == 2
+			and not predicate.keywords
+			and isinstance(predicate.args[0], ast.Name)
+			and predicate.args[0].id == value
+			and isinstance(predicate.args[1], ast.Name)
+		):
+			return {}
+		type_name = predicate.args[1].id
+		if {key, value}.intersection(builtins | {type_name}):
+			return {}
+		if not any(
+			isinstance(import_node, ast.ImportFrom)
+			and import_node.level == 0
+			and import_node.module == "functools"
+			and import_node.lineno < consumer.lineno
+			and any(
+				alias.name == "cached_property"
+				and (alias.asname or alias.name) == type_name
+				and module_bindings.get(type_name) == [alias]
+				for alias in import_node.names
+			)
+			for import_node in runtime_body(tree)
+		):
+			return {}
+		items = clause.iter
+		if not (
+			isinstance(items, ast.Call)
+			and not items.args
+			and not items.keywords
+			and isinstance(items.func, ast.Attribute)
+			and items.func.attr == "items"
+		):
+			return {}
+		call = items.func.value
+		if not (
+			isinstance(call, ast.Call)
+			and isinstance(call.func, ast.Name)
+			and call.func.id == "vars"
+			and len(call.args) == 1
+			and not call.keywords
+			and isinstance(call.args[0], ast.Name)
+			and call.args[0].id not in {key, value}
+		):
 			return {}
 
 		def ordinary_class(owner):
@@ -566,38 +638,17 @@ class SourceResolver:
 				dependencies.update(inherited)
 			return dependencies
 
-		reads = {}
-		for node in nodes:
-			if not (
-				isinstance(node, ast.Call)
-				and not node.args
-				and not node.keywords
-				and isinstance(node.func, ast.Attribute)
-				and node.func.attr == "items"
-			):
-				continue
-			call = node.func.value
-			if not (
-				isinstance(call, ast.Call)
-				and isinstance(call.func, ast.Name)
-				and call.func.id == "vars"
-				and len(call.args) == 1
-				and not call.keywords
-				and isinstance(call.args[0], ast.Name)
-				and call.args[0].id not in written
-			):
-				continue
-			owner = unique_definition(tree, call.args[0].id)
-			dependencies = ordinary_class(owner)
-			if dependencies and owner.end_lineno < call.lineno:
-				reads[call] = dependencies
-		return reads
+		owner = unique_definition(tree, call.args[0].id)
+		dependencies = ordinary_class(owner)
+		if dependencies and owner.end_lineno < call.lineno:
+			return {call: dependencies | builtins | {type_name}}
+		return {}
 
 	@staticmethod
 	def dynamic_namespace(scopes, names, tree):
 		"""Reject unsupported namespace access without interpreting its effects."""
 		namespace_calls = {"exec", "globals", "locals", "vars", "setattr", "delattr"}
-		module_bindings = scope_bindings(scopes[0])
+		module_bindings = scope_bindings(runtime_body(tree))
 		class_reads = {}
 		if isinstance(tree, ast.Module) and not {"vars", "*"}.intersection(module_bindings):
 			for statement in scopes[0]:
@@ -1177,17 +1228,31 @@ class AnnotationValidator:
 				annotated = any(parse_annotation(ast.get_docstring(node) or "")[0] for node in definitions)
 				if upstream_owner is None:
 					candidates = {}
+					unresolved = []
 					for variant in variant_hierarchies:
 						for owner in variant:
 							if owner.module.app.name == self.app.name:
 								continue
 							if name not in class_bindings[owner.identity]:
 								continue
+							if static_attribute(
+								class_bindings[method_owner.identity][name]
+							) and static_attribute(class_bindings[owner.identity][name]):
+								break
 							node = self.resolver.method(owner, name)
 							if isinstance(node, FUNCTION_NODES):
 								symbol = Symbol(owner.module, f"{owner.qualname}.{name}", node)
 								candidates[symbol.identity] = (owner, symbol)
+							else:
+								unresolved.append(owner)
 							break
+					if unresolved:
+						self.error(
+							method,
+							f"{unresolved[0].reference}.{name}",
+							f"Cannot resolve concrete implementation of overriding method {method.reference}",
+						)
+						continue
 					if candidates:
 						choices = list(candidates.values())
 						if len(choices) > 1 and annotated:

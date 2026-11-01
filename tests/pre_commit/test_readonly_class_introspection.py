@@ -1,10 +1,15 @@
 """Read-only local class enumeration must not hide namespace mutation or rebinding."""
 
+import ast
+import textwrap
+
 from test_track_overrides_defaults import commit
 from test_track_overrides_revisions import annotate, run
 from test_track_overrides_revisions import revision_bench as revision_bench
 from test_validate_override_annotations import annotation, function_source, register_class, validate, write
 from test_validate_override_annotations import bench as bench
+
+from test_utils.utils.override_annotations import SourceResolver
 
 DOCUMENT = """from functools import cached_property
 
@@ -26,6 +31,23 @@ ENUMERATION = """CACHED_PROPERTIES = tuple(
     prop for prop, value in vars(Document).items() if isinstance(value, cached_property)
 )
 """
+
+
+def test_class_namespace_read_exemption_only_applies_to_module_statements():
+	source = DOCUMENT + ENUMERATION + "class File(Document): pass\n"
+	tree = ast.parse(source)
+	# A declaration-time module prefix must retain the same verified read.
+	assert not SourceResolver.dynamic_namespace([tree.body[:-1]], {"File"}, tree)
+	for prefix, local_import in (
+		("", ""),
+		("def vars(value): return {}\n", ""),
+		("", "from other import Document\n"),
+	):
+		tree = ast.parse(
+			DOCUMENT + prefix + "def factory():\n" + textwrap.indent(local_import + ENUMERATION, "    ")
+		)
+		factory = tree.body[-1]
+		assert SourceResolver.dynamic_namespace([factory.body], {"Document"}, tree)
 
 
 def test_doctype_mro_allows_frappe_cached_property_enumeration(bench):
@@ -81,6 +103,12 @@ def test_namespace_escapes_and_mutations_remain_unverified(revision_bench, capsy
 		"enumerate_later = vars(Document).items",
 		"vars(Document).items(argument)",
 		"vars(Document, **options).items()",
+		"for name, value in vars(File).items():\n    value.__code__ = replacement.__code__",
+		"for name, value in vars(File).items():\n    alias = value\n    mutate(alias)",
+		"methods = tuple(value for name, value in vars(File).items())",
+		"methods = tuple((name, value) for name, value in vars(File).items())",
+		"methods = vars(File).items()",
+		"methods = tuple(name for name, value in vars(File).items() if mutate(value))",
 	):
 		controller.write_text(source + expression + "\n")
 		commit(upstream)
@@ -111,6 +139,12 @@ def test_shadowed_vars_or_class_arguments_remain_unverified(revision_bench, caps
 	for selected in (
 		source + "def vars(value): return {}\n" + ENUMERATION,
 		source + "vars = replacement\n" + ENUMERATION,
+		source + "tuple = replacement\n" + ENUMERATION,
+		source + "isinstance = replacement\n" + ENUMERATION,
+		source + "cached_property = replacement\n" + ENUMERATION,
+		source
+		+ ENUMERATION.replace("prop, value", "isinstance, value").replace("prop for", "isinstance for"),
+		source + "class Binder:\n    global isinstance\n    isinstance = replacement\n" + ENUMERATION,
 		source + "class Inspector:\n    vars = replacement\n    observed = vars(Document).items()\n",
 		source + "[vars(Document).items() for vars in replacements]\n",
 		source + "[vars(Document).items() for Document in replacements]\n",

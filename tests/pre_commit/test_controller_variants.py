@@ -79,6 +79,59 @@ def test_optional_controller_method_requires_annotation(bench):
 	assert "LegacyLedger.validate_duplicate_entry" in result.errors[0]
 
 
+def test_optional_controller_bindings_are_not_discarded_when_the_callable_is_unresolved(bench):
+	method = function_source(name="validate_duplicate_entry")
+	alias = "validate_duplicate_entry = callback\n"
+	conditional = "if enabled():\n" + textwrap.indent(method, "    ")
+	cases = (
+		("callable alias", alias, "pass\n", method, True),
+		("conditional declaration", conditional, "pass\n", method, True),
+		(
+			"unresolved alternative alongside annotated implementation",
+			method,
+			alias,
+			function_source(backend_annotation(), name="validate_duplicate_entry"),
+			True,
+		),
+		(
+			"ordinary data",
+			"validate_duplicate_entry = 1\n",
+			"pass\n",
+			"validate_duplicate_entry = 2\n",
+			False,
+		),
+		(
+			"data in only one alternative",
+			method,
+			"validate_duplicate_entry = 1\n",
+			"validate_duplicate_entry = 2\n",
+			True,
+		),
+	)
+	for label, legacy, modern, custom, invalid in cases:
+		controllers(bench)
+		for module, owner, body in (("legacy", "LegacyLedger", legacy), ("modern", "ModernLedger", modern)):
+			write(
+				bench / "erpnext" / PACKAGE / f"{module}.py",
+				"from .ledger import Ledger\n"
+				+ function_source(name="callback")
+				+ f"class {owner}(Ledger):\n"
+				+ textwrap.indent(body, "    "),
+			)
+		register_class(
+			bench,
+			"class CustomLedger:\n" + textwrap.indent(custom, "    "),
+			hook="extend_doctype_class",
+		)
+		result = validate(bench)
+		assert bool(result.errors) is invalid, (label, result.errors)
+		if invalid:
+			assert any("Cannot resolve concrete implementation" in error for error in result.errors), (
+				label,
+				result.errors,
+			)
+
+
 def test_removed_controller_variant_method_remains_an_error(bench):
 	controllers(bench, legacy_method=None)
 	mixin(bench, backend_annotation())
