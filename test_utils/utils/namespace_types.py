@@ -44,26 +44,62 @@ def class_values_are_safe(resolver, module, owner):
 			lexical_cache[key] = scopes
 		return lexical_cache[key]
 
-	def parameter_shadow(name, provider, body):
-		for function in function_scopes(provider, body):
-			parameters = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
-			if any(p.arg == name for p in parameters) or any(
-				p and p.arg == name for p in (function.args.vararg, function.args.kwarg)
+	def namespace_binding(name, provider, body):
+		"""Select a Python namespace; None declarations mean its value is unverified."""
+		functions = function_scopes(provider, body)
+		scopes = [(function.body, function) for function in functions]
+		if not functions or functions[0].body is not body:
+			scopes.insert(0, (body, None))
+		module_body = runtime_body(provider.tree)
+		scopes.append((module_body, None))
+		nonlocal_name = False
+		index = 0
+		while index < len(scopes):
+			scope, function = scopes[index]
+			index += 1
+			if nonlocal_name and scope is module_body:
+				return scope, None
+			bindings = scope_bindings(scope)
+			declarations = list(scope_statements(scope))
+			global_name = any(isinstance(s, ast.Global) and name in s.names for s in declarations)
+			outer_name = any(isinstance(s, ast.Nonlocal) and name in s.names for s in declarations)
+			if scope is module_body:
+				global_name = False
+			if global_name or outer_name:
+				if name in bindings or (nonlocal_name and global_name):
+					return scope, None
+				if global_name:
+					index = len(scopes) - 1
+				else:
+					nonlocal_name = True
+				continue
+			if "*" in bindings:
+				return scope, None
+			if name in bindings:
+				return scope, bindings[name]
+			parameters = (
+				[]
+				if function is None
+				else [
+					*function.args.posonlyargs,
+					*function.args.args,
+					*function.args.kwonlyargs,
+					function.args.vararg,
+					function.args.kwarg,
+				]
+			)
+			if any(p and p.arg == name for p in parameters) or (
+				function is not None
+				and any(
+					isinstance(s, ast.AnnAssign)
+					and s.value is None
+					and isinstance(s.target, ast.Name)
+					and s.target.id == name
+					for s in declarations
+				)
 			):
-				return True
-			if function.body is not body and name in scope_bindings(function.body):
-				return True
-			for statement in scope_statements(function.body):
-				if isinstance(statement, (ast.Global, ast.Nonlocal)) and name in statement.names:
-					return True
-				if (
-					isinstance(statement, ast.AnnAssign)
-					and statement.value is None
-					and isinstance(statement.target, ast.Name)
-					and statement.target.id == name
-				):
-					return True
-		return False
+				return scope, None
+		return None, []
 
 	def namespace_safe(expression, provider, local_body, names):
 		deferred = bool(function_scopes(provider, local_body))
@@ -71,7 +107,30 @@ def class_values_are_safe(resolver, module, owner):
 		if not deferred:
 			prefix = [statement for statement in prefix if statement.lineno < expression.lineno]
 		local_prefix = [s for s in local_body if s.lineno < expression.lineno]
-		return not resolver.dynamic_namespace([prefix, local_prefix], names, provider.tree, module=provider)
+		closures = [
+			function.body
+			for function in function_scopes(provider, local_body)
+			if function.body is not local_body
+		]
+		if deferred:
+			mutation_scopes = [local_body, *closures]
+			mutation_scopes += [
+				node.body
+				for body in [local_body, *closures]
+				for statement in body
+				for node in ast.walk(statement)
+				if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+			]
+			if any(
+				isinstance(statement, (ast.Global, ast.Nonlocal))
+				and set(statement.names).intersection(names, scope_bindings(body))
+				for body in mutation_scopes
+				for statement in scope_statements(body)
+			):
+				return False
+		return not resolver.dynamic_namespace(
+			[prefix, local_prefix, *closures], names, provider.tree, module=provider
+		)
 
 	def reference(expression, provider, local_body=()):
 		original = expression
@@ -82,40 +141,27 @@ def class_values_are_safe(resolver, module, owner):
 		if not isinstance(expression, ast.Name):
 			return None
 		name = expression.id
-		if parameter_shadow(name, provider, local_body) or not namespace_safe(
+		if not namespace_safe(
 			original, provider, local_body, {name, *parts, "__code__", "__defaults__", "__kwdefaults__"}
 		):
 			return None
-		for body in (local_body, runtime_body(provider.tree)):
-			definitions = scope_bindings(body).get(name, [])
-			if not definitions:
-				continue
-			if len(definitions) != 1 or not isinstance(definitions[0], ast.alias):
-				return None
-			alias = definitions[0]
-			statement = next(
-				(
-					s
-					for s in scope_statements(body)
-					if isinstance(s, (ast.Import, ast.ImportFrom)) and alias in s.names
-				),
-				None,
-			)
-			if statement is None or statement not in body:
-				return None
-			prefix = provider.import_reference(statement, alias)
-			return ".".join([prefix, *parts])
-		return None
+		body, definitions = namespace_binding(name, provider, local_body)
+		if definitions is None or len(definitions) != 1 or not isinstance(definitions[0], ast.alias):
+			return None
+		alias = definitions[0]
+		statement = next(
+			(s for s in body if isinstance(s, (ast.Import, ast.ImportFrom)) and alias in s.names), None
+		)
+		if statement is None or (body is local_body and statement.lineno >= original.lineno):
+			return None
+		if not function_scopes(provider, local_body) and statement.lineno >= original.lineno:
+			return None
+		prefix = provider.import_reference(statement, alias)
+		return ".".join([prefix, *parts])
 
 	def builtin(name, provider, local_body, expression):
-		return (
-			not parameter_shadow(name, provider, local_body)
-			and namespace_safe(expression, provider, local_body, {name})
-			and all(
-				name not in scope_bindings(body) and "*" not in scope_bindings(body)
-				for body in (local_body, runtime_body(provider.tree))
-			)
-		)
+		body, _ = namespace_binding(name, provider, local_body)
+		return body is None and namespace_safe(expression, provider, local_body, {name})
 
 	def function_descriptor(function, provider, local_body=(), seen=frozenset()):
 		kind = "function"
@@ -222,7 +268,8 @@ def class_values_are_safe(resolver, module, owner):
 			return False
 		if call.func.id in scope_bindings(class_body):
 			return False
-		if parameter_shadow(call.func.id, module, class_body) or not namespace_safe(
+		binding_body, _ = namespace_binding(call.func.id, module, class_body)
+		if binding_body != runtime_body(module.tree) or not namespace_safe(
 			call,
 			module,
 			class_body,

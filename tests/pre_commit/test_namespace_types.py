@@ -91,6 +91,8 @@ class Document:
     def create(cls): return cls
 """
 	assert prove(tmp_path, source)
+	assert prove(tmp_path, "property: type\n" + source)
+	assert prove(tmp_path, source.replace("class Document:\n", "class Document:\n    property: type\n"))
 	assert not prove(
 		tmp_path,
 		source.replace("class Document:\n", "class Document:\n    def property(fn): return Hostile()\n"),
@@ -146,8 +148,10 @@ def test_enclosing_bindings_never_fall_back_to_module_decorator_imports(tmp_path
 	for signature, outer_binding, inner_declaration in (
 		("functools=replacement", "", ""),
 		("", "from .hostile import functools", ""),
-		("", "", "global functools"),
 		("", "functools = replacement", "nonlocal functools"),
+		("", "", "global functools\n        functools = replacement"),
+		("", "global functools\n    functools = replacement", "global functools"),
+		("", "import functools", "nonlocal functools\n        functools = replacement"),
 	):
 		decorator = (
 			"import functools\ndef expose("
@@ -160,6 +164,70 @@ def test_enclosing_bindings_never_fall_back_to_module_decorator_imports(tmp_path
 			+ "        return wrapper\n    return decorate\n"
 		)
 		assert not prove(tmp_path, source, {"decorators": decorator}), decorator
+
+
+def test_known_decorator_imports_resolve_through_python_lexical_scopes(tmp_path):
+	source = "from .decorators import expose\nclass Document:\n    @expose()\n    def method(self): pass\n"
+	for module_import, signature, outer_binding, inner_binding, decorator in (
+		("import functools\n", "", "", "global functools", "functools.wraps(fn)"),
+		("", "", "import functools as tools", "nonlocal tools", "tools.wraps(fn)"),
+		("", "", "from functools import wraps as preserve", "", "preserve(fn)"),
+		("", "functools=replacement", "", "import functools", "functools.wraps(fn)"),
+		("import functools\n", "functools=replacement", "", "global functools", "functools.wraps(fn)"),
+	):
+		helper = (
+			module_import
+			+ "def expose("
+			+ signature
+			+ "):\n"
+			+ ("    " + outer_binding + "\n" if outer_binding else "")
+			+ "    def decorate(fn):\n"
+			+ ("        " + inner_binding + "\n" if inner_binding else "")
+			+ "        @"
+			+ decorator
+			+ "\n        def wrapper(): pass\n"
+			+ "        return wrapper\n    return decorate\n"
+		)
+		assert prove(tmp_path, source, {"decorators": helper}), helper
+	# The enclosing function finishes its import before the returned decorator runs.
+	helper = """def expose():
+    def decorate(fn):
+        @preserve(fn)
+        def wrapper(): pass
+        return wrapper
+    from functools import wraps as preserve
+    return decorate
+"""
+	assert prove(tmp_path, source, {"decorators": helper})
+	assert not prove(
+		tmp_path,
+		source,
+		{
+			"decorators": """import functools
+from .shadow import *
+def expose():
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(): pass
+        return wrapper
+    return decorate
+""",
+			"shadow": "__all__ = ['functools']\nfunctools = object()\n",
+		},
+	)
+	# A closure import remains unverified if another nested scope rebinds it.
+	helper = """def expose():
+    import functools as tools
+    class Binder:
+        nonlocal tools
+        tools = replacement
+    def decorate(fn):
+        @tools.wraps(fn)
+        def wrapper(): pass
+        return wrapper
+    return decorate
+"""
+	assert not prove(tmp_path, source, {"decorators": helper})
 
 
 def test_decorator_return_proof_rejects_mutated_callable_state_in_every_provider(tmp_path):
