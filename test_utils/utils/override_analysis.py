@@ -17,7 +17,6 @@ from test_utils.utils.override_annotations import (
 	SourceResolver,
 	dependency_apps,
 	locate_app,
-	read_tree,
 	run_override_validation,
 )
 from test_utils.utils.override_metadata import (
@@ -167,38 +166,26 @@ class StructuredValidator(AnnotationValidator):
 			self.validating_annotation = False
 
 
-def registration_line(hooks_path, replacement):
-	return next(
-		(
-			node.lineno
-			for node in ast.walk(read_tree(hooks_path))
-			if isinstance(node, ast.Constant) and node.value == replacement
-		),
-		1,
-	)
-
-
 def validate_registered_overrides(app, apps):
 	hooks_path = app.package / "hooks.py"
 	validator = StructuredValidator(app, SourceResolver(apps), hooks_path)
 
-	def before_registration(hook, original, replacement):
-		validator.context = {
-			"kind": "hook",
-			"hook": hook,
-			"file": hooks_path.relative_to(app.root).as_posix(),
-			"line": registration_line(hooks_path, replacement),
-			"original_reference": original,
-			"replacement_reference": replacement,
-		}
+	def before_registration(context):
+		validator.context = dict(context)
 
-	def resolution_error(hook, original, replacement, exc):
+	def resolution_error(context, exc):
 		validator.collect(
-			validator.context["file"],
-			replacement,
-			validator.context["line"],
-			original,
-			{"code": "registration_unresolved", "kind": "resolution", "message": str(exc)},
+			context["file"],
+			context["replacement_reference"],
+			context["line"],
+			context["original_reference"],
+			{
+				"code": "registration_unresolved"
+				if context["kind"] == "hook"
+				else "replacement_unresolved",
+				"kind": "resolution",
+				"message": str(exc),
+			},
 		)
 
 	run_override_validation(

@@ -1182,8 +1182,12 @@ class AnnotationValidator:
 		self.checked: set[tuple[DeclarationId, DeclarationId]] = set()
 
 	def error(self, custom: Symbol, upstream: str, message: str):
+		context = getattr(self, "discovery_context", {})
+		location = ""
+		if context.get("kind") == "module_assignment":
+			location = f"; installed at {self.app.root / context['file']}:{context['line']}"
 		self.result.errors.append(
-			f"{custom.module.path}:{custom.node.lineno}: {custom.reference} -> {upstream}: {message}"
+			f"{custom.module.path}:{custom.node.lineno}: {custom.reference} -> {upstream}: {message}{location}"
 		)
 
 	def validate_annotation(self, custom: Symbol, upstream: Symbol):
@@ -1490,6 +1494,133 @@ def dependency_apps(app: App, apps_root: Path, additional_dependencies=()) -> li
 	return list(apps.values())
 
 
+def registration_line(hooks_path, replacement):
+	return next(
+		(
+			node.lineno
+			for node in ast.walk(read_tree(hooks_path))
+			if isinstance(node, ast.Constant) and node.value == replacement
+		),
+		1,
+	)
+
+
+def app_python_modules(app, resolver):
+	"""Yield every Python module in an app package in stable source order."""
+	for path in sorted(app.package.rglob("*.py")):
+		if any(part.startswith(".") or part == "__pycache__" for part in path.relative_to(app.package).parts):
+			continue
+		parts = path.relative_to(app.root).with_suffix("").parts
+		name = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+		yield resolver.module(app, name, path)
+
+
+def imported_owner_module(resolver, module, parts, limits):
+	"""Resolve a dotted expression owner only when it denotes an imported module."""
+	body = resolver.module_body(module, limits)
+	binding = resolver.binding(module, body, parts[0], limits, frozenset())
+	if binding is None or not isinstance(binding.node, ast.alias):
+		return None
+	if isinstance(binding.statement, ast.Import):
+		reference = [binding.node.name, *parts[1:]] if binding.node.asname else parts
+	elif isinstance(binding.statement, ast.ImportFrom):
+		reference = [module.import_reference(binding.statement, binding.node), *parts[1:]]
+	else:
+		return None
+	try:
+		owner, remaining = resolver.source_module(".".join(reference))
+	except ResolutionError:
+		return None
+	return owner if not remaining else None
+
+
+def assignment_parts(statement):
+	if isinstance(statement, ast.Assign):
+		if len(statement.targets) != 1:
+			return None
+		target = statement.targets[0]
+	elif isinstance(statement, ast.AnnAssign):
+		target = statement.target
+	else:
+		return None
+	if not isinstance(target, ast.Attribute) or not isinstance(statement.value, (ast.Name, ast.Attribute)):
+		return None
+	try:
+		return target, statement.value, dotted_name(target), dotted_name(statement.value)
+	except ResolutionError:
+		return None
+
+
+def validate_module_assignments(app, validator, begin, fail):
+	"""Discover direct module-function replacements without importing application code."""
+	resolver = validator.resolver
+	reported_unresolved = set()
+	for module in app_python_modules(app, resolver):
+		for statement in runtime_body(module.tree):
+			parts = assignment_parts(statement)
+			if parts is None:
+				continue
+			target, _, target_text, replacement_text = parts
+			limits = ((module.path, (statement.lineno, statement.col_offset)),)
+			owner = imported_owner_module(resolver, module, target_text.split(".")[:-1], limits)
+			if owner is None or owner.app.name == app.name:
+				continue
+			original_reference = f"{owner.name}.{target.attr}"
+			try:
+				original = resolver.resolve_in(module, target_text.split("."), limits, frozenset())
+				original_error = None
+			except ResolutionError as exc:
+				original = None
+				original_error = exc
+			try:
+				custom = resolver.resolve_in(module, replacement_text.split("."), limits, frozenset())
+				custom_error = None
+			except ResolutionError as exc:
+				custom = None
+				custom_error = exc
+
+			original_is_function = (
+				original is not None
+				and original.module.app.name != app.name
+				and isinstance(original.node, FUNCTION_NODES)
+				and "." not in original.qualname
+			)
+			custom_is_function = (
+				custom is not None
+				and custom.module.app.name == app.name
+				and isinstance(custom.node, FUNCTION_NODES)
+			)
+			if not original_is_function and not (original_error and custom_is_function):
+				continue
+			if custom is not None and not custom_is_function:
+				continue
+
+			context = {
+				"kind": "module_assignment",
+				"file": module.path.relative_to(app.root).as_posix(),
+				"line": statement.lineno,
+				"original_reference": target_text,
+				"replacement_reference": replacement_text,
+				"owner_module": owner.name,
+			}
+			begin(context)
+			if custom_error:
+				fail(context, ResolutionError(f"Cannot resolve replacement function: {custom_error}"))
+				continue
+			if original_error:
+				key = (custom.identity, original_reference)
+				if key in reported_unresolved:
+					continue
+				reported_unresolved.add(key)
+				validator.error(
+					custom,
+					original_reference,
+					f"Cannot resolve monkey-patched original at {context['file']}:{context['line']}: {original_error}",
+				)
+				continue
+			validator.validate_annotation(custom, original)
+
+
 def run_override_validation(
 	app: App,
 	apps: list[App],
@@ -1501,22 +1632,45 @@ def run_override_validation(
 	"""Run every supported discovery source through one configured validator."""
 	hooks_path = app.package / "hooks.py"
 	hooks = read_hooks(hooks_path)
+
+	def begin(context):
+		validator.discovery_context = context
+		if before_registration:
+			before_registration(context)
+
+	def fail(context, exc):
+		if resolution_error:
+			resolution_error(context, exc)
+		elif context["kind"] == "hook":
+			validator.result.errors.append(
+				f"{hooks_path}: {context['hook']}[{context['original_reference']!r}] -> "
+				f"{context['replacement_reference']}: {exc}"
+			)
+		else:
+			validator.result.errors.append(
+				f"{app.root / context['file']}:{context['line']}: "
+				f"{context['original_reference']} -> {context['replacement_reference']}: {exc}"
+			)
+
 	for hook in ("override_whitelisted_methods", "override_doctype_class", "extend_doctype_class"):
 		for original, replacement in hook_mapping(hooks, hook):
-			if before_registration:
-				before_registration(hook, original, replacement)
+			context = {
+				"kind": "hook",
+				"hook": hook,
+				"file": hooks_path.relative_to(app.root).as_posix(),
+				"line": registration_line(hooks_path, replacement),
+				"original_reference": original,
+				"replacement_reference": replacement,
+			}
+			begin(context)
 			try:
 				if hook == "override_whitelisted_methods":
 					validator.function(original, replacement)
 				else:
 					validator.doctype(original, replacement, extension=hook == "extend_doctype_class")
 			except ResolutionError as exc:
-				if resolution_error:
-					resolution_error(hook, original, replacement, exc)
-				else:
-					validator.result.errors.append(
-						f"{hooks_path}: {hook}[{original!r}] -> {replacement}: {exc}"
-					)
+				fail(context, exc)
+	validate_module_assignments(app, validator, begin, fail)
 	return validator.result
 
 

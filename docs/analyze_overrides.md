@@ -9,11 +9,10 @@ dependency revision without importing either application.
 pre-commit commands. Integrations should consume this command's JSON instead of
 importing their internal modules or parsing terminal messages.
 
-The current discovery sources are `override_whitelisted_methods`,
-`override_doctype_class` and `extend_doctype_class`. Direct module assignments
-will use `discovery.kind: module_assignment` when the separately tracked
-[monkey-patch discovery work](https://github.com/NovigoTechnology/test_utils/issues/16)
-is incorporated into the shared validator.
+The discovery sources are `override_whitelisted_methods`,
+`override_doctype_class`, `extend_doctype_class` and supported direct
+module-function assignments. Direct assignments use
+`discovery.kind: module_assignment`; hooks use `discovery.kind: hook`.
 
 ## Invocation
 

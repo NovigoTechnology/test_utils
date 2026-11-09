@@ -121,6 +121,56 @@ def test_analyze_overrides_does_not_import_application_modules(apps):
 	assert result(analyze_overrides(custom, root))["classification"] == "unaffected"
 
 
+def register_module_assignment(custom):
+	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
+	write(
+		custom / "custom/__init__.py",
+		"import upstream.api as upstream_api\n"
+		"from custom.override import replacement\n"
+		"upstream_api.original = replacement\n",
+	)
+	commit(custom, "register module assignment")
+
+
+def test_analyze_overrides_exposes_module_assignment_discovery(apps):
+	root, custom, _, _ = apps
+	register_module_assignment(custom)
+	item = result(analyze_overrides(custom, root))
+	assert item["classification"] == "unaffected"
+	assert item["discovery"]["kind"] == "module_assignment"
+	assert item["discovery"]["file"] == "custom/__init__.py"
+	assert item["discovery"]["original_reference"] == "upstream_api.original"
+	assert item["upstream"]["symbol"] == "upstream.api.original"
+
+
+def test_analyze_overrides_confirms_removed_module_assignment_original(apps):
+	root, custom, upstream, _ = apps
+	register_module_assignment(custom)
+	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove module-assignment original")
+	item = result(analyze_overrides(custom, root))
+	assert item["classification"] == "affected"
+	assert item["change_kind"] == "missing"
+	assert item["discovery"]["kind"] == "module_assignment"
+
+
+def test_analyze_overrides_keeps_an_unresolved_replacement_in_the_inventory(apps):
+	root, custom, _, _ = apps
+	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
+	write(
+		custom / "custom/__init__.py",
+		"import upstream.api as upstream_api\n"
+		"upstream_api.original = missing_replacement\n",
+	)
+	commit(custom, "add unresolved module assignment")
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["outcome"] == "incomplete"
+	assert item["classification"] == "inconclusive"
+	assert item["discovery"]["kind"] == "module_assignment"
+	assert item["diagnostics"][0]["code"] == "replacement_unresolved"
+
+
 def test_analyze_overrides_reports_confirmed_changes(apps):
 	root, custom, upstream, _ = apps
 	write(upstream / "upstream/api.py", "def original():\n    return 'after'\n")

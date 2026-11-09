@@ -9,16 +9,41 @@ implementation has changed. The two tools serve different steps of the same work
 
 ## What gets checked
 
-The validator finds overrides registered in your app's `hooks.py`:
+The validator finds overrides registered in your app's `hooks.py` and supported
+direct module assignments:
 
-| Hook | Where to add annotations |
+| Registration | Where to add annotations |
 | --- | --- |
 | `override_whitelisted_methods` | The replacement function. |
 | `override_doctype_class` | Each method that overrides an upstream method, including methods inherited from your local mixins. |
 | `extend_doctype_class` | Each mixin method that overrides an upstream controller method. |
+| `module.function = custom_function` | The custom replacement function. |
 
 Put annotations in each overriding function or method's own docstring. Class docstrings
 and comments do not cover their methods. New helper methods do not need annotations.
+
+### Direct module assignments
+
+Every Python module in the app package, including `__init__.py`, is inspected
+statically for top-level assignments that replace a dependency module function
+with a function from the custom app. Normal imports, aliases and `from ...
+import ...` are resolved without executing either application:
+
+```python
+import erpnext.setup.utils as upstream
+from nagus.utils.utils import get_exchange_rate_nagus
+
+upstream.get_exchange_rate = get_exchange_rate_nagus
+```
+
+The original is resolved using the namespace immediately before the assignment,
+so the monkey patch itself cannot hide the declaration being tracked. Reexports
+are followed to the real defining file and function.
+
+This initial scope intentionally excludes `setattr`, function calls that install
+callbacks, assignments inside functions or classes, class attributes, instance
+attributes and dynamic target expressions. Plain data assignments are not
+treated as overrides.
 
 ## Run locally
 
