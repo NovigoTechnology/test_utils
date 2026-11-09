@@ -103,7 +103,7 @@ def test_only_entrypoints_and_reachable_unconditional_local_imports_are_scanned(
 	)
 	write(
 		bench / "nagus/nagus/__init__.py",
-		"import nagus.patches\n"
+		"from . import patches\n"
 		"dormant = object()\n"
 		"from nagus import dormant\n"
 		"if enabled:\n    import nagus.conditional\n",
@@ -116,27 +116,37 @@ def test_only_entrypoints_and_reachable_unconditional_local_imports_are_scanned(
 def test_non_function_dynamic_instance_class_and_nested_cases_are_ignored(bench):
 	write(bench / "erpnext/erpnext/__init__.py", "class Client: pass\nclient = Client()\n")
 	write(bench / "erpnext/erpnext/client.py", "def callback(): pass\n")
+	write(
+		bench / "erpnext/erpnext/accounts/module_owner.py",
+		"from erpnext.accounts import utils as original\n",
+	)
 	write(bench / "nagus/nagus/overrides.py", function_source(annotation()))
+	write(bench / "nagus/nagus/module_replacement.py", "def callback(): pass\n")
 	write(
 		bench / "nagus/nagus/__init__.py",
-		"""
-		import erpnext.accounts.utils as upstream
-		from erpnext import client
-		from nagus.overrides import get_coa
-		upstream.enabled = True
-		client.callback = get_coa
-		upstream.Controller.validate = get_coa
-		upstream.get_coa = factory().handler
-		if enabled:
-		    import erpnext.accounts.utils as conditional
-		conditional.get_coa = get_coa
-		def install_later():
-		    upstream.get_coa = get_coa
-		upstream.get_coa = get_coa
-		""",
+		function_source(annotation(), name="local")
+		+ "import nagus as app\n"
+		+ "import erpnext.accounts.utils as upstream\n"
+		+ "import erpnext.accounts.module_owner as module_owner\n"
+		+ "from erpnext import client\n"
+		+ "from nagus import module_replacement\n"
+		+ "from nagus.overrides import get_coa\n"
+		+ "upstream.get_coa = app.local\n"
+		+ "local = None\n"
+		+ "upstream.enabled = True\n"
+		+ "client.callback = get_coa\n"
+		+ "module_owner.original = get_coa\n"
+		+ "upstream.get_coa = module_replacement\n"
+		+ "upstream.get_coa = app.module_replacement\n"
+		+ "upstream.Controller.validate = get_coa\n"
+		+ "upstream.get_coa = factory().handler\n"
+		+ "if enabled:\n    import erpnext.accounts.utils as conditional\n"
+		+ "conditional.get_coa = get_coa\n"
+		+ "def install_later():\n    upstream.get_coa = get_coa\n"
+		+ "upstream.get_coa = get_coa\n",
 	)
 	result = validate(bench)
-	assert result.checked == 1
+	assert result.checked == 2
 	assert not result.errors
 
 
@@ -144,15 +154,21 @@ def test_missing_owner_original_and_replacement_are_retained(bench):
 	write(bench / "nagus/nagus/overrides.py", function_source(annotation()))
 	write(bench / "erpnext/erpnext/accounts/other.py", "def existing(): pass\n")
 	write(
+		bench / "erpnext/erpnext/accounts/reexport.py",
+		"from erpnext.accounts.utils import removed_original as original\n",
+	)
+	write(bench / "nagus/nagus/reexports.py", "from nagus.missing import replacement\n")
+	write(
 		bench / "nagus/nagus/__init__.py",
 		"""
 		import erpnext.accounts.removed as removed
-		import erpnext.accounts.utils as upstream
 		import erpnext.accounts.other as other
+		import erpnext.accounts.reexport as reexport
+		import nagus.reexports as replacements
 		from nagus.overrides import get_coa
 		removed.get_coa = get_coa
-		upstream.removed_original = get_coa
-		other.existing = missing_replacement
+		reexport.original = get_coa
+		other.existing = replacements.replacement
 		""",
 	)
 	result = validate(bench)
@@ -162,7 +178,7 @@ def test_missing_owner_original_and_replacement_are_retained(bench):
 		"Cannot resolve monkey-patched owner module erpnext.accounts.removed" in error
 		for error in result.errors
 	)
-	assert any("removed_original" in error and "removed or renamed" in error for error in result.errors)
+	assert any("Cannot resolve monkey-patched original" in error for error in result.errors)
 	assert any("Cannot resolve replacement function" in error for error in result.errors)
 
 

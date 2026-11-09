@@ -1616,6 +1616,10 @@ def imported_module(resolver, module, parts, body, seen=frozenset()):
 			reference = module.import_reference(statement, alias)
 			return ImportedModule(reference, None, error)
 		provider_body = runtime_body(provider.tree)
+		if provider.path == module.path:
+			# A self-relative import can only see bindings executed before itself.
+			position = statement.lineno, statement.col_offset
+			provider_body = [item for item in provider_body if (item.lineno, item.col_offset) < position]
 		if "__getattr__" in scope_bindings(provider_body) or uses_dynamic_namespace(
 			provider_body, provider.tree
 		):
@@ -1667,6 +1671,22 @@ def assignment_parts(statement):
 		return None
 
 
+def direct_function_import(body, name):
+	return any(
+		isinstance(statement, ast.ImportFrom) and alias.name != "*"
+		for statement, alias in direct_imports(body, name)
+	)
+
+
+def failed_static_reexport(resolver, module, name, limits=()):
+	body = resolver.module_body(module, limits)
+	return (
+		"__getattr__" not in scope_bindings(body)
+		and not uses_dynamic_namespace(body, module.tree)
+		and direct_function_import(body, name)
+	)
+
+
 def replacement_candidate(resolver, module, value, limits):
 	"""Resolve direct app functions while treating dynamic expressions as out of scope."""
 	parts = dotted_name(value).split(".")
@@ -1677,25 +1697,43 @@ def replacement_candidate(resolver, module, value, limits):
 			return False, None
 		if owner.module is None:
 			return None, owner.error
+		owner_limits = limits if owner.module.path == module.path else ()
+		owner_body = resolver.module_body(owner.module, owner_limits)
+		terminal_module = imported_module(resolver, owner.module, [parts[-1]], owner_body)
+		if terminal_module is not None and terminal_module.module is not None:
+			return False, None
 		try:
-			symbol = resolver.resolve_in(owner.module, [parts[-1]], (), frozenset())
+			symbol = resolver.resolve_in(owner.module, [parts[-1]], owner_limits, frozenset())
 		except MissingSymbolError as error:
 			return None, error
-		except ResolutionError:
+		except ResolutionError as error:
+			if failed_static_reexport(resolver, owner.module, parts[-1], owner_limits):
+				return None, error
 			return False, None
 		if not isinstance(symbol.node, FUNCTION_NODES):
 			return False, None
 		return symbol, None
+	terminal_module = imported_module(resolver, module, [value.id], body)
+	if terminal_module is not None and terminal_module.module is not None:
+		return False, None
 	imports = direct_imports(body, value.id)
 	if len(imports) == 1 and isinstance(imports[0][0], ast.ImportFrom):
 		statement, alias = imports[0]
 		try:
 			provider = exact_source_module(resolver, module.import_reference(statement))
-			symbol = resolver.resolve_in(provider, [alias.name], (), frozenset())
+		except ResolutionError as error:
+			return None, error
+		provider_limits = limits if provider.path == module.path else ()
+		try:
+			symbol = resolver.resolve_in(provider, [alias.name], provider_limits, frozenset())
 		except MissingSymbolError as error:
 			return None, error
 		except ResolutionError as error:
-			return None, error
+			return (
+				(None, error)
+				if failed_static_reexport(resolver, provider, alias.name, provider_limits)
+				else (False, None)
+			)
 		if isinstance(symbol.node, FUNCTION_NODES) and symbol.module.app.name == module.app.name:
 			return symbol, None
 		return False, None
@@ -1779,6 +1817,10 @@ def validate_module_assignments(app, validator, begin, fail):
 					ResolutionError(f"Cannot resolve replacement function: {replacement_error}"),
 				)
 				continue
+			original_body = runtime_body(owner.module.tree)
+			terminal_module = imported_module(resolver, owner.module, [target.attr], original_body)
+			if terminal_module is not None and terminal_module.module is not None:
+				continue
 			try:
 				original = resolver.resolve_in(owner.module, [target.attr], (), frozenset())
 			except MissingSymbolError as error:
@@ -1789,7 +1831,14 @@ def validate_module_assignments(app, validator, begin, fail):
 					f"Cannot resolve monkey-patched original at {context['file']}:{context['line']}: {error}",
 				)
 				continue
-			except ResolutionError:
+			except ResolutionError as error:
+				if failed_static_reexport(resolver, owner.module, target.attr):
+					begin(context)
+					validator.error(
+						replacement,
+						registration_reference,
+						f"Cannot resolve monkey-patched original at {context['file']}:{context['line']}: {error}",
+					)
 				continue
 			if not isinstance(original.node, FUNCTION_NODES):
 				continue

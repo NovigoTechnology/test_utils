@@ -144,16 +144,24 @@ def test_analyze_overrides_exposes_module_assignment_discovery(apps):
 
 
 def test_module_assignment_inventory_keeps_missing_owner_original_and_replacement(apps):
-	root, custom, _, _ = apps
+	root, custom, upstream, _ = apps
+	write(
+		upstream / "upstream/reexport.py",
+		"from upstream.api import removed_original as original\n",
+	)
+	commit(upstream, "add a broken upstream reexport")
 	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
+	write(custom / "custom/reexports.py", "from custom.missing import replacement\n")
 	write(
 		custom / "custom/__init__.py",
 		"import upstream.removed as missing_owner\n"
 		"import upstream.api as api\n"
+		"import upstream.reexport as reexport\n"
+		"import custom.reexports as replacements\n"
 		"from custom.override import replacement\n"
 		"missing_owner.original = replacement\n"
-		"api.removed_original = replacement\n"
-		"api.original = missing_replacement\n",
+		"reexport.original = replacement\n"
+		"api.original = replacements.replacement\n",
 	)
 	commit(custom, "register unresolved module assignments")
 	document = analyze_overrides(custom, root)
@@ -167,7 +175,7 @@ def test_module_assignment_inventory_keeps_missing_owner_original_and_replacemen
 	}
 	assert {item["discovery"]["registration_reference"] for item in items} == {
 		"upstream.removed.original",
-		"upstream.api.removed_original",
+		"upstream.reexport.original",
 		"upstream.api.original",
 	}
 
@@ -175,7 +183,7 @@ def test_module_assignment_inventory_keeps_missing_owner_original_and_replacemen
 def test_reachable_installation_files_remain_distinct_inventory_items(apps):
 	root, custom, _, _ = apps
 	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
-	write(custom / "custom/__init__.py", "import custom.first\nimport custom.second\n")
+	write(custom / "custom/__init__.py", "from . import first, second\n")
 	registration = (
 		"import upstream.api as api\nfrom custom.override import replacement\napi.original = replacement\n"
 	)
