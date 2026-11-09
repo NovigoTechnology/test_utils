@@ -25,7 +25,7 @@ from test_utils.utils.override_metadata import (
 	parse_annotation,
 	repository_identity,
 )
-from test_utils.utils.override_tracking import compare_override
+from test_utils.utils.override_tracking import RevisionResolver, compare_override
 from test_utils.utils.revision_sources import RevisionSources
 from test_utils.utils.track_overrides import UpstreamFetchError
 
@@ -45,6 +45,10 @@ def source_hash(source):
 
 def normalized_repository(value):
 	return repository_identity(value) if value else None
+
+
+def valid_revision(value):
+	return value.lower() if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value) else None
 
 
 def override_id(repository, file_path, symbol):
@@ -238,6 +242,31 @@ def diagnostics_for(findings, symbol, upstream):
 	]
 
 
+def verify_historical_identity(sources, file_path, method, references):
+	"""Require annotation and registered original to name one baseline declaration."""
+	resolver = RevisionResolver(sources, file_path)
+	annotated = resolver.method_symbol(method)
+	resolved = []
+	errors = []
+	for reference in references:
+		try:
+			original = resolver.resolve(reference)
+		except ResolutionError as exc:
+			errors.append(f"{reference}: {exc}")
+			continue
+		if not isinstance(original.node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+			errors.append(f"{reference}: registered original is not a function")
+			continue
+		resolved.append(original)
+		if original.identity == annotated.identity:
+			return
+	if resolved:
+		raise ValueError("PATH and METHOD do not identify the historically registered original")
+	raise ResolutionError(
+		"Cannot verify the historically registered original: " + "; ".join(errors)
+	)
+
+
 def analyze_registered_override(record, app, repositories, revisions, findings):
 	owner_repository = normalized_repository(app.repository) or app.name
 	diagnostics = diagnostics_for(findings, record["custom_symbol"], record["upstream_symbol"])
@@ -260,7 +289,7 @@ def analyze_registered_override(record, app, repositories, revisions, findings):
 			"repository": record["upstream_repository"],
 			"file": record["upstream_file"],
 			"symbol": record["upstream_symbol"],
-			"baseline_revision": fields.get("HASH", "").lower() or None,
+			"baseline_revision": valid_revision(fields.get("HASH")),
 			"target_revision": revisions[record["upstream_app"]],
 			"baseline_body_sha256": None,
 			"target_body_sha256": None,
@@ -351,7 +380,7 @@ def unresolved_result(item, app, repositories, revisions):
 			"repository": None,
 			"file": None,
 			"symbol": item["upstream_symbols"][0] if item["upstream_symbols"] else None,
-			"baseline_revision": item["annotation"].get("HASH") or None,
+			"baseline_revision": valid_revision(item["annotation"].get("HASH")),
 			"target_revision": None,
 			"baseline_body_sha256": None,
 			"target_body_sha256": None,
@@ -398,12 +427,38 @@ def unresolved_result(item, app, repositories, revisions):
 				"app": upstream.name,
 				"repository": upstream_repository,
 				"file": fields["PATH"],
-				"baseline_revision": fields["HASH"].lower(),
+				"baseline_revision": valid_revision(fields["HASH"]),
 				"target_revision": revisions[upstream.name],
 			}
 		)
 		baseline = RevisionSources(fields["REPO"], fields["HASH"], checkout=upstream.root)
 		target = RevisionSources(fields["REPO"], revisions[upstream.name], checkout=upstream.root)
+		try:
+			verify_historical_identity(
+				baseline,
+				fields["PATH"],
+				fields["METHOD"],
+				item["upstream_symbols"],
+			)
+		except ResolutionError as exc:
+			result["diagnostics"].append(
+				{
+					"code": "original_identity_inconclusive",
+					"kind": "resolution",
+					"message": str(exc),
+				}
+			)
+			return result
+		except ValueError as exc:
+			result["classification"] = "invalid_annotation"
+			result["diagnostics"].append(
+				{
+					"code": "annotation_original_mismatch",
+					"kind": "annotation",
+					"message": str(exc),
+				}
+			)
+			return result
 		comparison = compare_override(baseline, target, fields["PATH"], fields["METHOD"])
 		result["upstream"]["baseline_body_sha256"] = comparison.baseline_body_sha256
 		result["upstream"]["target_body_sha256"] = comparison.target_body_sha256
@@ -425,6 +480,7 @@ def unresolved_result(item, app, repositories, revisions):
 				}
 			)
 	except ValueError as exc:
+		result["classification"] = "invalid_annotation"
 		result["diagnostics"].append(
 			{"code": "annotation_invalid", "kind": "annotation", "message": str(exc)}
 		)
