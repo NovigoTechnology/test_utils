@@ -4,12 +4,48 @@ import ast
 import io
 import re
 import tokenize
+from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 
 FIELDS = ("APP", "HASH", "REPO", "PATH", "METHOD")
 TRACKING_FIELDS = ("HASH", "REPO", "PATH", "METHOD")
 FIELD_PATTERN = re.compile(r"^[ \t]*(APP|HASH|REPO|PATH|METHOD):[ \t]*(.*?)[ \t]*$", re.MULTILINE)
 GITHUB_REPOSITORY = re.compile(r"(?P<owner>[A-Za-z0-9_.-]+)/(?P<repository>[A-Za-z0-9_.-]+)")
+
+
+def annotation_field_errors(fields, duplicates, app_name):
+	"""Return structured field groups and messages shared by every override interface."""
+	errors = []
+	for name in duplicates:
+		errors.append(({name}, f"Duplicate annotation field {name}"))
+	missing = [name for name in FIELDS if not fields.get(name)]
+	if missing:
+		errors.append(
+			(
+				set(missing),
+				f"Missing annotation fields: {', '.join(missing)}; add them to the overriding callable's docstring",
+			)
+		)
+	if fields.get("APP") and fields["APP"] != app_name:
+		errors.append(({"APP"}, f"APP must be {app_name!r}"))
+	if fields.get("HASH") and not re.fullmatch(r"[0-9a-fA-F]{40}", fields["HASH"]):
+		errors.append(({"HASH"}, "HASH must be a full 40-character hexadecimal commit SHA"))
+	if fields.get("REPO"):
+		try:
+			repository_identity(fields["REPO"])
+		except ValueError as exc:
+			errors.append(({"REPO"}, str(exc)))
+	if fields.get("PATH"):
+		path = PurePosixPath(fields["PATH"])
+		if path.is_absolute() or ".." in path.parts or path.suffix != ".py":
+			errors.append(
+				({"PATH"}, "PATH must identify a Python file relative to the upstream repository")
+			)
+	if fields.get("METHOD") and not all(
+		part.isidentifier() for part in fields["METHOD"].split(".")
+	):
+		errors.append(({"METHOD"}, "METHOD must be a function name or Class.method"))
+	return errors
 
 
 def parse_annotation(text: str) -> tuple[dict[str, str], list[str]]:

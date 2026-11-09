@@ -1,6 +1,7 @@
 """Compare statically resolved implementations from two repository revisions."""
 
 import ast
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -107,20 +108,41 @@ class Comparison:
 	status: Literal["changed", "unchanged", "unverified"]
 	diff: str = ""
 	diagnostic: str = ""
+	error_kind: Literal["resolution", "source_access"] | None = None
+	baseline_body_sha256: str | None = None
+	target_body_sha256: str | None = None
+	change_kind: Literal["modified", "missing"] | None = None
 
 
 def compare_override(before, after, file_path, method):
 	"""Only a resolvable baseline permits a confirmed change or deletion."""
-	errors = (ResolutionError, UpstreamFetchError, requests.RequestException, OSError)
 	try:
 		old = RevisionResolver(before, file_path).implementation(method)
-	except errors as exc:
-		return Comparison("unverified", diagnostic=f"Baseline {before.revision}: {exc}")
+	except ResolutionError as exc:
+		return Comparison(
+			"unverified", diagnostic=f"Baseline {before.revision}: {exc}", error_kind="resolution"
+		)
+	except (UpstreamFetchError, requests.RequestException, OSError) as exc:
+		return Comparison(
+			"unverified", diagnostic=f"Baseline {before.revision}: {exc}", error_kind="source_access"
+		)
 	try:
 		new = RevisionResolver(after, file_path).implementation(method)
 	except MissingSymbolError:
 		new = None
-	except errors as exc:
-		return Comparison("unverified", diagnostic=f"Target {after.revision}: {exc}")
+	except ResolutionError as exc:
+		return Comparison(
+			"unverified", diagnostic=f"Target {after.revision}: {exc}", error_kind="resolution"
+		)
+	except (UpstreamFetchError, requests.RequestException, OSError) as exc:
+		return Comparison(
+			"unverified", diagnostic=f"Target {after.revision}: {exc}", error_kind="source_access"
+		)
 	diff = compare_method_diff(old, new)
-	return Comparison("changed" if diff else "unchanged", diff=diff)
+	return Comparison(
+		"changed" if diff else "unchanged",
+		diff=diff,
+		baseline_body_sha256=hashlib.sha256(old.encode()).hexdigest(),
+		target_body_sha256=hashlib.sha256(new.encode()).hexdigest() if new is not None else None,
+		change_kind="missing" if new is None else "modified" if diff else None,
+	)

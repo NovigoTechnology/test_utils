@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 
 from test_utils.utils.namespace_types import class_values_are_safe
 from test_utils.utils.override_metadata import (
-	FIELDS,
+	annotation_field_errors,
 	github_repository,
 	parse_annotation,
 	repository_identity,
@@ -1193,20 +1193,12 @@ class AnnotationValidator:
 		self.checked.add(key)
 		self.result.checked += 1
 		annotations, duplicates = parse_annotation(ast.get_docstring(custom.node) or "")
-		for name in duplicates:
-			self.error(custom, upstream.reference, f"Duplicate annotation field {name}")
-		missing = [name for name in FIELDS if not annotations.get(name)]
-		if missing:
-			self.error(
-				custom,
-				upstream.reference,
-				f"Missing annotation fields: {', '.join(missing)}; add them to the overriding callable's docstring",
-			)
-		if annotations.get("APP") and annotations["APP"] != self.app.name:
-			self.error(custom, upstream.reference, f"APP must be {self.app.name!r}")
-		if annotations.get("HASH") and not re.fullmatch(r"[0-9a-fA-F]{40}", annotations["HASH"]):
-			self.error(custom, upstream.reference, "HASH must be a full 40-character hexadecimal commit SHA")
-		if annotations.get("REPO"):
+		field_errors = annotation_field_errors(annotations, duplicates, self.app.name)
+		invalid_fields = set()
+		for fields, message in field_errors:
+			invalid_fields.update(fields)
+			self.error(custom, upstream.reference, message)
+		if annotations.get("REPO") and "REPO" not in invalid_fields:
 			try:
 				expected = upstream.module.app.repository
 				if expected is None:
@@ -1219,12 +1211,12 @@ class AnnotationValidator:
 				github_repository(annotations["REPO"])
 			except (ResolutionError, ValueError) as exc:
 				self.error(custom, upstream.reference, str(exc))
-		if annotations.get("PATH"):
+		if annotations.get("PATH") and "PATH" not in invalid_fields:
 			expected_path = upstream.module.path.relative_to(upstream.module.app.root).as_posix()
 			path = PurePosixPath(annotations["PATH"])
 			if path.is_absolute() or ".." in path.parts or annotations["PATH"] != expected_path:
 				self.error(custom, upstream.reference, f"PATH must be {expected_path!r}")
-		if annotations.get("METHOD"):
+		if annotations.get("METHOD") and "METHOD" not in invalid_fields:
 			method = annotations["METHOD"]
 			# Legacy leaf names are valid only when they identify this callable uniquely.
 			valid = (
@@ -1498,6 +1490,36 @@ def dependency_apps(app: App, apps_root: Path, additional_dependencies=()) -> li
 	return list(apps.values())
 
 
+def run_override_validation(
+	app: App,
+	apps: list[App],
+	validator: AnnotationValidator,
+	*,
+	before_registration=None,
+	resolution_error=None,
+):
+	"""Run every supported discovery source through one configured validator."""
+	hooks_path = app.package / "hooks.py"
+	hooks = read_hooks(hooks_path)
+	for hook in ("override_whitelisted_methods", "override_doctype_class", "extend_doctype_class"):
+		for original, replacement in hook_mapping(hooks, hook):
+			if before_registration:
+				before_registration(hook, original, replacement)
+			try:
+				if hook == "override_whitelisted_methods":
+					validator.function(original, replacement)
+				else:
+					validator.doctype(original, replacement, extension=hook == "extend_doctype_class")
+			except ResolutionError as exc:
+				if resolution_error:
+					resolution_error(hook, original, replacement, exc)
+				else:
+					validator.result.errors.append(
+						f"{hooks_path}: {hook}[{original!r}] -> {replacement}: {exc}"
+					)
+	return validator.result
+
+
 def validate_overrides(
 	app_path: Path, apps_root: Path | None = None, additional_dependencies=()
 ) -> ValidationResult:
@@ -1508,22 +1530,10 @@ def validate_overrides(
 		hooks_path = app.package / "hooks.py"
 		if not hooks_path.is_file():
 			raise ResolutionError(f"hooks.py not found in {app.package}")
-		hooks = read_hooks(hooks_path)
 		root = apps_root.resolve() if apps_root else app.root.parent
 		apps = dependency_apps(app, root, additional_dependencies)
 		validator = AnnotationValidator(app, SourceResolver(apps))
-		for hook in ("override_whitelisted_methods", "override_doctype_class", "extend_doctype_class"):
-			for original, replacement in hook_mapping(hooks, hook):
-				try:
-					if hook == "override_whitelisted_methods":
-						validator.function(original, replacement)
-					else:
-						validator.doctype(original, replacement, extension=hook == "extend_doctype_class")
-				except ResolutionError as exc:
-					validator.result.errors.append(
-						f"{hooks_path}: {hook}[{original!r}] -> {replacement}: {exc}"
-					)
-		return validator.result
+		return run_override_validation(app, apps, validator)
 	except ResolutionError as exc:
 		result.errors.append(str(exc))
 	return result
