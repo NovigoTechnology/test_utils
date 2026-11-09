@@ -52,9 +52,21 @@ def valid_revision(value):
 	return value.lower() if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value) else None
 
 
-def override_id(repository, file_path, symbol):
-	payload = json.dumps([repository, file_path, symbol], separators=(",", ":"))
+def override_id(repository, file_path, symbol, original):
+	payload = json.dumps([repository, file_path, symbol, original], separators=(",", ":"))
 	return "sha256:" + source_hash(payload)
+
+
+def symbol_kind(node):
+	if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+		return "function"
+	if isinstance(node, ast.ClassDef):
+		return "class"
+	return "binding"
+
+
+def function_docstring(node):
+	return ast.get_docstring(node) or "" if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else ""
 
 
 def git_revision(app):
@@ -96,7 +108,16 @@ class StructuredValidator(AnnotationValidator):
 		except ValueError:
 			return self.hooks_path.relative_to(self.app.root).as_posix(), 1
 
-	def collect(self, custom_file, custom_symbol, line, upstream, diagnostic, annotation=None):
+	def collect(
+		self,
+		custom_file,
+		custom_symbol,
+		line,
+		upstream,
+		diagnostic,
+		annotation=None,
+		custom_kind="unknown",
+	):
 		key = (custom_file, custom_symbol, upstream)
 		item = self.findings.setdefault(
 			key,
@@ -107,11 +128,14 @@ class StructuredValidator(AnnotationValidator):
 				"annotation": annotation or {},
 				"duplicate_fields": [],
 				"custom_body_sha256": None,
+				"custom_kind": custom_kind,
 				"upstream_symbols": [],
 				"diagnostics": [],
 				"discovery": dict(self.context),
 			},
 		)
+		if item["custom_kind"] == "unknown" and custom_kind != "unknown":
+			item["custom_kind"] = custom_kind
 		if upstream and upstream not in item["upstream_symbols"]:
 			item["upstream_symbols"].append(upstream)
 		if diagnostic and diagnostic not in item["diagnostics"]:
@@ -119,7 +143,7 @@ class StructuredValidator(AnnotationValidator):
 		return item
 
 	def error(self, custom, upstream, message):
-		fields, duplicates = parse_annotation(ast.get_docstring(custom.node) or "")
+		fields, duplicates = parse_annotation(function_docstring(custom.node))
 		kind = "annotation" if self.validating_annotation else "resolution"
 		code = annotation_diagnostic(message) if self.validating_annotation else "upstream_unresolved"
 		custom_file, line = self.custom_location(custom)
@@ -130,6 +154,7 @@ class StructuredValidator(AnnotationValidator):
 			upstream,
 			{"code": code, "kind": kind, "message": message},
 			fields,
+			symbol_kind(custom.node),
 		)
 		item["duplicate_fields"] = duplicates
 		try:
@@ -144,7 +169,7 @@ class StructuredValidator(AnnotationValidator):
 		key = (custom.identity, upstream.identity)
 		if key in self.checked:
 			return
-		fields, duplicates = parse_annotation(ast.get_docstring(custom.node) or "")
+		fields, duplicates = parse_annotation(function_docstring(custom.node))
 		custom_file, line = self.custom_location(custom)
 		source = custom.module.path.read_text(encoding="utf-8-sig")
 		body = ast.get_source_segment(source, custom.node) or ""
@@ -163,7 +188,15 @@ class StructuredValidator(AnnotationValidator):
 				"discovery": dict(self.context),
 			}
 		)
-		self.collect(custom_file, custom.reference, line, upstream.reference, None, fields)
+		self.collect(
+			custom_file,
+			custom.reference,
+			line,
+			upstream.reference,
+			None,
+			fields,
+			symbol_kind(custom.node),
+		)
 		self.validating_annotation = True
 		try:
 			super().validate_annotation(custom, upstream)
@@ -243,7 +276,7 @@ def diagnostics_for(findings, symbol, upstream):
 	]
 
 
-def verify_historical_identity(sources, file_path, method, references):
+def verify_historical_identity(sources, file_path, method, references, discovery):
 	"""Require annotation and registered original to name one baseline declaration."""
 	resolver = RevisionResolver(sources, file_path)
 	annotated = resolver.method_symbol(method)
@@ -251,7 +284,10 @@ def verify_historical_identity(sources, file_path, method, references):
 	errors = []
 	for reference in references:
 		try:
-			original = resolver.resolve(reference)
+			if discovery.get("hook") in {"override_doctype_class", "extend_doctype_class"}:
+				original = resolver.registered_method_symbol(reference)
+			else:
+				original = resolver.resolve_registration(reference)
 		except ResolutionError as exc:
 			errors.append(f"{reference}: {exc}")
 			continue
@@ -271,7 +307,12 @@ def analyze_registered_override(record, app, repositories, revisions, findings):
 	diagnostics = diagnostics_for(findings, record["custom_symbol"], record["upstream_symbol"])
 	fields = record["annotation"]
 	result = {
-		"override_id": override_id(owner_repository, record["custom_file"], record["custom_symbol"]),
+		"override_id": override_id(
+			owner_repository,
+			record["custom_file"],
+			record["custom_symbol"],
+			record["discovery"]["original_reference"],
+		),
 		"classification": "invalid_annotation",
 		"discovery": record["discovery"],
 		"owner": {
@@ -360,7 +401,12 @@ def unresolved_result(item, app, repositories, revisions):
 	repository = normalized_repository(app.repository) or app.name
 	annotation_errors = any(diagnostic["kind"] == "annotation" for diagnostic in item["diagnostics"])
 	result = {
-		"override_id": override_id(repository, item["custom_file"], item["custom_symbol"]),
+		"override_id": override_id(
+			repository,
+			item["custom_file"],
+			item["custom_symbol"],
+			item["discovery"]["original_reference"],
+		),
 		"classification": "invalid_annotation" if annotation_errors else "inconclusive",
 		"discovery": item["discovery"],
 		"owner": {
@@ -395,7 +441,9 @@ def unresolved_result(item, app, repositories, revisions):
 		return result
 	field_errors = annotation_field_errors(item["annotation"], item["duplicate_fields"], app.name)
 	if field_errors:
-		if item["custom_body_sha256"] is None and not item["annotation"]:
+		if (item["custom_body_sha256"] is None or item["custom_kind"] != "function") and not item[
+			"annotation"
+		]:
 			return result
 		result["classification"] = "invalid_annotation"
 		for _, message in field_errors:
@@ -432,6 +480,7 @@ def unresolved_result(item, app, repositories, revisions):
 				fields["PATH"],
 				fields["METHOD"],
 				item["upstream_symbols"],
+				item["discovery"],
 			)
 		except ResolutionError as exc:
 			result["diagnostics"].append(
