@@ -80,9 +80,7 @@ def repository_identity(value: str) -> str:
 		value = "ssh://" + value.replace(":", "/", 1)
 	parsed = urlsplit(value)
 	if parsed.scheme not in {"http", "https", "ssh", "git"} or not parsed.hostname:
-		raise ValueError(
-			"REPO must be a GitHub owner/repository or an HTTP(S), SSH or Git repository URL"
-		)
+		raise ValueError("REPO must be a GitHub owner/repository or an HTTP(S), SSH or Git repository URL")
 	path = parsed.path.rstrip("/").removesuffix(".git")
 	if not path or path == "/" or parsed.query or parsed.fragment:
 		raise ValueError("REPO must identify a repository without a query or fragment")
