@@ -158,8 +158,7 @@ def test_analyze_overrides_keeps_an_unresolved_replacement_in_the_inventory(apps
 	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
 	write(
 		custom / "custom/__init__.py",
-		"import upstream.api as upstream_api\n"
-		"upstream_api.original = missing_replacement\n",
+		"import upstream.api as upstream_api\nupstream_api.original = missing_replacement\n",
 	)
 	commit(custom, "add unresolved module assignment")
 	document = analyze_overrides(custom, root)

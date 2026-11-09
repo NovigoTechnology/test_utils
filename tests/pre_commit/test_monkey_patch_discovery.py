@@ -1,12 +1,13 @@
 import pytest
-
 from test_validate_override_annotations import (
 	annotation,
-	bench as bench,
 	function_source,
 	hooks,
 	validate,
 	write,
+)
+from test_validate_override_annotations import (
+	bench as bench,
 )
 
 
@@ -59,7 +60,10 @@ def test_discovers_the_four_direct_nagus_monkey_patches_without_annotations(benc
 	assert any("nagus.api.user.onlogut" in error for error in result.errors)
 	assert any("nagus.utils.utils.get_exchange_rate_nagus" in error for error in result.errors)
 	assert any("nagus.controllers.trends.based_wise_columns_query" in error for error in result.errors)
-	assert any("nagus.controllers.trends.get_data -> erpnext.controllers.trends.get_data" in error for error in result.errors)
+	assert any(
+		"nagus.controllers.trends.get_data -> erpnext.controllers.trends.get_data" in error
+		for error in result.errors
+	)
 
 
 def test_reexport_resolves_to_the_real_upstream_declaration(bench):
@@ -70,9 +74,7 @@ def test_reexport_resolves_to_the_real_upstream_declaration(bench):
 	)
 	write(
 		bench / "nagus/nagus/controllers/trends.py",
-		function_source(
-			annotation(method="get_data", path="erpnext/controllers/trends.py"), name="get_data"
-		),
+		function_source(annotation(method="get_data", path="erpnext/controllers/trends.py"), name="get_data"),
 	)
 	write(
 		bench / "nagus/nagus/__init__.py",

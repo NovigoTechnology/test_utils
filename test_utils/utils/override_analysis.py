@@ -184,9 +184,7 @@ def validate_registered_overrides(app, apps):
 			context["line"],
 			context["original_reference"],
 			{
-				"code": "registration_unresolved"
-				if context["kind"] == "hook"
-				else "replacement_unresolved",
+				"code": "registration_unresolved" if context["kind"] == "hook" else "replacement_unresolved",
 				"kind": "resolution",
 				"message": str(exc),
 			},
