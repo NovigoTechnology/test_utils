@@ -15,7 +15,7 @@ from test_utils.utils.override_annotations import (
 	SourceResolver,
 	Symbol,
 )
-from test_utils.utils.python_source import FUNCTION_NODES, runtime_body, scope_statements
+from test_utils.utils.python_source import FUNCTION_NODES, runtime_body, scope_bindings, scope_statements
 from test_utils.utils.track_overrides import UpstreamFetchError, compare_method_diff
 
 
@@ -110,9 +110,15 @@ class RevisionResolver(SourceResolver):
 		if not isinstance(owner.node, ast.ClassDef):
 			raise ResolutionError(f"Registered method owner {owner_reference!r} is not a class")
 		for candidate in self.hierarchy(owner):
+			bindings = scope_bindings(runtime_body(candidate.module.tree, candidate.node))
+			if name not in bindings:
+				continue
 			node = self.method(candidate, name)
-			if node is not None:
-				return Symbol(candidate.module, f"{candidate.qualname}.{name}", node)
+			if node is None:
+				raise ResolutionError(
+					f"Unsupported binding shadows registered method {candidate.reference}.{name}"
+				)
+			return Symbol(candidate.module, f"{candidate.qualname}.{name}", node)
 		raise MissingSymbolError(f"Registered method {reference} is absent from the resolved hierarchy")
 
 	def implementation(self, method):

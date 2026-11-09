@@ -167,8 +167,6 @@ class StructuredValidator(AnnotationValidator):
 
 	def validate_annotation(self, custom, upstream):
 		key = (custom.identity, upstream.identity)
-		if key in self.checked:
-			return
 		fields, duplicates = parse_annotation(function_docstring(custom.node))
 		custom_file, line = self.custom_location(custom)
 		source = custom.module.path.read_text(encoding="utf-8-sig")
@@ -188,6 +186,8 @@ class StructuredValidator(AnnotationValidator):
 				"discovery": dict(self.context),
 			}
 		)
+		if key in self.checked:
+			return
 		self.collect(
 			custom_file,
 			custom.reference,
@@ -267,6 +267,13 @@ def source_context(apps):
 	return repositories
 
 
+def revision_source(cache, repository, revision, checkout):
+	key = (repository_identity(repository), revision.lower())
+	if key not in cache:
+		cache[key] = RevisionSources(repository, revision, checkout=checkout)
+	return cache[key]
+
+
 def diagnostics_for(findings, symbol, upstream):
 	return [
 		diagnostic
@@ -302,7 +309,7 @@ def verify_historical_identity(sources, file_path, method, references, discovery
 	raise ResolutionError("Cannot verify the historically registered original: " + "; ".join(errors))
 
 
-def analyze_registered_override(record, app, repositories, revisions, findings):
+def analyze_registered_override(record, app, repositories, revisions, findings, source_cache):
 	owner_repository = normalized_repository(app.repository) or app.name
 	diagnostics = diagnostics_for(findings, record["custom_symbol"], record["upstream_symbol"])
 	fields = record["annotation"]
@@ -361,8 +368,8 @@ def analyze_registered_override(record, app, repositories, revisions, findings):
 		upstream = repositories[repository]
 		if upstream.name != record["upstream_app"]:
 			raise ValueError("REPO does not identify the application that owns the resolved upstream symbol")
-		baseline = RevisionSources(fields["REPO"], fields["HASH"], checkout=upstream.root)
-		target = RevisionSources(fields["REPO"], revisions[upstream.name], checkout=upstream.root)
+		baseline = revision_source(source_cache, fields["REPO"], fields["HASH"], upstream.root)
+		target = revision_source(source_cache, fields["REPO"], revisions[upstream.name], upstream.root)
 		comparison = compare_override(baseline, target, fields["PATH"], fields["METHOD"])
 		result["upstream"]["baseline_body_sha256"] = comparison.baseline_body_sha256
 		result["upstream"]["target_body_sha256"] = comparison.target_body_sha256
@@ -397,7 +404,7 @@ def analyze_registered_override(record, app, repositories, revisions, findings):
 	return result
 
 
-def unresolved_result(item, app, repositories, revisions):
+def unresolved_result(item, app, repositories, revisions, source_cache):
 	repository = normalized_repository(app.repository) or app.name
 	annotation_errors = any(diagnostic["kind"] == "annotation" for diagnostic in item["diagnostics"])
 	result = {
@@ -472,8 +479,8 @@ def unresolved_result(item, app, repositories, revisions):
 				"target_revision": revisions[upstream.name],
 			}
 		)
-		baseline = RevisionSources(fields["REPO"], fields["HASH"], checkout=upstream.root)
-		target = RevisionSources(fields["REPO"], revisions[upstream.name], checkout=upstream.root)
+		baseline = revision_source(source_cache, fields["REPO"], fields["HASH"], upstream.root)
+		target = revision_source(source_cache, fields["REPO"], revisions[upstream.name], upstream.root)
 		try:
 			verify_historical_identity(
 				baseline,
@@ -550,6 +557,7 @@ def analyze_overrides(app_path, apps_root, additional_dependencies=(), revisions
 		resolved = resolved_revisions(apps, revisions)
 		repositories = source_context(apps)
 		validation = validate_registered_overrides(app, apps)
+		source_cache = {}
 		results = [
 			analyze_registered_override(
 				record,
@@ -557,6 +565,7 @@ def analyze_overrides(app_path, apps_root, additional_dependencies=(), revisions
 				repositories,
 				resolved,
 				validation["findings"],
+				source_cache,
 			)
 			for record in validation["registrations"]
 		]
@@ -564,7 +573,7 @@ def analyze_overrides(app_path, apps_root, additional_dependencies=(), revisions
 			(item["custom_symbol"], item["upstream_symbol"]) for item in validation["registrations"]
 		}
 		results.extend(
-			unresolved_result(item, app, repositories, resolved)
+			unresolved_result(item, app, repositories, resolved, source_cache)
 			for item in validation["findings"]
 			if not any(
 				(item["custom_symbol"], upstream) in registered_pairs for upstream in item["upstream_symbols"]
