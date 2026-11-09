@@ -115,12 +115,16 @@ def test_imports_and_aliases_are_resolved(bench, imports, target, replacement):
 	assert not result.errors
 
 
-def test_module_reexport_alias_is_resolved(bench):
-	write(bench / "erpnext/erpnext/api.py", "def get_coa(): pass\n")
+def test_module_and_function_aliases_resolve_to_terminal_declarations(bench):
+	write(
+		bench / "erpnext/erpnext/api.py",
+		"def implementation(): pass\nget_coa = implementation\n",
+	)
 	write(bench / "erpnext/erpnext/__init__.py", "from . import api as public\n")
 	write(
 		bench / "nagus/nagus/overrides.py",
-		function_source(annotation(path="erpnext/api.py")),
+		function_source(annotation(path="erpnext/api.py", method="implementation"), name="implementation")
+		+ "get_coa = implementation\n",
 	)
 	write(
 		bench / "nagus/nagus/__init__.py",
@@ -160,48 +164,20 @@ def test_imported_instance_attribute_is_not_a_module_patch(bench):
 	assert not result.errors
 
 
-def test_package_binding_takes_precedence_over_same_named_child_module(bench):
-	write(
-		bench / "erpnext/erpnext/__init__.py",
-		"class Client: pass\nclient = Client()\n",
-	)
-	write(bench / "erpnext/erpnext/client.py", "def callback(): pass\n")
-	write(bench / "nagus/nagus/overrides.py", function_source())
-	write(
-		bench / "nagus/nagus/__init__.py",
-		"from erpnext import client\nfrom nagus.overrides import get_coa\nclient.callback = get_coa\n",
-	)
-	result = validate(bench)
-	assert result.checked == 0
-	assert not result.errors
-
-
 def test_missing_imported_owner_is_reported_instead_of_dropped(bench):
 	write(bench / "nagus/nagus/overrides.py", function_source(annotation()))
 	write(
 		bench / "nagus/nagus/__init__.py",
-		"import erpnext.accounts.removed as upstream\n"
+		"import erpnext.accounts.removed\n"
+		"import erpnext.accounts.utils\n"
 		"from nagus.overrides import get_coa\n"
-		"upstream.get_coa = get_coa\n",
+		"erpnext.accounts.removed.get_coa = get_coa\n",
 	)
 	result = validate(bench)
 	assert result.checked == 0
 	assert len(result.errors) == 1
 	assert "Cannot resolve monkey-patched owner module erpnext.accounts.removed" in result.errors[0]
 	assert "source file not found" in result.errors[0]
-
-
-def test_missing_owner_with_a_local_class_replacement_is_not_a_function_patch(bench):
-	write(bench / "nagus/nagus/overrides.py", "class LocalType: pass\n")
-	write(
-		bench / "nagus/nagus/__init__.py",
-		"import erpnext.accounts.removed as upstream\n"
-		"from nagus.overrides import LocalType\n"
-		"upstream.Type = LocalType\n",
-	)
-	result = validate(bench)
-	assert result.checked == 0
-	assert not result.errors
 
 
 def test_conditional_owner_does_not_abort_later_assignments(bench):
@@ -217,6 +193,8 @@ def test_conditional_owner_does_not_abort_later_assignments(bench):
 		valid.get_coa = get_coa
 		if enabled:
 		    import erpnext.accounts.utils as conditional
+		else:
+		    import frappe.core.doctype.session_default_settings.session_default_settings as conditional
 		conditional.get_coa = get_coa
 		""",
 	)
@@ -224,6 +202,8 @@ def test_conditional_owner_does_not_abort_later_assignments(bench):
 	assert result.checked == 1
 	assert len(result.errors) == 1
 	assert "conditional or unsupported binding of 'conditional'" in result.errors[0]
+	assert "erpnext.accounts.utils" in result.errors[0]
+	assert "frappe.core.doctype.session_default_settings.session_default_settings" in result.errors[0]
 	assert "client.callback" not in result.errors[0]
 
 
@@ -244,33 +224,39 @@ def test_ambiguous_custom_namespace_retains_imported_owner_diagnostic(bench):
 
 
 def test_data_instance_class_and_nested_assignments_are_not_monkey_patches(bench):
-	write(bench / "nagus/nagus/overrides.py", function_source())
+	write(
+		bench / "erpnext/erpnext/__init__.py",
+		"class Client: pass\nclient = Client()\n",
+	)
+	write(bench / "erpnext/erpnext/client.py", "def callback(): pass\n")
+	write(
+		bench / "erpnext/erpnext/accounts/utils.py",
+		"def get_coa(): pass\nhandler = None\n",
+	)
+	write(
+		bench / "erpnext/erpnext/accounts/public.py",
+		"from erpnext.accounts.utils import handler\n",
+	)
+	write(bench / "nagus/nagus/overrides.py", function_source() + "class LocalType: pass\n")
 	write(
 		bench / "nagus/nagus/__init__.py",
 		"""
 		import erpnext.accounts.utils as upstream
+		import erpnext.accounts.public as public
+		import erpnext.accounts.removed as missing
 		import frappe
-		from nagus.overrides import get_coa
+		from erpnext import client
+		from nagus.overrides import LocalType, get_coa
 		upstream.enabled = True
+		upstream.handler = get_coa
+		public.handler = get_coa
+		client.callback = get_coa
+		missing.Type = LocalType
 		frappe.flags.feature = True
 		upstream.Controller.validate = get_coa
 		def install_later():
 			upstream.get_coa = get_coa
 		""",
-	)
-	result = validate(bench)
-	assert result.checked == 0
-	assert not result.errors
-
-
-def test_known_upstream_data_binding_is_not_a_function_patch(bench):
-	write(bench / "erpnext/erpnext/accounts/utils.py", "handler = None\n")
-	write(bench / "nagus/nagus/overrides.py", function_source())
-	write(
-		bench / "nagus/nagus/__init__.py",
-		"import erpnext.accounts.utils as upstream\n"
-		"from nagus.overrides import get_coa\n"
-		"upstream.handler = get_coa\n",
 	)
 	result = validate(bench)
 	assert result.checked == 0

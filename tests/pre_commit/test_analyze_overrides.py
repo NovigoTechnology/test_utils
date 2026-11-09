@@ -145,12 +145,24 @@ def test_analyze_overrides_exposes_module_assignment_discovery(apps):
 def test_analyze_overrides_confirms_removed_module_assignment_original(apps):
 	root, custom, upstream, _ = apps
 	register_module_assignment(custom)
+	write(
+		custom / "custom/install.py",
+		"import upstream.api as upstream_api\n"
+		"from custom.override import replacement\n"
+		"upstream_api.original = replacement\n",
+	)
+	commit(custom, "register the same assignment from another installation file")
 	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
 	commit(upstream, "remove module-assignment original")
-	item = result(analyze_overrides(custom, root))
-	assert item["classification"] == "affected"
-	assert item["change_kind"] == "missing"
-	assert item["discovery"]["kind"] == "module_assignment"
+	items = analyze_overrides(custom, root)["results"]
+	assert len(items) == 2
+	assert {item["classification"] for item in items} == {"affected"}
+	assert {item["change_kind"] for item in items} == {"missing"}
+	assert {item["discovery"]["file"] for item in items} == {
+		"custom/__init__.py",
+		"custom/install.py",
+	}
+	assert len({item["override_id"] for item in items}) == 2
 
 
 def test_analyze_overrides_keeps_an_unresolved_replacement_in_the_inventory(apps):
@@ -246,8 +258,8 @@ def test_analyze_overrides_keeps_an_ambiguous_imported_owner_in_the_inventory(ap
 
 def test_module_assignment_ids_use_canonical_targets_not_local_spelling(apps):
 	root, custom, upstream, _ = apps
-	write(upstream / "upstream/other.py", "def original():\n    return 'before'\n")
-	commit(upstream, "add second owner module")
+	(upstream / "upstream/api.py").unlink()
+	commit(upstream, "remove both owner modules")
 	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
 	write(
 		custom / "custom/install_api.py",
@@ -258,8 +270,11 @@ def test_module_assignment_ids_use_canonical_targets_not_local_spelling(apps):
 		"import upstream.other as api\nfrom custom.override import replacement\napi.original = replacement\n",
 	)
 	commit(custom, "register two assignments with the same local spelling")
-	items = analyze_overrides(custom, root)["results"]
+	document = analyze_overrides(custom, root)
+	items = document["results"]
 	assert len(items) == 2
+	assert document["outcome"] == "incomplete"
+	assert {item["diagnostics"][0]["code"] for item in items} == {"owner_unresolved"}
 	assert {item["discovery"]["original_reference"] for item in items} == {"api.original"}
 	assert {item["discovery"]["registration_reference"] for item in items} == {
 		"upstream.api.original",

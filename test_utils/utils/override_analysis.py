@@ -60,11 +60,16 @@ def override_id(repository, file_path, symbol, original):
 def registration_identity(discovery):
 	"""Keep source spelling visible while keying assignments by their actual target."""
 	if discovery.get("kind") == "module_assignment":
+		candidates = discovery.get("registration_candidates")
+		registration = (
+			candidates[0]
+			if candidates and len(candidates) == 1
+			else sorted(candidates)
+			if candidates
+			else discovery.get("registration_reference", discovery["original_reference"])
+		)
 		return json.dumps(
-			[
-				discovery.get("file"),
-				discovery.get("registration_reference", discovery["original_reference"]),
-			],
+			[discovery.get("file"), registration],
 			separators=(",", ":"),
 		)
 	return discovery["original_reference"]
@@ -131,7 +136,12 @@ class StructuredValidator(AnnotationValidator):
 		annotation=None,
 		custom_kind="unknown",
 	):
-		key = (custom_file, custom_symbol, upstream)
+		registration = (
+			registration_identity(self.context)
+			if self.context.get("kind") == "module_assignment"
+			else upstream
+		)
+		key = (custom_file, custom_symbol, registration)
 		item = self.findings.setdefault(
 			key,
 			{

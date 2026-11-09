@@ -372,13 +372,16 @@ class Module:
 		return result
 
 
-@dataclass
+@dataclass(frozen=True)
 class ModuleResolution:
 	state: str
-	reference: str
-	dependency_app: App | None = None
+	references: tuple[str, ...]
 	module: Module | None = None
 	error: ResolutionError | None = None
+
+	@property
+	def reference(self):
+		return self.references[0] if len(self.references) == 1 else " | ".join(self.references)
 
 
 type DeclarationId = tuple[Path, int, int]
@@ -402,7 +405,7 @@ class Symbol:
 		return self.module.path, self.node.lineno, self.node.col_offset
 
 
-@dataclass
+@dataclass(frozen=True)
 class FunctionResolution:
 	state: str
 	symbol: Symbol | None = None
@@ -543,11 +546,12 @@ class SourceResolver:
 		module, parts = self.source_module(reference, require_symbol=True)
 		return self.resolve_in(module, parts, (), frozenset(), dotted_path=True)
 
-	def module_resolution(self, state, reference, *, module=None, error=None):
+	def module_resolution(self, state, references, *, module=None, error=None):
+		if isinstance(references, str):
+			references = (references,)
 		return ModuleResolution(
 			state,
-			reference,
-			self.apps.get(reference.split(".", 1)[0]),
+			tuple(sorted(dict.fromkeys(references))),
 			module,
 			error,
 		)
@@ -575,8 +579,7 @@ class SourceResolver:
 		if self.dynamic_namespace([body], parts, module.tree, module=module):
 			error = ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
 			candidates = imported_owner_references(module, body, parts)
-			candidate = candidates[0] if len(candidates) == 1 else reference
-			return self.module_resolution("unresolved", candidate, error=error)
+			return self.module_resolution("unresolved", candidates or [reference], error=error)
 		try:
 			binding = self.binding(module, body, parts[0], limits, seen)
 		except ResolutionError as error:
@@ -589,8 +592,7 @@ class SourceResolver:
 					),
 				)
 			candidates = imported_owner_references(module, body, parts)
-			candidate = candidates[0] if len(candidates) == 1 else reference
-			return self.module_resolution("unresolved", candidate, error=error)
+			return self.module_resolution("unresolved", candidates or [reference], error=error)
 		if binding is None:
 			try:
 				child, remaining = self.source_module(reference)
@@ -629,14 +631,20 @@ class SourceResolver:
 		if not isinstance(binding.statement, ast.Import):
 			error = ResolutionError(f"{module.name}.{parts[0]} is not an imported module")
 			return self.module_resolution("non_module", reference, error=error)
+		candidates = imported_owner_references(module, body, parts)
+		if not binding.node.asname and len(candidates) == 1:
+			base_reference = candidates[0]
+			tail = []
+		else:
+			base_reference = None
 		prefix = binding.node.name.split(".")
 		if binding.node.asname:
 			base_reference = binding.node.name
 			tail = parts[1:]
-		elif parts[: len(prefix)] == prefix:
+		elif base_reference is None and parts[: len(prefix)] == prefix:
 			base_reference = binding.node.name
 			tail = parts[len(prefix) :]
-		else:
+		elif base_reference is None:
 			base_reference = prefix[0]
 			tail = parts[1:]
 		try:
@@ -651,13 +659,55 @@ class SourceResolver:
 		return self.resolve_module_in(owner, tail, import_limits, seen, implicit_child=True)
 
 	def resolve_function_in(self, module, parts, limits, seen):
-		"""Classify a callable reference without turning proven data into a finding."""
+		"""Resolve aliases to their terminal function or proven data binding."""
 		try:
 			symbol = self.resolve_in(module, parts, limits, seen)
 		except ResolutionError as error:
 			body = self.module_body(module, limits)
-			if len(parts) == 1 and self.direct_value_binding(body, parts[0]):
-				return FunctionResolution("non_function", error=error)
+			key = (module.path, ".".join(parts), len(body), "function")
+			if (
+				key in seen
+				or len(parts) != 1
+				or self.dynamic_namespace([body], parts, module.tree, module=module)
+			):
+				return FunctionResolution("unresolved", error=error)
+			seen = seen | {key}
+			assignment = self.direct_value_binding(body, parts[0])
+			if assignment is not None:
+				value = assignment.value
+				if value is None:
+					return FunctionResolution("unresolved", error=error)
+				binding_limits = (
+					*limits,
+					(module.path, (assignment.lineno, assignment.col_offset)),
+				)
+				if isinstance(value, (ast.Name, ast.Attribute)):
+					return self.resolve_function_in(
+						module, dotted_name(value).split("."), binding_limits, seen
+					)
+				if isinstance(value, (ast.Constant, ast.Dict, ast.List, ast.Set, ast.Tuple)):
+					return FunctionResolution("non_function", error=error)
+				return FunctionResolution("unresolved", error=error)
+			try:
+				binding = self.binding(module, body, parts[0], limits, seen)
+			except ResolutionError:
+				return FunctionResolution("unresolved", error=error)
+			if binding is None:
+				return FunctionResolution("unresolved", error=error)
+			binding_limits = (
+				*limits,
+				(module.path, (binding.statement.lineno, binding.statement.col_offset)),
+			)
+			if isinstance(binding.node, ast.alias) and isinstance(binding.statement, ast.ImportFrom):
+				provider_reference = module.import_reference(binding.statement)
+				try:
+					provider, remaining = self.source_module(provider_reference)
+				except ResolutionError:
+					return FunctionResolution("unresolved", error=error)
+				if remaining:
+					return FunctionResolution("unresolved", error=error)
+				name = parts[0] if binding.node.name == "*" else binding.node.name
+				return self.resolve_function_in(provider, [name], binding_limits, seen)
 			return FunctionResolution("unresolved", error=error)
 		if isinstance(symbol.node, FUNCTION_NODES):
 			return FunctionResolution("function", symbol=symbol)
@@ -1668,7 +1718,13 @@ def imported_owner_references(module, body, parts):
 			if local != parts[0]:
 				continue
 			if isinstance(statement, ast.Import):
-				reference = [alias.name, *parts[1:]] if alias.asname else parts
+				if alias.asname:
+					reference = [alias.name, *parts[1:]]
+				else:
+					imported = alias.name.split(".")
+					if parts[: len(imported)] != imported:
+						continue
+					reference = parts
 			else:
 				reference = [module.import_reference(statement, alias), *parts[1:]]
 			name = ".".join(reference)
@@ -1684,12 +1740,13 @@ def imported_owner_module(resolver, module, parts, limits):
 		return None
 	if owner.state == "module" and owner.module.app.name != module.app.name:
 		return owner
-	if (
-		owner.state == "unresolved"
-		and owner.dependency_app is not None
-		and owner.dependency_app.name != module.app.name
-	):
-		return owner
+	dependency_references = [
+		reference
+		for reference in owner.references
+		if reference.split(".", 1)[0] in resolver.apps and reference.split(".", 1)[0] != module.app.name
+	]
+	if owner.state == "unresolved" and dependency_references:
+		return resolver.module_resolution("unresolved", dependency_references, error=owner.error)
 	return None
 
 
@@ -1731,7 +1788,12 @@ def validate_module_assignments(app, validator, begin, fail):
 			owner = imported_owner_module(resolver, module, target_text.split(".")[:-1], limits)
 			if owner is None:
 				continue
-			original_reference = f"{owner.reference}.{target.attr}"
+			original_references = tuple(f"{reference}.{target.attr}" for reference in owner.references)
+			original_reference = (
+				original_references[0]
+				if len(original_references) == 1
+				else " | ".join(sorted(original_references))
+			)
 			context = {
 				"kind": "module_assignment",
 				"file": module.path.relative_to(app.root).as_posix(),
@@ -1739,7 +1801,9 @@ def validate_module_assignments(app, validator, begin, fail):
 				"original_reference": target_text,
 				"replacement_reference": replacement_text,
 				"owner_module": owner.reference,
+				"owner_candidates": list(owner.references),
 				"registration_reference": original_reference,
+				"registration_candidates": list(original_references),
 			}
 			if replacement.state == "function":
 				context["_custom"] = replacement.symbol
@@ -1764,7 +1828,7 @@ def validate_module_assignments(app, validator, begin, fail):
 				)
 				continue
 			if original.state == "unresolved":
-				key = (replacement.symbol.identity, original_reference)
+				key = (replacement.symbol.identity, context["file"], original_reference)
 				if key in reported_unresolved:
 					continue
 				reported_unresolved.add(key)
