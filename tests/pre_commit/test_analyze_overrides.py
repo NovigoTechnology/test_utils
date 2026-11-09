@@ -167,6 +167,113 @@ def test_analyze_overrides_does_not_compare_invalid_annotations(apps):
 	assert any(diagnostic["code"] == "annotation_invalid" for diagnostic in item["diagnostics"])
 
 
+def test_invalid_hash_remains_raw_but_baseline_revision_is_null(apps):
+	root, custom, _, baseline = apps
+	path = custom / "custom/override.py"
+	path.write_text(path.read_text().replace(baseline, "abc123"))
+	commit(custom, "invalidate baseline hash")
+	item = result(analyze_overrides(custom, root))
+	assert item["classification"] == "invalid_annotation"
+	assert item["annotation"]["fields"]["HASH"] == "abc123"
+	assert item["upstream"]["baseline_revision"] is None
+
+
+def test_unresolved_original_with_invalid_hash_keeps_schema_valid(apps):
+	root, custom, upstream, baseline = apps
+	path = custom / "custom/override.py"
+	path.write_text(path.read_text().replace(baseline, "abc123"))
+	commit(custom, "invalidate unresolved baseline hash")
+	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove original with invalid annotation")
+	item = result(analyze_overrides(custom, root))
+	assert item["classification"] == "invalid_annotation"
+	assert item["annotation"]["fields"]["HASH"] == "abc123"
+	assert item["upstream"]["baseline_revision"] is None
+
+
+def test_unresolved_original_with_unmatched_repository_is_invalid_annotation(apps):
+	root, custom, upstream, _ = apps
+	path = custom / "custom/override.py"
+	path.write_text(path.read_text().replace("example/upstream", "example/missing"))
+	commit(custom, "point annotation to unavailable repository")
+	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove original with unmatched repository")
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["outcome"] == "completed_with_findings"
+	assert item["classification"] == "invalid_annotation"
+	assert any(diagnostic["code"] == "annotation_invalid" for diagnostic in item["diagnostics"])
+
+
+def test_unrelated_deleted_annotation_cannot_confirm_registered_original_deletion(apps):
+	root, custom, upstream, baseline = apps
+	write(
+		upstream / "upstream/api.py",
+		"def original():\n    return 'original'\n\ndef unrelated():\n    return 'unrelated'\n",
+	)
+	historical = commit(upstream, "add unrelated historical method")
+	path = custom / "custom/override.py"
+	path.write_text(
+		path.read_text().replace(baseline, historical).replace("METHOD: original", "METHOD: unrelated")
+	)
+	commit(custom, "point annotation to unrelated method")
+	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove registered and unrelated methods")
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["outcome"] == "completed_with_findings"
+	assert item["classification"] == "invalid_annotation"
+	assert item["change_kind"] is None
+	assert item["diff"] == ""
+	assert any(
+		diagnostic["code"] == "annotation_original_mismatch"
+		for diagnostic in item["diagnostics"]
+	)
+
+
+def test_ambiguous_historical_original_cannot_confirm_deletion(apps):
+	root, custom, upstream, baseline = apps
+	write(
+		upstream / "upstream/api.py",
+		"def original():\n    return 'first'\n\n"
+		"def original():\n    return 'second'\n\n"
+		"def unrelated():\n    return 'unrelated'\n",
+	)
+	historical = commit(upstream, "make registered original historically ambiguous")
+	path = custom / "custom/override.py"
+	path.write_text(
+		path.read_text().replace(baseline, historical).replace("METHOD: original", "METHOD: unrelated")
+	)
+	commit(custom, "point annotation away from ambiguous original")
+	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove ambiguous original")
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["outcome"] == "incomplete"
+	assert item["classification"] == "inconclusive"
+	assert item["change_kind"] is None
+	assert any(
+		diagnostic["code"] == "original_identity_inconclusive"
+		for diagnostic in item["diagnostics"]
+	)
+
+
+def test_historical_reexport_can_confirm_the_real_declaration_deletion(apps):
+	root, custom, upstream, baseline = apps
+	write(upstream / "upstream/reexport.py", "from upstream.api import original\n")
+	historical = commit(upstream, "add original reexport")
+	hooks_path = custom / "custom/hooks.py"
+	hooks_path.write_text(hooks_path.read_text().replace("upstream.api.original", "upstream.reexport.original"))
+	override_path = custom / "custom/override.py"
+	override_path.write_text(override_path.read_text().replace(baseline, historical))
+	commit(custom, "register original through reexport")
+	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove reexported original")
+	item = result(analyze_overrides(custom, root))
+	assert item["classification"] == "affected"
+	assert item["change_kind"] == "missing"
+
+
 def test_analyze_overrides_ignores_annotations_that_are_not_registered(apps):
 	root, custom, _, baseline = apps
 	write(

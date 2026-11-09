@@ -70,7 +70,7 @@ class RevisionResolver(SourceResolver):
 		except (SyntaxError, ValueError) as exc:
 			raise ResolutionError(f"Cannot parse {self.relative(path)}: {exc}") from exc
 
-	def implementation(self, method):
+	def method_symbol(self, method):
 		if not self.sources.is_file(self.file_path):
 			raise MissingSymbolError(f"Source file {self.file_path} is absent")
 		try:
@@ -98,6 +98,10 @@ class RevisionResolver(SourceResolver):
 			symbol = self.resolve_from(self.reference, next(iter(candidates)))
 		if not isinstance(symbol.node, FUNCTION_NODES):
 			raise ResolutionError(f"METHOD {method!r} does not resolve to a function")
+		return symbol
+
+	def implementation(self, method):
+		symbol = self.method_symbol(method)
 		source = self.sources.read(self.relative(symbol.module.path))
 		start = min([symbol.node.lineno, *(dec.lineno for dec in symbol.node.decorator_list)])
 		return "\n".join(source.splitlines()[start - 1 : symbol.node.end_lineno])
