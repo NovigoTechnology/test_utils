@@ -120,6 +120,150 @@ def test_analyze_overrides_does_not_import_application_modules(apps):
 	assert result(analyze_overrides(custom, root))["classification"] == "unaffected"
 
 
+def test_override_ids_include_the_registered_original_and_survive_resolution_failure(apps):
+	root, custom, upstream, _ = apps
+	write(
+		upstream / "upstream/api.py",
+		"def original():\n    return 'before'\ndef second():\n    return 'before'\n",
+	)
+	baseline = commit(upstream, "add second original")
+	write(
+		custom / "custom/hooks.py",
+		"required_apps = ['upstream']\n"
+		"override_whitelisted_methods = {\n"
+		"    'upstream.api.original': 'custom.override.replacement',\n"
+		"    'upstream.api.second': 'custom.override.replacement',\n"
+		"}\n",
+	)
+	write(
+		custom / "custom/override.py",
+		f'''def replacement():
+    """
+    APP: custom
+    HASH: {baseline}
+    REPO: example/upstream
+    PATH: upstream/api.py
+    METHOD: original
+    """
+    return "custom"
+''',
+	)
+	commit(custom, "register one replacement for two originals")
+	resolved = analyze_overrides(custom, root)["results"]
+	assert len(resolved) == 2
+	assert len({item["override_id"] for item in resolved}) == 2
+	resolved_ids = {item["discovery"]["original_reference"]: item["override_id"] for item in resolved}
+	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove both registered originals")
+	unresolved = analyze_overrides(custom, root)["results"]
+	assert len(unresolved) == 2
+	assert {
+		item["discovery"]["original_reference"]: item["override_id"] for item in unresolved
+	} == resolved_ids
+
+
+def test_class_bound_replacement_returns_json_instead_of_crashing(apps):
+	root, custom, upstream, _ = apps
+	write(
+		upstream / "upstream/controller.py",
+		"class Base:\n    def validate(self):\n        return 'upstream'\n",
+	)
+	commit(upstream, "add controller base")
+	write(
+		custom / "custom/hooks.py",
+		"required_apps = ['upstream']\noverride_doctype_class = {'Ledger': 'custom.override.Custom'}\n",
+	)
+	write(
+		custom / "custom/override.py",
+		"from upstream.controller import Base\n"
+		"def replacement(self): pass\n"
+		"class Custom(Base):\n"
+		"    validate = replacement\n",
+	)
+	commit(custom, "bind replacement as a class attribute")
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["errors"] == []
+	assert document["outcome"] == "incomplete"
+	assert item["classification"] == "inconclusive"
+	assert item["diagnostics"][0]["kind"] == "resolution"
+
+
+def test_unresolved_replacement_class_ignores_its_class_docstring(apps):
+	root, custom, _, baseline = apps
+	write(
+		custom / "custom/hooks.py",
+		"required_apps = ['upstream']\noverride_doctype_class = {'Ledger': 'custom.override.Custom'}\n",
+	)
+	write(
+		custom / "custom/override.py",
+		f'''class Custom(MissingBase):
+    """
+    APP: custom
+    HASH: {baseline}
+    REPO: example/upstream
+    PATH: upstream/api.py
+    METHOD: original
+    """
+''',
+	)
+	commit(custom, "add unresolved replacement class")
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["outcome"] == "incomplete"
+	assert item["classification"] == "inconclusive"
+	assert item["annotation"]["fields"] == {}
+	assert item["diagnostics"][0]["kind"] == "resolution"
+
+
+def test_historical_function_hook_uses_registration_resolution(apps):
+	root, custom, upstream, _ = apps
+	write(upstream / "upstream/__init__.py", "from . import package\n")
+	write(upstream / "upstream/package/__init__.py", "def original():\n    return 'before'\n")
+	baseline = commit(upstream, "add overlapping package attribute")
+	write(
+		custom / "custom/hooks.py",
+		"required_apps = ['upstream']\n"
+		"override_whitelisted_methods = {'upstream.package.original': 'custom.override.replacement'}\n",
+	)
+	write(
+		custom / "custom/override.py",
+		f'''def replacement():
+    """
+    APP: custom
+    HASH: {baseline}
+    REPO: example/upstream
+    PATH: upstream/package/__init__.py
+    METHOD: original
+    """
+    return "custom"
+''',
+	)
+	commit(custom, "register package function")
+	write(upstream / "upstream/package/__init__.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove package function")
+	item = result(analyze_overrides(custom, root))
+	assert item["classification"] == "affected"
+	assert item["change_kind"] == "missing"
+
+
+def test_historical_doctype_reference_resolves_an_inherited_method(apps):
+	_, _, upstream, _ = apps
+	write(
+		upstream / "upstream/controllers.py",
+		"class Base:\n    def validate(self):\n        return 'before'\nclass Derived(Base):\n    pass\n",
+	)
+	baseline = commit(upstream, "add inherited controller method")
+	sources = override_analysis.RevisionSources("example/upstream", baseline, checkout=upstream)
+	override_analysis.verify_historical_identity(
+		sources,
+		"upstream/controllers.py",
+		"Base.validate",
+		["upstream.controllers.Derived.validate"],
+		{"kind": "hook", "hook": "override_doctype_class"},
+	)
+
+
 def test_analyze_overrides_reports_confirmed_changes(apps):
 	root, custom, upstream, _ = apps
 	write(upstream / "upstream/api.py", "def original():\n    return 'after'\n")

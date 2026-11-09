@@ -93,6 +93,11 @@ Each result contains:
 - change kind, upstream body hashes and method-level diff; and
 - structured diagnostics with `code`, `kind` and a human-readable `message`.
 
+`override_id` includes the owner repository, custom source location and symbol,
+and the registered original reference. One replacement registered for multiple
+upstream callables therefore has one stable ID per registration, including when
+the upstream callable can no longer be resolved.
+
 The machine-readable contract is shipped as
 [`override_analysis_v1.schema.json`](../test_utils/schemas/override_analysis_v1.schema.json).
 All properties marked as required there are present even when their value is

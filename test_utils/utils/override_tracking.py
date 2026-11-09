@@ -13,6 +13,7 @@ from test_utils.utils.override_annotations import (
 	MissingSymbolError,
 	ResolutionError,
 	SourceResolver,
+	Symbol,
 )
 from test_utils.utils.python_source import FUNCTION_NODES, runtime_body, scope_statements
 from test_utils.utils.track_overrides import UpstreamFetchError, compare_method_diff
@@ -99,6 +100,20 @@ class RevisionResolver(SourceResolver):
 		if not isinstance(symbol.node, FUNCTION_NODES):
 			raise ResolutionError(f"METHOD {method!r} does not resolve to a function")
 		return symbol
+
+	def registered_method_symbol(self, reference):
+		"""Resolve a registered class method through the class's effective hierarchy."""
+		owner_reference, separator, name = reference.rpartition(".")
+		if not separator:
+			raise ResolutionError(f"Invalid registered method reference: {reference!r}")
+		owner = self.resolve_registration(owner_reference)
+		if not isinstance(owner.node, ast.ClassDef):
+			raise ResolutionError(f"Registered method owner {owner_reference!r} is not a class")
+		for candidate in self.hierarchy(owner):
+			node = self.method(candidate, name)
+			if node is not None:
+				return Symbol(candidate.module, f"{candidate.qualname}.{name}", node)
+		raise MissingSymbolError(f"Registered method {reference} is absent from the resolved hierarchy")
 
 	def implementation(self, method):
 		symbol = self.method_symbol(method)
