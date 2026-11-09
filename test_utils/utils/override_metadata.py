@@ -38,12 +38,8 @@ def annotation_field_errors(fields, duplicates, app_name):
 	if fields.get("PATH"):
 		path = PurePosixPath(fields["PATH"])
 		if path.is_absolute() or ".." in path.parts or path.suffix != ".py":
-			errors.append(
-				({"PATH"}, "PATH must identify a Python file relative to the upstream repository")
-			)
-	if fields.get("METHOD") and not all(
-		part.isidentifier() for part in fields["METHOD"].split(".")
-	):
+			errors.append(({"PATH"}, "PATH must identify a Python file relative to the upstream repository"))
+	if fields.get("METHOD") and not all(part.isidentifier() for part in fields["METHOD"].split(".")):
 		errors.append(({"METHOD"}, "METHOD must be a function name or Class.method"))
 	return errors
 

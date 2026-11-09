@@ -135,9 +135,7 @@ def compare_override(before, after, file_path, method):
 	except MissingSymbolError:
 		new = None
 	except ResolutionError as exc:
-		return Comparison(
-			"unverified", diagnostic=f"Target {after.revision}: {exc}", error_kind="resolution"
-		)
+		return Comparison("unverified", diagnostic=f"Target {after.revision}: {exc}", error_kind="resolution")
 	except (UpstreamFetchError, requests.RequestException, OSError) as exc:
 		return Comparison(
 			"unverified", diagnostic=f"Target {after.revision}: {exc}", error_kind="source_access"

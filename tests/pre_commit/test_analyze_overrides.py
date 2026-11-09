@@ -8,7 +8,6 @@ from test_utils.utils import override_analysis
 from test_utils.utils.override_analysis import analyze_overrides, main
 from test_utils.utils.track_overrides import UpstreamFetchError
 
-
 SCHEMA = Path(__file__).resolve().parents[2] / "test_utils/schemas/override_analysis_v1.schema.json"
 
 
@@ -225,10 +224,7 @@ def test_unrelated_deleted_annotation_cannot_confirm_registered_original_deletio
 	assert item["classification"] == "invalid_annotation"
 	assert item["change_kind"] is None
 	assert item["diff"] == ""
-	assert any(
-		diagnostic["code"] == "annotation_original_mismatch"
-		for diagnostic in item["diagnostics"]
-	)
+	assert any(diagnostic["code"] == "annotation_original_mismatch" for diagnostic in item["diagnostics"])
 
 
 def test_ambiguous_historical_original_cannot_confirm_deletion(apps):
@@ -252,10 +248,7 @@ def test_ambiguous_historical_original_cannot_confirm_deletion(apps):
 	assert document["outcome"] == "incomplete"
 	assert item["classification"] == "inconclusive"
 	assert item["change_kind"] is None
-	assert any(
-		diagnostic["code"] == "original_identity_inconclusive"
-		for diagnostic in item["diagnostics"]
-	)
+	assert any(diagnostic["code"] == "original_identity_inconclusive" for diagnostic in item["diagnostics"])
 
 
 def test_historical_reexport_can_confirm_the_real_declaration_deletion(apps):
@@ -263,7 +256,9 @@ def test_historical_reexport_can_confirm_the_real_declaration_deletion(apps):
 	write(upstream / "upstream/reexport.py", "from upstream.api import original\n")
 	historical = commit(upstream, "add original reexport")
 	hooks_path = custom / "custom/hooks.py"
-	hooks_path.write_text(hooks_path.read_text().replace("upstream.api.original", "upstream.reexport.original"))
+	hooks_path.write_text(
+		hooks_path.read_text().replace("upstream.api.original", "upstream.reexport.original")
+	)
 	override_path = custom / "custom/override.py"
 	override_path.write_text(override_path.read_text().replace(baseline, historical))
 	commit(custom, "register original through reexport")
