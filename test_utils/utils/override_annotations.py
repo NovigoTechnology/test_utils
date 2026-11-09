@@ -547,7 +547,19 @@ class SourceResolver:
 		seen = seen | {key}
 		if self.dynamic_namespace([body], parts, module.tree, module=module):
 			raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
-		binding = self.binding(module, body, parts[0], limits, seen)
+		try:
+			binding = self.binding(module, body, parts[0], limits, seen)
+		except ResolutionError:
+			bindings = scope_bindings(body).get(parts[0], [])
+			if (
+				len(bindings) == 1
+				and bindings[0] in body
+				and isinstance(bindings[0], (ast.Assign, ast.AnnAssign))
+			):
+				raise NonModuleOwner(
+					f"{module.name}.{parts[0]} is bound to a value at {module.path}:{bindings[0].lineno}"
+				) from None
+			raise
 		if binding is None:
 			if module.path.name == "__init__.py":
 				reference = ".".join([module.name, *parts])
@@ -1652,15 +1664,17 @@ def imported_owner_module(resolver, module, parts, limits):
 		reference = ".".join([module.import_reference(binding.statement, binding.node), *parts[1:]])
 	else:
 		return None
-	dependency = resolver.apps.get(reference.split(".", 1)[0])
-	if dependency is None or dependency.name == module.app.name:
-		return None
 	try:
 		owner = resolver.resolve_module_in(module, parts, limits, frozenset())
 	except NonModuleOwner:
 		return None
 	except ResolutionError as exc:
+		dependency = resolver.apps.get(reference.split(".", 1)[0])
+		if dependency is None or dependency.name == module.app.name:
+			return None
 		return ImportedOwner(None, reference, exc)
+	if owner.app.name == module.app.name:
+		return None
 	return ImportedOwner(owner, owner.name)
 
 
@@ -1705,6 +1719,16 @@ def validate_module_assignments(app, validator, begin, fail):
 				"owner_module": owner.reference,
 			}
 			if owner.error is not None:
+				try:
+					custom = resolver.resolve_in(module, replacement_text.split("."), limits, frozenset())
+				except ResolutionError:
+					custom = None
+				if (
+					custom is not None
+					and custom.module.app.name == app.name
+					and isinstance(custom.node, FUNCTION_NODES)
+				):
+					context["_custom"] = custom
 				begin(context)
 				fail(
 					context,

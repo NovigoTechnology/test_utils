@@ -131,6 +131,35 @@ def test_module_reexport_alias_is_resolved(bench):
 	assert not result.errors
 
 
+def test_app_local_module_reexport_resolves_to_the_dependency(bench):
+	write(bench / "nagus/nagus/overrides.py", function_source(annotation()))
+	write(bench / "nagus/nagus/bridge.py", "import erpnext.accounts.utils as api\n")
+	write(
+		bench / "nagus/nagus/__init__.py",
+		"from nagus.bridge import api\nfrom nagus.overrides import get_coa\napi.get_coa = get_coa\n",
+	)
+	result = validate(bench)
+	assert result.checked == 1
+	assert not result.errors
+
+
+def test_imported_instance_attribute_is_not_a_module_patch(bench):
+	write(
+		bench / "erpnext/erpnext/accounts/utils.py",
+		"class Client: pass\nclient = Client()\ndef get_coa(): pass\n",
+	)
+	write(bench / "nagus/nagus/overrides.py", function_source())
+	write(
+		bench / "nagus/nagus/__init__.py",
+		"from erpnext.accounts.utils import client\n"
+		"from nagus.overrides import get_coa\n"
+		"client.callback = get_coa\n",
+	)
+	result = validate(bench)
+	assert result.checked == 0
+	assert not result.errors
+
+
 def test_missing_imported_owner_is_reported_instead_of_dropped(bench):
 	write(bench / "nagus/nagus/overrides.py", function_source(annotation()))
 	write(

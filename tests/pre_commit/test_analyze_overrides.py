@@ -188,6 +188,21 @@ def test_analyze_overrides_keeps_a_missing_imported_owner_in_the_inventory(apps)
 	assert "source file not found" in item["diagnostics"][0]["message"]
 
 
+def test_missing_owner_preserves_the_resolved_replacement_identity_and_id(apps):
+	root, custom, upstream, _ = apps
+	register_module_assignment(custom)
+	registered = result(analyze_overrides(custom, root))
+	(upstream / "upstream/api.py").unlink()
+	commit(upstream, "remove owner module")
+	unresolved = result(analyze_overrides(custom, root))
+	assert unresolved["classification"] == "inconclusive"
+	assert unresolved["override_id"] == registered["override_id"]
+	assert unresolved["owner"]["file"] == "custom/override.py"
+	assert unresolved["owner"]["symbol"] == "custom.override.replacement"
+	assert unresolved["discovery"]["file"] == "custom/__init__.py"
+	assert unresolved["diagnostics"][0]["code"] == "owner_unresolved"
+
+
 def test_analyze_overrides_keeps_an_ambiguous_imported_owner_in_the_inventory(apps):
 	root, custom, _, _ = apps
 	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")

@@ -209,7 +209,7 @@ def validate_registered_overrides(app, apps):
 	validator = StructuredValidator(app, SourceResolver(apps), hooks_path)
 
 	def before_registration(context):
-		validator.context = dict(context)
+		validator.context = {key: value for key, value in context.items() if not key.startswith("_")}
 
 	def resolution_error(context, exc):
 		if isinstance(exc, OwnerResolutionError):
@@ -218,13 +218,36 @@ def validate_registered_overrides(app, apps):
 			code = "registration_unresolved"
 		else:
 			code = "replacement_unresolved"
-		validator.collect(
-			context["file"],
-			context["replacement_reference"],
-			context["line"],
+		custom = context.get("_custom")
+		if custom is None:
+			custom_file = context["file"]
+			custom_symbol = context["replacement_reference"]
+			line = context["line"]
+			fields = {}
+			duplicates = []
+			kind = "unknown"
+		else:
+			custom_file, line = validator.custom_location(custom)
+			custom_symbol = custom.reference
+			fields, duplicates = parse_annotation(function_docstring(custom.node))
+			kind = symbol_kind(custom.node)
+		item = validator.collect(
+			custom_file,
+			custom_symbol,
+			line,
 			context["original_reference"],
 			{"code": code, "kind": "resolution", "message": str(exc)},
+			fields,
+			kind,
 		)
+		item["duplicate_fields"] = duplicates
+		if custom is not None:
+			try:
+				source = custom.module.path.read_text(encoding="utf-8-sig")
+				body = ast.get_source_segment(source, custom.node) or ""
+				item["custom_body_sha256"] = source_hash(body)
+			except OSError:
+				pass
 
 	run_override_validation(
 		app,
