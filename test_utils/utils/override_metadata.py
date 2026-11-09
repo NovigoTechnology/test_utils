@@ -38,12 +38,8 @@ def annotation_field_errors(fields, duplicates, app_name):
 	if fields.get("PATH"):
 		path = PurePosixPath(fields["PATH"])
 		if path.is_absolute() or ".." in path.parts or path.suffix != ".py":
-			errors.append(
-				({"PATH"}, "PATH must identify a Python file relative to the upstream repository")
-			)
-	if fields.get("METHOD") and not all(
-		part.isidentifier() for part in fields["METHOD"].split(".")
-	):
+			errors.append(({"PATH"}, "PATH must identify a Python file relative to the upstream repository"))
+	if fields.get("METHOD") and not all(part.isidentifier() for part in fields["METHOD"].split(".")):
 		errors.append(({"METHOD"}, "METHOD must be a function name or Class.method"))
 	return errors
 
@@ -116,9 +112,7 @@ def repository_identity(value: str) -> str:
 		value = "ssh://" + value.replace(":", "/", 1)
 	parsed = urlsplit(value)
 	if parsed.scheme not in {"http", "https", "ssh", "git"} or not parsed.hostname:
-		raise ValueError(
-			"REPO must be a GitHub owner/repository or an HTTP(S), SSH or Git repository URL"
-		)
+		raise ValueError("REPO must be a GitHub owner/repository or an HTTP(S), SSH or Git repository URL")
 	path = parsed.path.rstrip("/").removesuffix(".git")
 	if not path or path == "/" or parsed.query or parsed.fragment:
 		raise ValueError("REPO must identify a repository without a query or fragment")

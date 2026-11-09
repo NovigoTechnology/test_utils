@@ -262,9 +262,7 @@ def verify_historical_identity(sources, file_path, method, references):
 			return
 	if resolved:
 		raise ValueError("PATH and METHOD do not identify the historically registered original")
-	raise ResolutionError(
-		"Cannot verify the historically registered original: " + "; ".join(errors)
-	)
+	raise ResolutionError("Cannot verify the historically registered original: " + "; ".join(errors))
 
 
 def analyze_registered_override(record, app, repositories, revisions, findings):
@@ -353,9 +351,7 @@ def analyze_registered_override(record, app, repositories, revisions, findings):
 		)
 	except (ResolutionError, UpstreamFetchError, OSError) as exc:
 		result["classification"] = "technical_error"
-		result["diagnostics"].append(
-			{"code": "analysis_error", "kind": "source_access", "message": str(exc)}
-		)
+		result["diagnostics"].append({"code": "analysis_error", "kind": "source_access", "message": str(exc)})
 	return result
 
 
@@ -396,9 +392,7 @@ def unresolved_result(item, app, repositories, revisions):
 	}
 	if annotation_errors:
 		return result
-	field_errors = annotation_field_errors(
-		item["annotation"], item["duplicate_fields"], app.name
-	)
+	field_errors = annotation_field_errors(item["annotation"], item["duplicate_fields"], app.name)
 	if field_errors:
 		if item["custom_body_sha256"] is None and not item["annotation"]:
 			return result
@@ -417,9 +411,7 @@ def unresolved_result(item, app, repositories, revisions):
 		github_repository(item["annotation"]["REPO"])
 		result["annotation"]["repository_identity"] = upstream_repository
 		if upstream_repository not in repositories:
-			raise ValueError(
-				f"REPO {item['annotation']['REPO']!r} does not match a dependency checkout"
-			)
+			raise ValueError(f"REPO {item['annotation']['REPO']!r} does not match a dependency checkout")
 		upstream = repositories[upstream_repository]
 		fields = item["annotation"]
 		result["upstream"].update(
@@ -486,9 +478,7 @@ def unresolved_result(item, app, repositories, revisions):
 		)
 	except (ResolutionError, UpstreamFetchError, OSError) as exc:
 		result["classification"] = "technical_error"
-		result["diagnostics"].append(
-			{"code": "analysis_error", "kind": "source_access", "message": str(exc)}
-		)
+		result["diagnostics"].append({"code": "analysis_error", "kind": "source_access", "message": str(exc)})
 	return result
 
 
@@ -521,15 +511,13 @@ def analyze_overrides(app_path, apps_root, additional_dependencies=(), revisions
 			for record in validation["registrations"]
 		]
 		registered_pairs = {
-			(item["custom_symbol"], item["upstream_symbol"])
-			for item in validation["registrations"]
+			(item["custom_symbol"], item["upstream_symbol"]) for item in validation["registrations"]
 		}
 		results.extend(
 			unresolved_result(item, app, repositories, resolved)
 			for item in validation["findings"]
 			if not any(
-				(item["custom_symbol"], upstream) in registered_pairs
-				for upstream in item["upstream_symbols"]
+				(item["custom_symbol"], upstream) in registered_pairs for upstream in item["upstream_symbols"]
 			)
 		)
 		errors = []
