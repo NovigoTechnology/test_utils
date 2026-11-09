@@ -122,22 +122,34 @@ def test_non_function_dynamic_instance_class_and_nested_cases_are_ignored(bench)
 	)
 	write(bench / "nagus/nagus/overrides.py", function_source(annotation()))
 	write(bench / "nagus/nagus/module_replacement.py", "def callback(): pass\n")
+	write(bench / "nagus/nagus/config.py", "ENABLED = True\n")
+	write(
+		bench / "nagus/nagus/dependency_reexport.py",
+		"from erpnext.accounts.utils import get_coa as dependency_function\n",
+	)
 	write(
 		bench / "nagus/nagus/__init__.py",
 		function_source(annotation(), name="local")
+		+ function_source(annotation(method="async_coa"), name="copied")
 		+ "import nagus as app\n"
 		+ "import erpnext.accounts.utils as upstream\n"
 		+ "import erpnext.accounts.module_owner as module_owner\n"
+		+ "import nagus.dependency_reexport as foreign\n"
 		+ "from erpnext import client\n"
+		+ "from nagus import copied as chosen\n"
 		+ "from nagus import module_replacement\n"
+		+ "from nagus.config import ENABLED\n"
 		+ "from nagus.overrides import get_coa\n"
 		+ "upstream.get_coa = app.local\n"
 		+ "local = None\n"
-		+ "upstream.enabled = True\n"
+		+ "copied = None\n"
+		+ "upstream.async_coa = chosen\n"
+		+ "upstream.enabled = ENABLED\n"
 		+ "client.callback = get_coa\n"
 		+ "module_owner.original = get_coa\n"
 		+ "upstream.get_coa = module_replacement\n"
 		+ "upstream.get_coa = app.module_replacement\n"
+		+ "upstream.get_coa = foreign.dependency_function\n"
 		+ "upstream.Controller.validate = get_coa\n"
 		+ "upstream.get_coa = factory().handler\n"
 		+ "if enabled:\n    import erpnext.accounts.utils as conditional\n"
@@ -146,7 +158,7 @@ def test_non_function_dynamic_instance_class_and_nested_cases_are_ignored(bench)
 		+ "upstream.get_coa = get_coa\n",
 	)
 	result = validate(bench)
-	assert result.checked == 2
+	assert result.checked == 3
 	assert not result.errors
 
 

@@ -1710,7 +1710,7 @@ def replacement_candidate(resolver, module, value, limits):
 			if failed_static_reexport(resolver, owner.module, parts[-1], owner_limits):
 				return None, error
 			return False, None
-		if not isinstance(symbol.node, FUNCTION_NODES):
+		if not isinstance(symbol.node, FUNCTION_NODES) or symbol.module.app.name != module.app.name:
 			return False, None
 		return symbol, None
 	terminal_module = imported_module(resolver, module, [value.id], body)
@@ -1723,7 +1723,11 @@ def replacement_candidate(resolver, module, value, limits):
 			provider = exact_source_module(resolver, module.import_reference(statement))
 		except ResolutionError as error:
 			return None, error
-		provider_limits = limits if provider.path == module.path else ()
+		provider_limits = (
+			((provider.path, (statement.lineno, statement.col_offset)),)
+			if provider.path == module.path
+			else ()
+		)
 		try:
 			symbol = resolver.resolve_in(provider, [alias.name], provider_limits, frozenset())
 		except MissingSymbolError as error:
