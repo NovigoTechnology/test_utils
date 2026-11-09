@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 FIELDS = ("APP", "HASH", "REPO", "PATH", "METHOD")
 TRACKING_FIELDS = ("HASH", "REPO", "PATH", "METHOD")
 FIELD_PATTERN = re.compile(r"^[ \t]*(APP|HASH|REPO|PATH|METHOD):[ \t]*(.*?)[ \t]*$", re.MULTILINE)
+GITHUB_REPOSITORY = re.compile(r"(?P<owner>[A-Za-z0-9_.-]+)/(?P<repository>[A-Za-z0-9_.-]+)")
 
 
 def parse_annotation(text: str) -> tuple[dict[str, str], list[str]]:
@@ -68,12 +69,20 @@ def iter_annotations(source: str):
 
 
 def repository_identity(value: str) -> str:
-	"""Normalize HTTPS, SSH and SCP remotes without user credentials or .git."""
+	"""Normalize a GitHub owner/repository or a supported repository URL."""
+	if match := GITHUB_REPOSITORY.fullmatch(value):
+		owner = match["owner"]
+		repository = match["repository"].removesuffix(".git")
+		if owner in {".", ".."} or repository in {"", ".", ".."}:
+			raise ValueError("REPO must identify a GitHub owner/repository")
+		return f"github.com/{owner.lower()}/{repository.lower()}"
 	if re.match(r"^[\w.-]+@[\w.-]+:", value):
 		value = "ssh://" + value.replace(":", "/", 1)
 	parsed = urlsplit(value)
 	if parsed.scheme not in {"http", "https", "ssh", "git"} or not parsed.hostname:
-		raise ValueError("REPO must be an HTTP(S), SSH or Git repository URL")
+		raise ValueError(
+			"REPO must be a GitHub owner/repository or an HTTP(S), SSH or Git repository URL"
+		)
 	path = parsed.path.rstrip("/").removesuffix(".git")
 	if not path or path == "/" or parsed.query or parsed.fragment:
 		raise ValueError("REPO must identify a repository without a query or fragment")

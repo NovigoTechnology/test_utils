@@ -84,7 +84,7 @@ def get_coa(doctype: str) -> list:
 	"""
 	APP: nagus
 	HASH: cf4e3a0715d4fcb182d645c6fca72ae345c9761f
-	REPO: https://github.com/NovigoTechnology/erpnext
+	REPO: NovigoTechnology/erpnext
 	PATH: erpnext/accounts/utils.py
 	METHOD: get_coa
 	"""
@@ -97,12 +97,14 @@ Replace the example values with those for your override:
 | --- | --- |
 | `APP` | The custom app containing your override, such as `nagus`. |
 | `HASH` | The full 40-character upstream commit SHA that you reviewed. It does not have to match the checkout's current HEAD. |
-| `REPO` | The upstream GitHub repository containing the original implementation. Match its checkout's `origin`, or the `owner/repository` in `required_apps` if no origin is configured. |
+| `REPO` | The upstream GitHub repository containing the original implementation, preferably as `owner/repository`. HTTPS, SSH, SCP and Git URLs remain supported and are normalized to the same identity. |
 | `PATH` | The original implementation's file path, relative to the upstream repository root. |
 | `METHOD` | The original function name or qualified method name, such as `Ledger.validate`. For inherited methods, use the class that defines the upstream method. |
 
 Include each field once. You can keep explanatory prose in the docstring and arrange the
 fields in any order. Prefer qualified method names over bare names such as `validate`.
+The short `owner/repository` form always identifies GitHub. Repositories on another host
+must use a complete URL.
 
 Some controllers select between implementations, such as Frappe's `FileV1` and `FileV2`.
 For a method available only on one implementation, point `PATH` and `METHOD` to that
