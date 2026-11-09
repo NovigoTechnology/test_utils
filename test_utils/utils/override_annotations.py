@@ -50,10 +50,6 @@ class OwnerResolutionError(ResolutionError):
 	"""A module-assignment owner is imported from a dependency but cannot be verified."""
 
 
-class NonModuleOwner(ResolutionError):
-	"""A candidate assignment owner is provably a value rather than a module."""
-
-
 def read_tree(path: Path) -> ast.Module:
 	try:
 		return ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
@@ -377,9 +373,11 @@ class Module:
 
 
 @dataclass
-class ImportedOwner:
-	module: Module | None
+class ModuleResolution:
+	state: str
 	reference: str
+	dependency_app: App | None = None
+	module: Module | None = None
 	error: ResolutionError | None = None
 
 
@@ -402,6 +400,13 @@ class Symbol:
 	def identity(self) -> DeclarationId:
 		"""Dotted names can be reused; source declarations remain distinct."""
 		return self.module.path, self.node.lineno, self.node.col_offset
+
+
+@dataclass
+class FunctionResolution:
+	state: str
+	symbol: Symbol | None = None
+	error: ResolutionError | None = None
 
 
 class SourceResolver:
@@ -538,93 +543,125 @@ class SourceResolver:
 		module, parts = self.source_module(reference, require_symbol=True)
 		return self.resolve_in(module, parts, (), frozenset(), dotted_path=True)
 
-	def resolve_module_in(self, module, parts, limits, seen, *, implicit_child=False) -> Module:
-		"""Resolve an imported expression that must denote a module, including reexports."""
+	def module_resolution(self, state, reference, *, module=None, error=None):
+		return ModuleResolution(
+			state,
+			reference,
+			self.apps.get(reference.split(".", 1)[0]),
+			module,
+			error,
+		)
+
+	@staticmethod
+	def direct_value_binding(body, name):
+		bindings = scope_bindings(body).get(name, [])
+		return (
+			bindings[0]
+			if len(bindings) == 1
+			and bindings[0] in body
+			and isinstance(bindings[0], (ast.Assign, ast.AnnAssign))
+			else None
+		)
+
+	def resolve_module_in(self, module, parts, limits, seen, *, implicit_child=False):
+		"""Classify an imported owner while preserving canonical dependency provenance."""
 		body = self.module_body(module, limits)
 		key = (module.path, ".".join(parts), len(body), "implicit_module" if implicit_child else "module")
+		reference = ".".join([module.name, *parts])
 		if key in seen:
-			raise ResolutionError(f"Ambiguous cyclic module import for {module.name}.{'.'.join(parts)}")
+			error = ResolutionError(f"Ambiguous cyclic module import for {reference}")
+			return self.module_resolution("unresolved", reference, error=error)
 		seen = seen | {key}
 		if self.dynamic_namespace([body], parts, module.tree, module=module):
-			raise ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
+			error = ResolutionError(f"Ambiguous dynamic namespace in {module.path}")
+			candidates = imported_owner_references(module, body, parts)
+			candidate = candidates[0] if len(candidates) == 1 else reference
+			return self.module_resolution("unresolved", candidate, error=error)
 		try:
 			binding = self.binding(module, body, parts[0], limits, seen)
-		except ResolutionError:
-			bindings = scope_bindings(body).get(parts[0], [])
-			if (
-				len(bindings) == 1
-				and bindings[0] in body
-				and isinstance(bindings[0], (ast.Assign, ast.AnnAssign))
-			):
-				raise NonModuleOwner(
-					f"{module.name}.{parts[0]} is bound to a value at {module.path}:{bindings[0].lineno}"
-				) from None
-			raise
+		except ResolutionError as error:
+			if value := self.direct_value_binding(body, parts[0]):
+				return self.module_resolution(
+					"non_module",
+					f"{module.name}.{parts[0]}",
+					error=ResolutionError(
+						f"{module.name}.{parts[0]} is bound to a value at {module.path}:{value.lineno}"
+					),
+				)
+			candidates = imported_owner_references(module, body, parts)
+			candidate = candidates[0] if len(candidates) == 1 else reference
+			return self.module_resolution("unresolved", candidate, error=error)
 		if binding is None:
-			if module.path.name == "__init__.py":
-				reference = ".".join([module.name, *parts])
-				try:
-					child, remaining = self.source_module(reference)
-				except ResolutionError:
-					pass
-				else:
-					if not remaining:
-						return child
-			if implicit_child:
-				raise NonModuleOwner(f"{module.name}.{'.'.join(parts)} is not an explicitly imported module")
-			raise ResolutionError(f"Imported module {module.name}.{'.'.join(parts)} is unavailable")
+			try:
+				child, remaining = self.source_module(reference)
+			except ResolutionError as error:
+				state = "non_module" if implicit_child else "unresolved"
+				return self.module_resolution(state, reference, error=error)
+			if remaining:
+				error = ResolutionError(f"Source module {reference} not found")
+				state = "non_module" if implicit_child else "unresolved"
+				return self.module_resolution(state, reference, error=error)
+			return self.module_resolution("module", child.name, module=child)
 		if not isinstance(binding.node, ast.alias):
-			raise NonModuleOwner(
+			error = ResolutionError(
 				f"{module.name}.{parts[0]} is bound to a value at {module.path}:{binding.statement.lineno}"
 			)
-		if isinstance(binding.statement, ast.Import):
-			if binding.node.asname:
-				reference = binding.node.name
-				tail = parts[1:]
-				provider_reference = binding.node.name if tail else None
-				provider_parts = tail
-			else:
-				reference = ".".join(parts)
-				tail = []
-				prefix = binding.node.name.split(".")
-				provider_reference = binding.node.name if parts[: len(prefix)] == prefix else None
-				provider_parts = parts[len(prefix) :]
-				if not provider_parts:
-					provider_reference = None
-		elif isinstance(binding.statement, ast.ImportFrom):
-			reference = module.import_reference(binding.statement, binding.node)
-			tail = parts[1:]
+			return self.module_resolution("non_module", f"{module.name}.{parts[0]}", error=error)
+		import_limits = (*limits, (module.path, (binding.statement.lineno, binding.statement.col_offset)))
+		if isinstance(binding.statement, ast.ImportFrom):
 			provider_reference = module.import_reference(binding.statement)
-			provider_parts = [binding.node.name, *parts[1:]]
-		else:
-			raise NonModuleOwner(f"{module.name}.{parts[0]} is not an imported module")
-		target = ".".join([reference, *tail])
-		try:
-			owner, remaining = self.source_module(target)
+			target_reference = ".".join(
+				[module.import_reference(binding.statement, binding.node), *parts[1:]]
+			)
+			try:
+				provider, remaining = self.source_module(provider_reference)
+			except ResolutionError as error:
+				return self.module_resolution("unresolved", target_reference, error=error)
 			if remaining:
-				raise ResolutionError(f"Source module {target} not found")
-			return owner
-		except ResolutionError as exc:
-			if provider_reference is None:
-				raise
-			direct_error = str(exc)
-		try:
-			provider, remaining = self.source_module(provider_reference)
-			if remaining:
-				raise ResolutionError(f"Source module {provider_reference} not found")
+				error = ResolutionError(f"Source module {provider_reference} not found")
+				return self.module_resolution("unresolved", target_reference, error=error)
 			return self.resolve_module_in(
 				provider,
-				provider_parts,
-				(*limits, (module.path, (binding.statement.lineno, binding.statement.col_offset))),
+				[binding.node.name, *parts[1:]],
+				import_limits,
 				seen,
-				implicit_child=isinstance(binding.statement, ast.Import),
 			)
-		except NonModuleOwner:
-			raise
-		except ResolutionError as export_error:
-			raise ResolutionError(
-				f"Cannot resolve imported module {target}: {direct_error}; reexport lookup failed: {export_error}"
-			) from export_error
+		if not isinstance(binding.statement, ast.Import):
+			error = ResolutionError(f"{module.name}.{parts[0]} is not an imported module")
+			return self.module_resolution("non_module", reference, error=error)
+		prefix = binding.node.name.split(".")
+		if binding.node.asname:
+			base_reference = binding.node.name
+			tail = parts[1:]
+		elif parts[: len(prefix)] == prefix:
+			base_reference = binding.node.name
+			tail = parts[len(prefix) :]
+		else:
+			base_reference = prefix[0]
+			tail = parts[1:]
+		try:
+			owner, remaining = self.source_module(base_reference)
+		except ResolutionError as error:
+			return self.module_resolution("unresolved", base_reference, error=error)
+		if remaining:
+			error = ResolutionError(f"Source module {base_reference} not found")
+			return self.module_resolution("unresolved", base_reference, error=error)
+		if not tail:
+			return self.module_resolution("module", owner.name, module=owner)
+		return self.resolve_module_in(owner, tail, import_limits, seen, implicit_child=True)
+
+	def resolve_function_in(self, module, parts, limits, seen):
+		"""Classify a callable reference without turning proven data into a finding."""
+		try:
+			symbol = self.resolve_in(module, parts, limits, seen)
+		except ResolutionError as error:
+			body = self.module_body(module, limits)
+			if len(parts) == 1 and self.direct_value_binding(body, parts[0]):
+				return FunctionResolution("non_function", error=error)
+			return FunctionResolution("unresolved", error=error)
+		if isinstance(symbol.node, FUNCTION_NODES):
+			return FunctionResolution("function", symbol=symbol)
+		return FunctionResolution("non_function", symbol=symbol)
 
 	def resolve_from(self, module_reference: str, qualified_name: str) -> Symbol:
 		"""Resolve a name from an explicitly identified source provider."""
@@ -1642,40 +1679,18 @@ def imported_owner_references(module, body, parts):
 
 def imported_owner_module(resolver, module, parts, limits):
 	"""Resolve a module owner, retaining ambiguous dependency imports as findings."""
-	body = resolver.module_body(module, limits)
-	references = imported_owner_references(module, body, parts)
-	dependencies = [
-		reference
-		for reference in references
-		if reference.split(".", 1)[0] in resolver.apps and reference.split(".", 1)[0] != module.app.name
-	]
-	try:
-		binding = resolver.binding(module, body, parts[0], limits, frozenset())
-	except ResolutionError as exc:
-		if not dependencies:
-			return None
-		reference = dependencies[0] if len(dependencies) == 1 else ".".join(parts)
-		return ImportedOwner(None, reference, exc)
-	if binding is None or not isinstance(binding.node, ast.alias):
+	owner = resolver.resolve_module_in(module, parts, limits, frozenset())
+	if owner.state == "non_module":
 		return None
-	if isinstance(binding.statement, ast.Import):
-		reference = ".".join([binding.node.name, *parts[1:]]) if binding.node.asname else ".".join(parts)
-	elif isinstance(binding.statement, ast.ImportFrom):
-		reference = ".".join([module.import_reference(binding.statement, binding.node), *parts[1:]])
-	else:
-		return None
-	try:
-		owner = resolver.resolve_module_in(module, parts, limits, frozenset())
-	except NonModuleOwner:
-		return None
-	except ResolutionError as exc:
-		dependency = resolver.apps.get(reference.split(".", 1)[0])
-		if dependency is None or dependency.name == module.app.name:
-			return None
-		return ImportedOwner(None, reference, exc)
-	if owner.app.name == module.app.name:
-		return None
-	return ImportedOwner(owner, owner.name)
+	if owner.state == "module" and owner.module.app.name != module.app.name:
+		return owner
+	if (
+		owner.state == "unresolved"
+		and owner.dependency_app is not None
+		and owner.dependency_app.name != module.app.name
+	):
+		return owner
+	return None
 
 
 def assignment_parts(statement):
@@ -1706,6 +1721,13 @@ def validate_module_assignments(app, validator, begin, fail):
 				continue
 			target, _, target_text, replacement_text = parts
 			limits = ((module.path, (statement.lineno, statement.col_offset)),)
+			replacement = resolver.resolve_function_in(
+				module, replacement_text.split("."), limits, frozenset()
+			)
+			if replacement.state == "non_function":
+				continue
+			if replacement.state == "function" and replacement.symbol.module.app.name != app.name:
+				continue
 			owner = imported_owner_module(resolver, module, target_text.split(".")[:-1], limits)
 			if owner is None:
 				continue
@@ -1717,18 +1739,11 @@ def validate_module_assignments(app, validator, begin, fail):
 				"original_reference": target_text,
 				"replacement_reference": replacement_text,
 				"owner_module": owner.reference,
+				"registration_reference": original_reference,
 			}
-			if owner.error is not None:
-				try:
-					custom = resolver.resolve_in(module, replacement_text.split("."), limits, frozenset())
-				except ResolutionError:
-					custom = None
-				if (
-					custom is not None
-					and custom.module.app.name == app.name
-					and isinstance(custom.node, FUNCTION_NODES)
-				):
-					context["_custom"] = custom
+			if replacement.state == "function":
+				context["_custom"] = replacement.symbol
+			if owner.state == "unresolved":
 				begin(context)
 				fail(
 					context,
@@ -1737,51 +1752,29 @@ def validate_module_assignments(app, validator, begin, fail):
 					),
 				)
 				continue
-			try:
-				original = resolver.resolve_in(module, target_text.split("."), limits, frozenset())
-				original_error = None
-			except ResolutionError as exc:
-				original = None
-				original_error = exc
-			try:
-				custom = resolver.resolve_in(module, replacement_text.split("."), limits, frozenset())
-				custom_error = None
-			except ResolutionError as exc:
-				custom = None
-				custom_error = exc
-
-			original_is_function = (
-				original is not None
-				and original.module.app.name != app.name
-				and isinstance(original.node, FUNCTION_NODES)
-				and "." not in original.qualname
-			)
-			custom_is_function = (
-				custom is not None
-				and custom.module.app.name == app.name
-				and isinstance(custom.node, FUNCTION_NODES)
-			)
-			if not original_is_function and not (original_error and custom_is_function):
-				continue
-			if custom is not None and not custom_is_function:
+			original = resolver.resolve_function_in(owner.module, [target.attr], (), frozenset())
+			if original.state == "non_function":
 				continue
 
 			begin(context)
-			if custom_error:
-				fail(context, ResolutionError(f"Cannot resolve replacement function: {custom_error}"))
+			if replacement.state == "unresolved":
+				fail(
+					context,
+					ResolutionError(f"Cannot resolve replacement function: {replacement.error}"),
+				)
 				continue
-			if original_error:
-				key = (custom.identity, original_reference)
+			if original.state == "unresolved":
+				key = (replacement.symbol.identity, original_reference)
 				if key in reported_unresolved:
 					continue
 				reported_unresolved.add(key)
 				validator.error(
-					custom,
+					replacement.symbol,
 					original_reference,
-					f"Cannot resolve monkey-patched original at {context['file']}:{context['line']}: {original_error}",
+					f"Cannot resolve monkey-patched original at {context['file']}:{context['line']}: {original.error}",
 				)
 				continue
-			validator.validate_annotation(custom, original)
+			validator.validate_annotation(replacement.symbol, original.symbol)
 
 
 def run_override_validation(

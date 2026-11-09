@@ -160,6 +160,22 @@ def test_imported_instance_attribute_is_not_a_module_patch(bench):
 	assert not result.errors
 
 
+def test_package_binding_takes_precedence_over_same_named_child_module(bench):
+	write(
+		bench / "erpnext/erpnext/__init__.py",
+		"class Client: pass\nclient = Client()\n",
+	)
+	write(bench / "erpnext/erpnext/client.py", "def callback(): pass\n")
+	write(bench / "nagus/nagus/overrides.py", function_source())
+	write(
+		bench / "nagus/nagus/__init__.py",
+		"from erpnext import client\nfrom nagus.overrides import get_coa\nclient.callback = get_coa\n",
+	)
+	result = validate(bench)
+	assert result.checked == 0
+	assert not result.errors
+
+
 def test_missing_imported_owner_is_reported_instead_of_dropped(bench):
 	write(bench / "nagus/nagus/overrides.py", function_source(annotation()))
 	write(
@@ -173,6 +189,19 @@ def test_missing_imported_owner_is_reported_instead_of_dropped(bench):
 	assert len(result.errors) == 1
 	assert "Cannot resolve monkey-patched owner module erpnext.accounts.removed" in result.errors[0]
 	assert "source file not found" in result.errors[0]
+
+
+def test_missing_owner_with_a_local_class_replacement_is_not_a_function_patch(bench):
+	write(bench / "nagus/nagus/overrides.py", "class LocalType: pass\n")
+	write(
+		bench / "nagus/nagus/__init__.py",
+		"import erpnext.accounts.removed as upstream\n"
+		"from nagus.overrides import LocalType\n"
+		"upstream.Type = LocalType\n",
+	)
+	result = validate(bench)
+	assert result.checked == 0
+	assert not result.errors
 
 
 def test_conditional_owner_does_not_abort_later_assignments(bench):
@@ -228,6 +257,20 @@ def test_data_instance_class_and_nested_assignments_are_not_monkey_patches(bench
 		def install_later():
 			upstream.get_coa = get_coa
 		""",
+	)
+	result = validate(bench)
+	assert result.checked == 0
+	assert not result.errors
+
+
+def test_known_upstream_data_binding_is_not_a_function_patch(bench):
+	write(bench / "erpnext/erpnext/accounts/utils.py", "handler = None\n")
+	write(bench / "nagus/nagus/overrides.py", function_source())
+	write(
+		bench / "nagus/nagus/__init__.py",
+		"import erpnext.accounts.utils as upstream\n"
+		"from nagus.overrides import get_coa\n"
+		"upstream.handler = get_coa\n",
 	)
 	result = validate(bench)
 	assert result.checked == 0

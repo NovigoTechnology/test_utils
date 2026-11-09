@@ -57,6 +57,19 @@ def override_id(repository, file_path, symbol, original):
 	return "sha256:" + source_hash(payload)
 
 
+def registration_identity(discovery):
+	"""Keep source spelling visible while keying assignments by their actual target."""
+	if discovery.get("kind") == "module_assignment":
+		return json.dumps(
+			[
+				discovery.get("file"),
+				discovery.get("registration_reference", discovery["original_reference"]),
+			],
+			separators=(",", ":"),
+		)
+	return discovery["original_reference"]
+
+
 def symbol_kind(node):
 	if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
 		return "function"
@@ -341,7 +354,7 @@ def analyze_registered_override(record, app, repositories, revisions, findings, 
 			owner_repository,
 			record["custom_file"],
 			record["custom_symbol"],
-			record["discovery"]["original_reference"],
+			registration_identity(record["discovery"]),
 		),
 		"classification": "invalid_annotation",
 		"discovery": record["discovery"],
@@ -435,7 +448,7 @@ def unresolved_result(item, app, repositories, revisions, source_cache):
 			repository,
 			item["custom_file"],
 			item["custom_symbol"],
-			item["discovery"]["original_reference"],
+			registration_identity(item["discovery"]),
 		),
 		"classification": "invalid_annotation" if annotation_errors else "inconclusive",
 		"discovery": item["discovery"],

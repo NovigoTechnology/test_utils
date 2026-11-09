@@ -93,9 +93,11 @@ Each result contains:
 - structured diagnostics with `code`, `kind` and a human-readable `message`.
 
 `override_id` includes the owner repository, custom source location and symbol,
-and the registered original reference. One replacement registered for multiple
-upstream callables therefore has one stable ID per registration, including when
-the upstream callable can no longer be resolved.
+and the registered original identity. For a module assignment that identity is
+the installation file plus its canonical imported target; the source spelling
+remains available in `discovery.original_reference`. One replacement registered
+for multiple upstream callables therefore has one stable ID per registration,
+including when the upstream callable can no longer be resolved.
 
 The machine-readable contract is shipped as
 [`override_analysis_v1.schema.json`](../test_utils/schemas/override_analysis_v1.schema.json).
