@@ -139,146 +139,55 @@ def test_analyze_overrides_exposes_module_assignment_discovery(apps):
 	assert item["discovery"]["kind"] == "module_assignment"
 	assert item["discovery"]["file"] == "custom/__init__.py"
 	assert item["discovery"]["original_reference"] == "upstream_api.original"
+	assert item["discovery"]["registration_reference"] == "upstream.api.original"
 	assert item["upstream"]["symbol"] == "upstream.api.original"
 
 
-def test_analyze_overrides_confirms_removed_module_assignment_original(apps):
-	root, custom, upstream, _ = apps
-	register_module_assignment(custom)
-	write(
-		custom / "custom/install.py",
-		"import upstream.api as upstream_api\n"
-		"from custom.override import replacement\n"
-		"upstream_api.original = replacement\n",
-	)
-	commit(custom, "register the same assignment from another installation file")
-	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
-	commit(upstream, "remove module-assignment original")
-	items = analyze_overrides(custom, root)["results"]
-	assert len(items) == 2
-	assert {item["classification"] for item in items} == {"affected"}
-	assert {item["change_kind"] for item in items} == {"missing"}
-	assert {item["discovery"]["file"] for item in items} == {
-		"custom/__init__.py",
-		"custom/install.py",
-	}
-	assert len({item["override_id"] for item in items}) == 2
-
-
-def test_analyze_overrides_keeps_an_unresolved_replacement_in_the_inventory(apps):
+def test_module_assignment_inventory_keeps_missing_owner_original_and_replacement(apps):
 	root, custom, _, _ = apps
 	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
 	write(
 		custom / "custom/__init__.py",
-		"import upstream.api as upstream_api\nupstream_api.original = missing_replacement\n",
-	)
-	commit(custom, "add unresolved module assignment")
-	document = analyze_overrides(custom, root)
-	item = result(document)
-	assert document["outcome"] == "incomplete"
-	assert item["classification"] == "inconclusive"
-	assert item["discovery"]["kind"] == "module_assignment"
-	assert item["diagnostics"][0]["code"] == "replacement_unresolved"
-
-
-def test_analyze_overrides_keeps_a_missing_imported_owner_in_the_inventory(apps):
-	root, custom, _, _ = apps
-	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
-	write(
-		custom / "custom/__init__.py",
-		"import upstream.removed as upstream_api\n"
+		"import upstream.removed as missing_owner\n"
+		"import upstream.api as api\n"
 		"from custom.override import replacement\n"
-		"upstream_api.original = replacement\n",
+		"missing_owner.original = replacement\n"
+		"api.removed_original = replacement\n"
+		"api.original = missing_replacement\n",
 	)
-	commit(custom, "register assignment to missing owner module")
-	document = analyze_overrides(custom, root)
-	item = result(document)
-	assert document["outcome"] == "incomplete"
-	assert item["classification"] == "inconclusive"
-	assert item["discovery"]["kind"] == "module_assignment"
-	assert item["diagnostics"][0]["code"] == "owner_unresolved"
-	assert "source file not found" in item["diagnostics"][0]["message"]
-
-
-def test_missing_owner_preserves_the_resolved_replacement_identity_and_id(apps):
-	root, custom, upstream, _ = apps
-	register_module_assignment(custom)
-	registered = result(analyze_overrides(custom, root))
-	(upstream / "upstream/api.py").unlink()
-	commit(upstream, "remove owner module")
-	unresolved = result(analyze_overrides(custom, root))
-	assert unresolved["classification"] == "inconclusive"
-	assert unresolved["override_id"] == registered["override_id"]
-	assert unresolved["owner"]["file"] == "custom/override.py"
-	assert unresolved["owner"]["symbol"] == "custom.override.replacement"
-	assert unresolved["discovery"]["file"] == "custom/__init__.py"
-	assert unresolved["diagnostics"][0]["code"] == "owner_unresolved"
-
-
-def test_missing_owner_through_local_reexport_preserves_provenance_and_id(apps):
-	root, custom, upstream, _ = apps
-	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
-	write(custom / "custom/bridge.py", "import upstream.api as api\n")
-	write(
-		custom / "custom/__init__.py",
-		"from custom.bridge import api\n"
-		"from custom.override import replacement\n"
-		"api.original = replacement\n",
-	)
-	commit(custom, "register assignment through local reexport")
-	registered = result(analyze_overrides(custom, root))
-	(upstream / "upstream/api.py").unlink()
-	commit(upstream, "remove reexported owner module")
-	unresolved = result(analyze_overrides(custom, root))
-	assert unresolved["override_id"] == registered["override_id"]
-	assert unresolved["classification"] == "inconclusive"
-	assert unresolved["discovery"]["owner_module"] == "upstream.api"
-	assert unresolved["discovery"]["registration_reference"] == "upstream.api.original"
-	assert unresolved["diagnostics"][0]["code"] == "owner_unresolved"
-
-
-def test_analyze_overrides_keeps_an_ambiguous_imported_owner_in_the_inventory(apps):
-	root, custom, _, _ = apps
-	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
-	write(
-		custom / "custom/__init__.py",
-		"globals()\n"
-		"import upstream.api as upstream_api\n"
-		"from custom.override import replacement\n"
-		"upstream_api.original = replacement\n",
-	)
-	commit(custom, "make assignment owner ambiguous")
-	document = analyze_overrides(custom, root)
-	item = result(document)
-	assert document["outcome"] == "incomplete"
-	assert item["classification"] == "inconclusive"
-	assert item["diagnostics"][0]["code"] == "owner_unresolved"
-	assert "Ambiguous dynamic namespace" in item["diagnostics"][0]["message"]
-
-
-def test_module_assignment_ids_use_canonical_targets_not_local_spelling(apps):
-	root, custom, upstream, _ = apps
-	(upstream / "upstream/api.py").unlink()
-	commit(upstream, "remove both owner modules")
-	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
-	write(
-		custom / "custom/install_api.py",
-		"import upstream.api as api\nfrom custom.override import replacement\napi.original = replacement\n",
-	)
-	write(
-		custom / "custom/install_other.py",
-		"import upstream.other as api\nfrom custom.override import replacement\napi.original = replacement\n",
-	)
-	commit(custom, "register two assignments with the same local spelling")
+	commit(custom, "register unresolved module assignments")
 	document = analyze_overrides(custom, root)
 	items = document["results"]
-	assert len(items) == 2
+	assert len(items) == 3
 	assert document["outcome"] == "incomplete"
-	assert {item["diagnostics"][0]["code"] for item in items} == {"owner_unresolved"}
-	assert {item["discovery"]["original_reference"] for item in items} == {"api.original"}
+	assert {diagnostic["code"] for item in items for diagnostic in item["diagnostics"]} >= {
+		"owner_unresolved",
+		"upstream_unresolved",
+		"replacement_unresolved",
+	}
 	assert {item["discovery"]["registration_reference"] for item in items} == {
+		"upstream.removed.original",
+		"upstream.api.removed_original",
 		"upstream.api.original",
-		"upstream.other.original",
+	}
+
+
+def test_reachable_installation_files_remain_distinct_inventory_items(apps):
+	root, custom, _, _ = apps
+	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
+	write(custom / "custom/__init__.py", "import custom.first\nimport custom.second\n")
+	registration = (
+		"import upstream.api as api\nfrom custom.override import replacement\napi.original = replacement\n"
+	)
+	write(custom / "custom/first.py", registration)
+	write(custom / "custom/second.py", registration)
+	commit(custom, "register the same declarations from two reachable modules")
+	items = analyze_overrides(custom, root)["results"]
+	assert len(items) == 2
+	assert {item["classification"] for item in items} == {"unaffected"}
+	assert {item["discovery"]["file"] for item in items} == {
+		"custom/first.py",
+		"custom/second.py",
 	}
 	assert len({item["override_id"] for item in items}) == 2
 

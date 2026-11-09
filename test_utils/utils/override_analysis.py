@@ -58,18 +58,13 @@ def override_id(repository, file_path, symbol, original):
 
 
 def registration_identity(discovery):
-	"""Keep source spelling visible while keying assignments by their actual target."""
+	"""Identify an installation independently from its resolved declarations."""
 	if discovery.get("kind") == "module_assignment":
-		candidates = discovery.get("registration_candidates")
-		registration = (
-			candidates[0]
-			if candidates and len(candidates) == 1
-			else sorted(candidates)
-			if candidates
-			else discovery.get("registration_reference", discovery["original_reference"])
-		)
 		return json.dumps(
-			[discovery.get("file"), registration],
+			[
+				discovery.get("file"),
+				discovery.get("registration_reference", discovery["original_reference"]),
+			],
 			separators=(",", ":"),
 		)
 	return discovery["original_reference"]
@@ -258,7 +253,7 @@ def validate_registered_overrides(app, apps):
 			custom_file,
 			custom_symbol,
 			line,
-			context["original_reference"],
+			context.get("registration_reference", context["original_reference"]),
 			{"code": code, "kind": "resolution", "message": str(exc)},
 			fields,
 			kind,
@@ -320,12 +315,14 @@ def revision_source(cache, repository, revision, checkout):
 	return cache[key]
 
 
-def diagnostics_for(findings, symbol, upstream):
+def diagnostics_for(findings, symbol, upstream, discovery):
 	return [
 		diagnostic
 		for item in findings
 		if item["custom_symbol"] == symbol and upstream in item["upstream_symbols"]
 		for diagnostic in item["diagnostics"]
+		if diagnostic["kind"] == "annotation"
+		or registration_identity(item["discovery"]) == registration_identity(discovery)
 	]
 
 
@@ -357,7 +354,12 @@ def verify_historical_identity(sources, file_path, method, references, discovery
 
 def analyze_registered_override(record, app, repositories, revisions, findings, source_cache):
 	owner_repository = normalized_repository(app.repository) or app.name
-	diagnostics = diagnostics_for(findings, record["custom_symbol"], record["upstream_symbol"])
+	diagnostics = diagnostics_for(
+		findings,
+		record["custom_symbol"],
+		record["upstream_symbol"],
+		record["discovery"],
+	)
 	fields = record["annotation"]
 	result = {
 		"override_id": override_id(
@@ -616,13 +618,24 @@ def analyze_overrides(app_path, apps_root, additional_dependencies=(), revisions
 			for record in validation["registrations"]
 		]
 		registered_pairs = {
-			(item["custom_symbol"], item["upstream_symbol"]) for item in validation["registrations"]
+			(
+				item["custom_symbol"],
+				item["upstream_symbol"],
+				registration_identity(item["discovery"]),
+			)
+			for item in validation["registrations"]
 		}
 		results.extend(
 			unresolved_result(item, app, repositories, resolved, source_cache)
 			for item in validation["findings"]
 			if not any(
-				(item["custom_symbol"], upstream) in registered_pairs for upstream in item["upstream_symbols"]
+				(
+					item["custom_symbol"],
+					upstream,
+					registration_identity(item["discovery"]),
+				)
+				in registered_pairs
+				for upstream in item["upstream_symbols"]
 			)
 		)
 		errors = []

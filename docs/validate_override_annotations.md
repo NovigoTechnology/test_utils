@@ -24,10 +24,15 @@ and comments do not cover their methods. New helper methods do not need annotati
 
 ### Direct module assignments
 
-Every Python module in the app package, including `__init__.py`, is inspected
-statically for top-level assignments that replace a dependency module function
-with a function from the custom app. Normal imports, aliases and `from ...
-import ...` are resolved without executing either application:
+Discovery starts at the app package's `__init__.py` and `hooks.py`, matching the
+entrypoints Frappe loads for an installed app. It follows unconditional,
+top-level imports of modules from the same app and inspects only those reachable
+modules. This avoids reporting dormant files that Frappe never executes.
+
+Reachable modules are inspected statically for top-level assignments that replace
+a dependency module function with a function from the custom app. Direct imports,
+aliases and static `from ... import module` forms are resolved without executing
+either application:
 
 ```python
 import erpnext.setup.utils as upstream
@@ -36,19 +41,19 @@ from nagus.utils.utils import get_exchange_rate_nagus
 upstream.get_exchange_rate = get_exchange_rate_nagus
 ```
 
-The original is resolved using the namespace immediately before the assignment,
-so the monkey patch itself cannot hide the declaration being tracked. Reexports
-are followed to the real defining file and function.
+The imported assignment target identifies the installed binding. Static function
+reexports are then followed to the real upstream declaration, so both identities
+remain available to the catalog and structured analyzer.
 
-If an imported dependency module is missing, conditionally bound or hidden by a
-dynamic namespace, the assignment is retained and reported as unresolved. The
-structured analyzer therefore returns an inconclusive result instead of silently
-omitting a plausible monkey patch.
+If a direct imported dependency module, original function or replacement function
+is missing, the assignment is retained and reported as unresolved. The structured
+analyzer can therefore inventory source removals without losing the installation.
 
-This initial scope intentionally excludes `setattr`, function calls that install
-callbacks, assignments inside functions or classes, class attributes, instance
-attributes and dynamic target expressions. Plain data assignments are not
-treated as overrides.
+The supported grammar intentionally excludes conditional and dynamic imports,
+`setattr`, factories and other function-call expressions, assignments inside
+functions or classes, class attributes, instance attributes and data assignments.
+Unsupported expressions are ignored and never abort discovery of later supported
+assignments.
 
 ## Run locally
 

@@ -94,11 +94,11 @@ Each result contains:
 
 `override_id` includes the owner repository, custom source location and symbol,
 and the registered original identity. For a module assignment that identity is
-the installation file plus its canonical imported target, or the sorted candidate
-set when an import is ambiguous; the source spelling remains available in
-`discovery.original_reference`. One replacement registered for multiple upstream
-callables therefore has one stable ID per registration, including when the
-upstream callable can no longer be resolved.
+the installation file plus its canonical imported target; the source spelling
+remains available in `discovery.original_reference`. The resolved upstream symbol
+can name a different module when that target statically reexports the function.
+One replacement registered in multiple reachable modules therefore has one stable
+ID per installation, including when the upstream callable can no longer be resolved.
 
 The machine-readable contract is shipped as
 [`override_analysis_v1.schema.json`](../test_utils/schemas/override_analysis_v1.schema.json).
