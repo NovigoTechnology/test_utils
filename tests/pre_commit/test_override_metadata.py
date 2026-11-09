@@ -43,5 +43,5 @@ def test_invalid_github_repository_references_are_rejected(value):
 def test_short_repository_references_are_always_github():
 	assert repository_identity("gitlab/erpnext") == "github.com/gitlab/erpnext"
 	assert repository_identity("https://gitlab.com/owner/repository") == "gitlab.com/owner/repository"
-	with pytest.raises(ValueError, match="github.com owner/repository"):
+	with pytest.raises(ValueError, match=r"github\.com owner/repository"):
 		github_repository("https://gitlab.com/owner/repository")
