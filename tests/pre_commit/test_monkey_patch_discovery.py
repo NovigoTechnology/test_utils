@@ -115,6 +115,76 @@ def test_imports_and_aliases_are_resolved(bench, imports, target, replacement):
 	assert not result.errors
 
 
+def test_module_reexport_alias_is_resolved(bench):
+	write(bench / "erpnext/erpnext/api.py", "def get_coa(): pass\n")
+	write(bench / "erpnext/erpnext/__init__.py", "from . import api as public\n")
+	write(
+		bench / "nagus/nagus/overrides.py",
+		function_source(annotation(path="erpnext/api.py")),
+	)
+	write(
+		bench / "nagus/nagus/__init__.py",
+		"from erpnext import public\nfrom nagus.overrides import get_coa\npublic.get_coa = get_coa\n",
+	)
+	result = validate(bench)
+	assert result.checked == 1
+	assert not result.errors
+
+
+def test_missing_imported_owner_is_reported_instead_of_dropped(bench):
+	write(bench / "nagus/nagus/overrides.py", function_source(annotation()))
+	write(
+		bench / "nagus/nagus/__init__.py",
+		"import erpnext.accounts.removed as upstream\n"
+		"from nagus.overrides import get_coa\n"
+		"upstream.get_coa = get_coa\n",
+	)
+	result = validate(bench)
+	assert result.checked == 0
+	assert len(result.errors) == 1
+	assert "Cannot resolve monkey-patched owner module erpnext.accounts.removed" in result.errors[0]
+	assert "source file not found" in result.errors[0]
+
+
+def test_conditional_owner_does_not_abort_later_assignments(bench):
+	write(bench / "nagus/nagus/overrides.py", function_source(annotation()))
+	write(
+		bench / "nagus/nagus/__init__.py",
+		"""
+		class Client: pass
+		client = Client()
+		from nagus.overrides import get_coa
+		client.callback = get_coa
+		import erpnext.accounts.utils as valid
+		valid.get_coa = get_coa
+		if enabled:
+		    import erpnext.accounts.utils as conditional
+		conditional.get_coa = get_coa
+		""",
+	)
+	result = validate(bench)
+	assert result.checked == 1
+	assert len(result.errors) == 1
+	assert "conditional or unsupported binding of 'conditional'" in result.errors[0]
+	assert "client.callback" not in result.errors[0]
+
+
+def test_ambiguous_custom_namespace_retains_imported_owner_diagnostic(bench):
+	write(bench / "nagus/nagus/overrides.py", function_source(annotation()))
+	write(
+		bench / "nagus/nagus/__init__.py",
+		"globals()\n"
+		"import erpnext.accounts.utils as upstream\n"
+		"from nagus.overrides import get_coa\n"
+		"upstream.get_coa = get_coa\n",
+	)
+	result = validate(bench)
+	assert result.checked == 0
+	assert len(result.errors) == 1
+	assert "Cannot resolve monkey-patched owner module erpnext.accounts.utils" in result.errors[0]
+	assert "Ambiguous dynamic namespace" in result.errors[0]
+
+
 def test_data_instance_class_and_nested_assignments_are_not_monkey_patches(bench):
 	write(bench / "nagus/nagus/overrides.py", function_source())
 	write(

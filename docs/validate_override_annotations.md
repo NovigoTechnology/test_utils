@@ -40,6 +40,11 @@ The original is resolved using the namespace immediately before the assignment,
 so the monkey patch itself cannot hide the declaration being tracked. Reexports
 are followed to the real defining file and function.
 
+If an imported dependency module is missing, conditionally bound or hidden by a
+dynamic namespace, the assignment is retained and reported as unresolved. The
+structured analyzer therefore returns an inconclusive result instead of silently
+omitting a plausible monkey patch.
+
 This initial scope intentionally excludes `setattr`, function calls that install
 callbacks, assignments inside functions or classes, class attributes, instance
 attributes and dynamic target expressions. Plain data assignments are not

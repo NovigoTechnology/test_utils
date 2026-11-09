@@ -13,6 +13,7 @@ from pathlib import Path
 from test_utils.utils.local_overrides import git_result
 from test_utils.utils.override_annotations import (
 	AnnotationValidator,
+	OwnerResolutionError,
 	ResolutionError,
 	SourceResolver,
 	dependency_apps,
@@ -178,16 +179,18 @@ def validate_registered_overrides(app, apps):
 		validator.context = dict(context)
 
 	def resolution_error(context, exc):
+		if isinstance(exc, OwnerResolutionError):
+			code = "owner_unresolved"
+		elif context["kind"] == "hook":
+			code = "registration_unresolved"
+		else:
+			code = "replacement_unresolved"
 		validator.collect(
 			context["file"],
 			context["replacement_reference"],
 			context["line"],
 			context["original_reference"],
-			{
-				"code": "registration_unresolved" if context["kind"] == "hook" else "replacement_unresolved",
-				"kind": "resolution",
-				"message": str(exc),
-			},
+			{"code": code, "kind": "resolution", "message": str(exc)},
 		)
 
 	run_override_validation(

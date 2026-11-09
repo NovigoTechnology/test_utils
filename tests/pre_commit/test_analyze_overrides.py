@@ -169,6 +169,44 @@ def test_analyze_overrides_keeps_an_unresolved_replacement_in_the_inventory(apps
 	assert item["diagnostics"][0]["code"] == "replacement_unresolved"
 
 
+def test_analyze_overrides_keeps_a_missing_imported_owner_in_the_inventory(apps):
+	root, custom, _, _ = apps
+	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
+	write(
+		custom / "custom/__init__.py",
+		"import upstream.removed as upstream_api\n"
+		"from custom.override import replacement\n"
+		"upstream_api.original = replacement\n",
+	)
+	commit(custom, "register assignment to missing owner module")
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["outcome"] == "incomplete"
+	assert item["classification"] == "inconclusive"
+	assert item["discovery"]["kind"] == "module_assignment"
+	assert item["diagnostics"][0]["code"] == "owner_unresolved"
+	assert "source file not found" in item["diagnostics"][0]["message"]
+
+
+def test_analyze_overrides_keeps_an_ambiguous_imported_owner_in_the_inventory(apps):
+	root, custom, _, _ = apps
+	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
+	write(
+		custom / "custom/__init__.py",
+		"globals()\n"
+		"import upstream.api as upstream_api\n"
+		"from custom.override import replacement\n"
+		"upstream_api.original = replacement\n",
+	)
+	commit(custom, "make assignment owner ambiguous")
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["outcome"] == "incomplete"
+	assert item["classification"] == "inconclusive"
+	assert item["diagnostics"][0]["code"] == "owner_unresolved"
+	assert "Ambiguous dynamic namespace" in item["diagnostics"][0]["message"]
+
+
 def test_analyze_overrides_reports_confirmed_changes(apps):
 	root, custom, upstream, _ = apps
 	write(upstream / "upstream/api.py", "def original():\n    return 'after'\n")
