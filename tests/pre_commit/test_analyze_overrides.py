@@ -162,6 +162,82 @@ def test_override_ids_include_the_registered_original_and_survive_resolution_fai
 	} == resolved_ids
 
 
+def test_reexported_originals_preserve_each_hook_registration(apps):
+	root, custom, upstream, old_baseline = apps
+	write(upstream / "upstream/alias.py", "from upstream.api import original\n")
+	baseline = commit(upstream, "reexport original")
+	write(
+		custom / "custom/hooks.py",
+		"required_apps = ['upstream']\n"
+		"override_whitelisted_methods = {\n"
+		"    'upstream.api.original': 'custom.override.replacement',\n"
+		"    'upstream.alias.original': 'custom.override.replacement',\n"
+		"}\n",
+	)
+	path = custom / "custom/override.py"
+	path.write_text(path.read_text().replace(old_baseline, baseline))
+	commit(custom, "register both original references")
+	items = analyze_overrides(custom, root)["results"]
+	assert len(items) == 2
+	assert {item["discovery"]["original_reference"] for item in items} == {
+		"upstream.api.original",
+		"upstream.alias.original",
+	}
+	assert len({item["override_id"] for item in items}) == 2
+
+
+def test_analysis_shares_revision_sources_between_results(apps, monkeypatch):
+	root, custom, upstream, _ = apps
+	write(
+		upstream / "upstream/api.py",
+		"def original():\n    return 'before'\ndef second():\n    return 'before'\n",
+	)
+	baseline = commit(upstream, "add second source")
+	write(upstream / "README.md", "target revision\n")
+	target = commit(upstream, "advance target without changing sources")
+	write(
+		custom / "custom/hooks.py",
+		"required_apps = ['upstream']\n"
+		"override_whitelisted_methods = {\n"
+		"    'upstream.api.original': 'custom.override.replacement',\n"
+		"    'upstream.api.second': 'custom.override.second',\n"
+		"}\n",
+	)
+	write(
+		custom / "custom/override.py",
+		f'''def replacement():
+    """
+    APP: custom
+    HASH: {baseline}
+    REPO: example/upstream
+    PATH: upstream/api.py
+    METHOD: original
+    """
+
+def second():
+    """
+    APP: custom
+    HASH: {baseline}
+    REPO: example/upstream
+    PATH: upstream/api.py
+    METHOD: second
+    """
+''',
+	)
+	commit(custom, "register two independently annotated overrides")
+	real_sources = override_analysis.RevisionSources
+	created = []
+
+	def sources(repository, revision, **kwargs):
+		created.append((repository, revision))
+		return real_sources(repository, revision, **kwargs)
+
+	monkeypatch.setattr(override_analysis, "RevisionSources", sources)
+	document = analyze_overrides(custom, root)
+	assert len(document["results"]) == 2
+	assert created == [("example/upstream", baseline), ("example/upstream", target)]
+
+
 def test_class_bound_replacement_returns_json_instead_of_crashing(apps):
 	root, custom, upstream, _ = apps
 	write(
@@ -262,6 +338,25 @@ def test_historical_doctype_reference_resolves_an_inherited_method(apps):
 		["upstream.controllers.Derived.validate"],
 		{"kind": "hook", "hook": "override_doctype_class"},
 	)
+
+
+def test_historical_doctype_reference_stops_at_a_shadowing_binding(apps):
+	_, _, upstream, _ = apps
+	write(
+		upstream / "upstream/controllers.py",
+		"class Base:\n    def validate(self):\n        return 'before'\n"
+		"class Derived(Base):\n    validate = None\n",
+	)
+	baseline = commit(upstream, "shadow inherited controller method")
+	sources = override_analysis.RevisionSources("example/upstream", baseline, checkout=upstream)
+	with pytest.raises(override_analysis.ResolutionError, match="Unsupported binding shadows"):
+		override_analysis.verify_historical_identity(
+			sources,
+			"upstream/controllers.py",
+			"Base.validate",
+			["upstream.controllers.Derived.validate"],
+			{"kind": "hook", "hook": "override_doctype_class"},
+		)
 
 
 def test_analyze_overrides_reports_confirmed_changes(apps):
