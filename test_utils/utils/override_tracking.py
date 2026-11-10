@@ -1,6 +1,7 @@
 """Compare statically resolved implementations from two repository revisions."""
 
 import ast
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -12,8 +13,9 @@ from test_utils.utils.override_annotations import (
 	MissingSymbolError,
 	ResolutionError,
 	SourceResolver,
+	Symbol,
 )
-from test_utils.utils.python_source import FUNCTION_NODES, runtime_body, scope_statements
+from test_utils.utils.python_source import FUNCTION_NODES, runtime_body, scope_bindings, scope_statements
 from test_utils.utils.track_overrides import UpstreamFetchError, compare_method_diff
 
 
@@ -69,7 +71,7 @@ class RevisionResolver(SourceResolver):
 		except (SyntaxError, ValueError) as exc:
 			raise ResolutionError(f"Cannot parse {self.relative(path)}: {exc}") from exc
 
-	def implementation(self, method):
+	def method_symbol(self, method):
 		if not self.sources.is_file(self.file_path):
 			raise MissingSymbolError(f"Source file {self.file_path} is absent")
 		try:
@@ -97,6 +99,30 @@ class RevisionResolver(SourceResolver):
 			symbol = self.resolve_from(self.reference, next(iter(candidates)))
 		if not isinstance(symbol.node, FUNCTION_NODES):
 			raise ResolutionError(f"METHOD {method!r} does not resolve to a function")
+		return symbol
+
+	def registered_method_symbol(self, reference):
+		"""Resolve a registered class method through the class's effective hierarchy."""
+		owner_reference, separator, name = reference.rpartition(".")
+		if not separator:
+			raise ResolutionError(f"Invalid registered method reference: {reference!r}")
+		owner = self.resolve_registration(owner_reference)
+		if not isinstance(owner.node, ast.ClassDef):
+			raise ResolutionError(f"Registered method owner {owner_reference!r} is not a class")
+		for candidate in self.hierarchy(owner):
+			bindings = scope_bindings(runtime_body(candidate.module.tree, candidate.node))
+			if name not in bindings:
+				continue
+			node = self.method(candidate, name)
+			if node is None:
+				raise ResolutionError(
+					f"Unsupported binding shadows registered method {candidate.reference}.{name}"
+				)
+			return Symbol(candidate.module, f"{candidate.qualname}.{name}", node)
+		raise MissingSymbolError(f"Registered method {reference} is absent from the resolved hierarchy")
+
+	def implementation(self, method):
+		symbol = self.method_symbol(method)
 		source = self.sources.read(self.relative(symbol.module.path))
 		start = min([symbol.node.lineno, *(dec.lineno for dec in symbol.node.decorator_list)])
 		return "\n".join(source.splitlines()[start - 1 : symbol.node.end_lineno])
@@ -107,20 +133,39 @@ class Comparison:
 	status: Literal["changed", "unchanged", "unverified"]
 	diff: str = ""
 	diagnostic: str = ""
+	error_kind: Literal["resolution", "source_access"] | None = None
+	baseline_body_sha256: str | None = None
+	target_body_sha256: str | None = None
+	change_kind: Literal["modified", "missing"] | None = None
 
 
 def compare_override(before, after, file_path, method):
 	"""Only a resolvable baseline permits a confirmed change or deletion."""
-	errors = (ResolutionError, UpstreamFetchError, requests.RequestException, OSError)
 	try:
 		old = RevisionResolver(before, file_path).implementation(method)
-	except errors as exc:
-		return Comparison("unverified", diagnostic=f"Baseline {before.revision}: {exc}")
+	except ResolutionError as exc:
+		return Comparison(
+			"unverified", diagnostic=f"Baseline {before.revision}: {exc}", error_kind="resolution"
+		)
+	except (UpstreamFetchError, requests.RequestException, OSError) as exc:
+		return Comparison(
+			"unverified", diagnostic=f"Baseline {before.revision}: {exc}", error_kind="source_access"
+		)
 	try:
 		new = RevisionResolver(after, file_path).implementation(method)
 	except MissingSymbolError:
 		new = None
-	except errors as exc:
-		return Comparison("unverified", diagnostic=f"Target {after.revision}: {exc}")
+	except ResolutionError as exc:
+		return Comparison("unverified", diagnostic=f"Target {after.revision}: {exc}", error_kind="resolution")
+	except (UpstreamFetchError, requests.RequestException, OSError) as exc:
+		return Comparison(
+			"unverified", diagnostic=f"Target {after.revision}: {exc}", error_kind="source_access"
+		)
 	diff = compare_method_diff(old, new)
-	return Comparison("changed" if diff else "unchanged", diff=diff)
+	return Comparison(
+		"changed" if diff else "unchanged",
+		diff=diff,
+		baseline_body_sha256=hashlib.sha256(old.encode()).hexdigest(),
+		target_body_sha256=hashlib.sha256(new.encode()).hexdigest() if new is not None else None,
+		change_kind="missing" if new is None else "modified" if diff else None,
+	)

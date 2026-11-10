@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NovigoTechnology/test_utils/blob/v2/test_utils/schemas/override_analysis_v1.schema.json",
+  "title": "test_utils override analysis contract v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "outcome",
+    "tool",
+    "subject",
+    "sources",
+    "results",
+    "errors",
+    "counts"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "outcome": {
+      "enum": ["completed", "completed_with_findings", "incomplete"]
+    },
+    "tool": {"$ref": "#/$defs/tool"},
+    "subject": {"$ref": "#/$defs/source"},
+    "sources": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/source"}
+    },
+    "results": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/result"}
+    },
+    "errors": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/diagnostic"}
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "unaffected": {"type": "integer", "minimum": 0},
+        "affected": {"type": "integer", "minimum": 0},
+        "invalid_annotation": {"type": "integer", "minimum": 0},
+        "inconclusive": {"type": "integer", "minimum": 0},
+        "technical_error": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "nullableString": {"type": ["string", "null"]},
+    "sha256": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"const": "test_utils"},
+        "version": {"type": "string"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["app", "repository", "revision"],
+      "properties": {
+        "app": {"type": "string"},
+        "repository": {"$ref": "#/$defs/nullableString"},
+        "revision": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["code", "kind", "message"],
+      "properties": {
+        "code": {"type": "string"},
+        "kind": {
+          "enum": ["annotation", "resolution", "source_access", "syntax", "internal", "technical"]
+        },
+        "message": {"type": "string"}
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["kind", "file", "line", "original_reference", "replacement_reference"],
+      "properties": {
+        "kind": {"enum": ["hook", "module_assignment"]},
+        "hook": {"type": "string"},
+        "file": {"type": "string"},
+        "line": {"type": "integer", "minimum": 1},
+        "original_reference": {"type": "string"},
+        "replacement_reference": {"type": "string"}
+      }
+    },
+    "owner": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["app", "repository", "file", "line", "symbol", "revision", "body_sha256"],
+      "properties": {
+        "app": {"type": "string"},
+        "repository": {"type": "string"},
+        "file": {"type": "string"},
+        "line": {"type": "integer", "minimum": 1},
+        "symbol": {"type": "string"},
+        "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "body_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "upstream": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "app",
+        "repository",
+        "file",
+        "symbol",
+        "baseline_revision",
+        "target_revision",
+        "baseline_body_sha256",
+        "target_body_sha256"
+      ],
+      "properties": {
+        "app": {"$ref": "#/$defs/nullableString"},
+        "repository": {"$ref": "#/$defs/nullableString"},
+        "file": {"$ref": "#/$defs/nullableString"},
+        "symbol": {"$ref": "#/$defs/nullableString"},
+        "baseline_revision": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-fA-F]{40}$"
+        },
+        "target_revision": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "baseline_body_sha256": {"$ref": "#/$defs/sha256"},
+        "target_body_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "annotation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["fields", "duplicate_fields", "repository_identity"],
+      "properties": {
+        "fields": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "duplicate_fields": {
+          "type": "array",
+          "items": {"enum": ["APP", "HASH", "REPO", "PATH", "METHOD"]},
+          "uniqueItems": true
+        },
+        "repository_identity": {"$ref": "#/$defs/nullableString"}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "override_id",
+        "classification",
+        "discovery",
+        "owner",
+        "upstream",
+        "annotation",
+        "change_kind",
+        "diff",
+        "diagnostics"
+      ],
+      "properties": {
+        "override_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "classification": {
+          "enum": ["unaffected", "affected", "invalid_annotation", "inconclusive", "technical_error"]
+        },
+        "discovery": {"$ref": "#/$defs/discovery"},
+        "owner": {"$ref": "#/$defs/owner"},
+        "upstream": {"$ref": "#/$defs/upstream"},
+        "annotation": {"$ref": "#/$defs/annotation"},
+        "change_kind": {
+          "type": ["string", "null"],
+          "enum": ["modified", "missing", null]
+        },
+        "diff": {"type": "string"},
+        "diagnostics": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/diagnostic"}
+        }
+      }
+    }
+  }
+}

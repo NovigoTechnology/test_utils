@@ -9,16 +9,51 @@ implementation has changed. The two tools serve different steps of the same work
 
 ## What gets checked
 
-The validator finds overrides registered in your app's `hooks.py`:
+The validator finds overrides registered in your app's `hooks.py` and supported
+direct module assignments:
 
-| Hook | Where to add annotations |
+| Registration | Where to add annotations |
 | --- | --- |
 | `override_whitelisted_methods` | The replacement function. |
 | `override_doctype_class` | Each method that overrides an upstream method, including methods inherited from your local mixins. |
 | `extend_doctype_class` | Each mixin method that overrides an upstream controller method. |
+| `module.function = custom_function` | The custom replacement function. |
 
 Put annotations in each overriding function or method's own docstring. Class docstrings
 and comments do not cover their methods. New helper methods do not need annotations.
+
+### Direct module assignments
+
+Discovery starts at the app package's `__init__.py` and `hooks.py`, matching the
+entrypoints Frappe loads for an installed app. It follows unconditional,
+top-level imports of modules from the same app and inspects only those reachable
+modules. This avoids reporting dormant files that Frappe never executes.
+
+Reachable modules are inspected statically for top-level assignments that replace
+a dependency module function with a function from the custom app. Direct imports,
+aliases and static `from ... import module` forms are resolved without executing
+either application:
+
+```python
+import erpnext.setup.utils as upstream
+from nagus.utils.utils import get_exchange_rate_nagus
+
+upstream.get_exchange_rate = get_exchange_rate_nagus
+```
+
+The imported assignment target identifies the installed binding. Static function
+reexports are then followed to the real upstream declaration, so both identities
+remain available to the catalog and structured analyzer.
+
+If a direct imported dependency module, original function or replacement function
+is missing, the assignment is retained and reported as unresolved. The structured
+analyzer can therefore inventory source removals without losing the installation.
+
+The supported grammar intentionally excludes conditional and dynamic imports,
+`setattr`, factories and other function-call expressions, assignments inside
+functions or classes, class attributes, instance attributes and data assignments.
+Unsupported expressions are ignored and never abort discovery of later supported
+assignments.
 
 ## Run locally
 
@@ -84,7 +119,7 @@ def get_coa(doctype: str) -> list:
 	"""
 	APP: nagus
 	HASH: cf4e3a0715d4fcb182d645c6fca72ae345c9761f
-	REPO: https://github.com/NovigoTechnology/erpnext
+	REPO: NovigoTechnology/erpnext
 	PATH: erpnext/accounts/utils.py
 	METHOD: get_coa
 	"""
@@ -97,12 +132,14 @@ Replace the example values with those for your override:
 | --- | --- |
 | `APP` | The custom app containing your override, such as `nagus`. |
 | `HASH` | The full 40-character upstream commit SHA that you reviewed. It does not have to match the checkout's current HEAD. |
-| `REPO` | The upstream GitHub repository containing the original implementation. Match its checkout's `origin`, or the `owner/repository` in `required_apps` if no origin is configured. |
+| `REPO` | The upstream GitHub repository containing the original implementation, preferably as `owner/repository`. HTTPS, SSH, SCP and Git URLs remain supported and are normalized to the same identity. |
 | `PATH` | The original implementation's file path, relative to the upstream repository root. |
 | `METHOD` | The original function name or qualified method name, such as `Ledger.validate`. For inherited methods, use the class that defines the upstream method. |
 
 Include each field once. You can keep explanatory prose in the docstring and arrange the
 fields in any order. Prefer qualified method names over bare names such as `validate`.
+The short `owner/repository` form always identifies GitHub. Repositories on another host
+must use a complete URL.
 
 Some controllers select between implementations, such as Frappe's `FileV1` and `FileV2`.
 For a method available only on one implementation, point `PATH` and `METHOD` to that

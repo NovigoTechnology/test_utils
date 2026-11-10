@@ -6,6 +6,12 @@ Test Utils is a collection of development tools for [Frappe](https://frappeframe
 
 ## Tools
 
+### Override analysis integration
+
+[`analyze_overrides.md`](analyze_overrides.md) documents the versioned JSON
+interface used by external override catalogs and publishers. It reuses the same
+static resolution and historical comparison as the override pre-commit tools.
+
 ### Pre-commit Hooks
 
 [`pre_commit_hooks.md`](pre_commit_hooks.md) documents all available hooks. A summary:

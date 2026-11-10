@@ -1,0 +1,695 @@
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from test_utils.utils import override_analysis
+from test_utils.utils.override_analysis import analyze_overrides, main
+from test_utils.utils.track_overrides import UpstreamFetchError
+
+SCHEMA = Path(__file__).resolve().parents[2] / "test_utils/schemas/override_analysis_v1.schema.json"
+
+
+def git(root, *args):
+	return subprocess.run(
+		["git", "-C", str(root), *args], check=True, capture_output=True, text=True
+	).stdout.strip()
+
+
+def write(path, source):
+	path.parent.mkdir(parents=True, exist_ok=True)
+	path.write_text(source, encoding="utf-8")
+	return path
+
+
+def repository(root, name):
+	root.mkdir()
+	git(root, "init", "-q")
+	git(root, "config", "user.name", "Override Analysis Tests")
+	git(root, "config", "user.email", "overrides@example.invalid")
+	git(root, "remote", "add", "origin", f"https://github.com/example/{name}")
+	write(root / name / "__init__.py", "")
+	write(root / name / "hooks.py", "")
+	return root
+
+
+def commit(root, message="fixture"):
+	git(root, "add", ".")
+	git(root, "commit", "-qm", message)
+	return git(root, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def apps(tmp_path):
+	frappe = repository(tmp_path / "frappe", "frappe")
+	commit(frappe)
+	upstream = repository(tmp_path / "upstream", "upstream")
+	write(upstream / "upstream/api.py", "def original():\n    return 'before'\n")
+	baseline = commit(upstream)
+	custom = repository(tmp_path / "custom", "custom")
+	write(
+		custom / "custom/hooks.py",
+		"required_apps = ['upstream']\n"
+		"override_whitelisted_methods = {'upstream.api.original': 'custom.override.replacement'}\n",
+	)
+	write(
+		custom / "custom/override.py",
+		f'''def replacement():
+    """
+    APP: custom
+    HASH: {baseline}
+    REPO: example/upstream
+    PATH: upstream/api.py
+    METHOD: original
+    """
+    return "custom"
+''',
+	)
+	commit(custom)
+	return tmp_path, custom, upstream, baseline
+
+
+def result(document):
+	assert len(document["results"]) == 1
+	return document["results"][0]
+
+
+def test_contract_schema_is_published_and_versioned():
+	schema = json.loads(SCHEMA.read_text())
+	assert schema["properties"]["schema_version"]["const"] == 1
+	assert schema["additionalProperties"] is True
+	assert set(schema["$defs"]["result"]["required"]) == {
+		"override_id",
+		"classification",
+		"discovery",
+		"owner",
+		"upstream",
+		"annotation",
+		"change_kind",
+		"diff",
+		"diagnostics",
+	}
+
+
+def test_analyze_overrides_returns_a_versioned_unchanged_result(apps):
+	root, custom, upstream, baseline = apps
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["schema_version"] == 1
+	assert set(json.loads(SCHEMA.read_text())["required"]) <= document.keys()
+	assert document["outcome"] == "completed"
+	assert document["subject"]["app"] == "custom"
+	assert document["subject"]["revision"] == git(custom, "rev-parse", "HEAD")
+	assert {source["app"] for source in document["sources"]} == {"frappe", "upstream"}
+	assert item["classification"] == "unaffected"
+	assert item["upstream"]["baseline_revision"] == baseline
+	assert item["upstream"]["target_revision"] == git(upstream, "rev-parse", "HEAD")
+	assert item["upstream"]["baseline_body_sha256"]
+	assert item["upstream"]["baseline_body_sha256"] == item["upstream"]["target_body_sha256"]
+	assert item["annotation"]["repository_identity"] == "github.com/example/upstream"
+	assert set(json.loads(SCHEMA.read_text())["$defs"]["result"]["required"]) <= item.keys()
+
+
+def test_analyze_overrides_does_not_import_application_modules(apps):
+	root, custom, upstream, _ = apps
+	write(custom / "custom/__init__.py", "raise RuntimeError('custom imported')\n")
+	write(upstream / "upstream/__init__.py", "raise RuntimeError('upstream imported')\n")
+	commit(custom, "make custom import fail")
+	commit(upstream, "make upstream import fail")
+	assert result(analyze_overrides(custom, root))["classification"] == "unaffected"
+
+
+def register_module_assignment(custom):
+	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
+	write(
+		custom / "custom/__init__.py",
+		"import upstream.api as upstream_api\n"
+		"from custom.override import replacement\n"
+		"upstream_api.original = replacement\n",
+	)
+	commit(custom, "register module assignment")
+
+
+def test_analyze_overrides_exposes_module_assignment_discovery(apps):
+	root, custom, _, _ = apps
+	register_module_assignment(custom)
+	item = result(analyze_overrides(custom, root))
+	assert item["classification"] == "unaffected"
+	assert item["discovery"]["kind"] == "module_assignment"
+	assert item["discovery"]["file"] == "custom/__init__.py"
+	assert item["discovery"]["original_reference"] == "upstream_api.original"
+	assert item["discovery"]["registration_reference"] == "upstream.api.original"
+	assert item["upstream"]["symbol"] == "upstream.api.original"
+
+
+def test_module_assignment_inventory_keeps_missing_owner_original_and_replacement(apps):
+	root, custom, upstream, _ = apps
+	write(
+		upstream / "upstream/reexport.py",
+		"from upstream.api import removed_original as original\n",
+	)
+	write(upstream / "upstream/types.py", "class Controller: pass\n")
+	commit(upstream, "add a broken upstream reexport")
+	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
+	write(custom / "custom/reexports.py", "from custom.missing import replacement\n")
+	write(
+		custom / "custom/__init__.py",
+		"import upstream.removed as missing_owner\n"
+		"import upstream.api as api\n"
+		"import upstream.reexport as reexport\n"
+		"import upstream.types as types\n"
+		"import custom.reexports as replacements\n"
+		"import custom.removed as missing_replacement\n"
+		"from custom.override import replacement\n"
+		"missing_owner.original = replacement\n"
+		"reexport.original = replacement\n"
+		"api.original = replacements.replacement\n"
+		"types.Controller = missing_replacement.callback\n",
+	)
+	commit(custom, "register unresolved module assignments")
+	document = analyze_overrides(custom, root)
+	items = document["results"]
+	assert len(items) == 3
+	assert document["outcome"] == "incomplete"
+	assert {diagnostic["code"] for item in items for diagnostic in item["diagnostics"]} >= {
+		"owner_unresolved",
+		"upstream_unresolved",
+		"replacement_unresolved",
+	}
+	assert {item["discovery"]["registration_reference"] for item in items} == {
+		"upstream.removed.original",
+		"upstream.reexport.original",
+		"upstream.api.original",
+	}
+
+
+def test_reachable_installation_files_remain_distinct_inventory_items(apps):
+	root, custom, _, _ = apps
+	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
+	write(custom / "custom/__init__.py", "from . import first, second\n")
+	registration = (
+		"import upstream.api as api\nfrom custom.override import replacement\napi.original = replacement\n"
+	)
+	write(custom / "custom/first.py", registration)
+	write(custom / "custom/second.py", registration)
+	commit(custom, "register the same declarations from two reachable modules")
+	items = analyze_overrides(custom, root)["results"]
+	assert len(items) == 2
+	assert {item["classification"] for item in items} == {"unaffected"}
+	assert {item["discovery"]["file"] for item in items} == {
+		"custom/first.py",
+		"custom/second.py",
+	}
+	assert len({item["override_id"] for item in items}) == 2
+
+
+def test_override_ids_include_the_registered_original_and_survive_resolution_failure(apps):
+	root, custom, upstream, _ = apps
+	write(
+		upstream / "upstream/api.py",
+		"def original():\n    return 'before'\ndef second():\n    return 'before'\n",
+	)
+	baseline = commit(upstream, "add second original")
+	write(
+		custom / "custom/hooks.py",
+		"required_apps = ['upstream']\n"
+		"override_whitelisted_methods = {\n"
+		"    'upstream.api.original': 'custom.override.replacement',\n"
+		"    'upstream.api.second': 'custom.override.replacement',\n"
+		"}\n",
+	)
+	write(
+		custom / "custom/override.py",
+		f'''def replacement():
+    """
+    APP: custom
+    HASH: {baseline}
+    REPO: example/upstream
+    PATH: upstream/api.py
+    METHOD: original
+    """
+    return "custom"
+''',
+	)
+	commit(custom, "register one replacement for two originals")
+	resolved = analyze_overrides(custom, root)["results"]
+	assert len(resolved) == 2
+	assert len({item["override_id"] for item in resolved}) == 2
+	resolved_ids = {item["discovery"]["original_reference"]: item["override_id"] for item in resolved}
+	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove both registered originals")
+	unresolved = analyze_overrides(custom, root)["results"]
+	assert len(unresolved) == 2
+	assert {
+		item["discovery"]["original_reference"]: item["override_id"] for item in unresolved
+	} == resolved_ids
+
+
+def test_reexported_originals_preserve_each_hook_registration(apps):
+	root, custom, upstream, old_baseline = apps
+	write(upstream / "upstream/alias.py", "from upstream.api import original\n")
+	baseline = commit(upstream, "reexport original")
+	write(
+		custom / "custom/hooks.py",
+		"required_apps = ['upstream']\n"
+		"override_whitelisted_methods = {\n"
+		"    'upstream.api.original': 'custom.override.replacement',\n"
+		"    'upstream.alias.original': 'custom.override.replacement',\n"
+		"}\n",
+	)
+	path = custom / "custom/override.py"
+	path.write_text(path.read_text().replace(old_baseline, baseline))
+	commit(custom, "register both original references")
+	items = analyze_overrides(custom, root)["results"]
+	assert len(items) == 2
+	assert {item["discovery"]["original_reference"] for item in items} == {
+		"upstream.api.original",
+		"upstream.alias.original",
+	}
+	assert len({item["override_id"] for item in items}) == 2
+
+
+def test_analysis_shares_revision_sources_between_results(apps, monkeypatch):
+	root, custom, upstream, _ = apps
+	write(
+		upstream / "upstream/api.py",
+		"def original():\n    return 'before'\ndef second():\n    return 'before'\n",
+	)
+	baseline = commit(upstream, "add second source")
+	write(upstream / "README.md", "target revision\n")
+	target = commit(upstream, "advance target without changing sources")
+	write(
+		custom / "custom/hooks.py",
+		"required_apps = ['upstream']\n"
+		"override_whitelisted_methods = {\n"
+		"    'upstream.api.original': 'custom.override.replacement',\n"
+		"    'upstream.api.second': 'custom.override.second',\n"
+		"}\n",
+	)
+	write(
+		custom / "custom/override.py",
+		f'''def replacement():
+    """
+    APP: custom
+    HASH: {baseline}
+    REPO: example/upstream
+    PATH: upstream/api.py
+    METHOD: original
+    """
+
+def second():
+    """
+    APP: custom
+    HASH: {baseline}
+    REPO: example/upstream
+    PATH: upstream/api.py
+    METHOD: second
+    """
+''',
+	)
+	commit(custom, "register two independently annotated overrides")
+	real_sources = override_analysis.RevisionSources
+	created = []
+
+	def sources(repository, revision, **kwargs):
+		created.append((repository, revision))
+		return real_sources(repository, revision, **kwargs)
+
+	monkeypatch.setattr(override_analysis, "RevisionSources", sources)
+	document = analyze_overrides(custom, root)
+	assert len(document["results"]) == 2
+	assert created == [("example/upstream", baseline), ("example/upstream", target)]
+
+
+def test_class_bound_replacement_returns_json_instead_of_crashing(apps):
+	root, custom, upstream, _ = apps
+	write(
+		upstream / "upstream/controller.py",
+		"class Base:\n    def validate(self):\n        return 'upstream'\n",
+	)
+	commit(upstream, "add controller base")
+	write(
+		custom / "custom/hooks.py",
+		"required_apps = ['upstream']\noverride_doctype_class = {'Ledger': 'custom.override.Custom'}\n",
+	)
+	write(
+		custom / "custom/override.py",
+		"from upstream.controller import Base\n"
+		"def replacement(self): pass\n"
+		"class Custom(Base):\n"
+		"    validate = replacement\n",
+	)
+	commit(custom, "bind replacement as a class attribute")
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["errors"] == []
+	assert document["outcome"] == "incomplete"
+	assert item["classification"] == "inconclusive"
+	assert item["diagnostics"][0]["kind"] == "resolution"
+
+
+def test_unresolved_replacement_class_ignores_its_class_docstring(apps):
+	root, custom, _, baseline = apps
+	write(
+		custom / "custom/hooks.py",
+		"required_apps = ['upstream']\noverride_doctype_class = {'Ledger': 'custom.override.Custom'}\n",
+	)
+	write(
+		custom / "custom/override.py",
+		f'''class Custom(MissingBase):
+    """
+    APP: custom
+    HASH: {baseline}
+    REPO: example/upstream
+    PATH: upstream/api.py
+    METHOD: original
+    """
+''',
+	)
+	commit(custom, "add unresolved replacement class")
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["outcome"] == "incomplete"
+	assert item["classification"] == "inconclusive"
+	assert item["annotation"]["fields"] == {}
+	assert item["diagnostics"][0]["kind"] == "resolution"
+
+
+def test_historical_function_hook_uses_registration_resolution(apps):
+	root, custom, upstream, _ = apps
+	write(upstream / "upstream/__init__.py", "from . import package\n")
+	write(upstream / "upstream/package/__init__.py", "def original():\n    return 'before'\n")
+	baseline = commit(upstream, "add overlapping package attribute")
+	write(
+		custom / "custom/hooks.py",
+		"required_apps = ['upstream']\n"
+		"override_whitelisted_methods = {'upstream.package.original': 'custom.override.replacement'}\n",
+	)
+	write(
+		custom / "custom/override.py",
+		f'''def replacement():
+    """
+    APP: custom
+    HASH: {baseline}
+    REPO: example/upstream
+    PATH: upstream/package/__init__.py
+    METHOD: original
+    """
+    return "custom"
+''',
+	)
+	commit(custom, "register package function")
+	write(upstream / "upstream/package/__init__.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove package function")
+	item = result(analyze_overrides(custom, root))
+	assert item["classification"] == "affected"
+	assert item["change_kind"] == "missing"
+
+
+def test_historical_doctype_reference_resolves_an_inherited_method(apps):
+	_, _, upstream, _ = apps
+	write(
+		upstream / "upstream/controllers.py",
+		"class Base:\n    def validate(self):\n        return 'before'\nclass Derived(Base):\n    pass\n",
+	)
+	baseline = commit(upstream, "add inherited controller method")
+	sources = override_analysis.RevisionSources("example/upstream", baseline, checkout=upstream)
+	override_analysis.verify_historical_identity(
+		sources,
+		"upstream/controllers.py",
+		"Base.validate",
+		["upstream.controllers.Derived.validate"],
+		{"kind": "hook", "hook": "override_doctype_class"},
+	)
+
+
+def test_historical_doctype_reference_stops_at_a_shadowing_binding(apps):
+	_, _, upstream, _ = apps
+	write(
+		upstream / "upstream/controllers.py",
+		"class Base:\n    def validate(self):\n        return 'before'\n"
+		"class Derived(Base):\n    validate = None\n",
+	)
+	baseline = commit(upstream, "shadow inherited controller method")
+	sources = override_analysis.RevisionSources("example/upstream", baseline, checkout=upstream)
+	with pytest.raises(override_analysis.ResolutionError, match="Unsupported binding shadows"):
+		override_analysis.verify_historical_identity(
+			sources,
+			"upstream/controllers.py",
+			"Base.validate",
+			["upstream.controllers.Derived.validate"],
+			{"kind": "hook", "hook": "override_doctype_class"},
+		)
+
+
+def test_analyze_overrides_reports_confirmed_changes(apps):
+	root, custom, upstream, _ = apps
+	write(upstream / "upstream/api.py", "def original():\n    return 'after'\n")
+	commit(upstream, "change original")
+	item = result(analyze_overrides(custom, root))
+	assert item["classification"] == "affected"
+	assert item["change_kind"] == "modified"
+	assert "return 'before'" in item["diff"]
+	assert "return 'after'" in item["diff"]
+
+
+def test_analyze_overrides_confirms_a_removed_method_from_a_valid_baseline(apps):
+	root, custom, upstream, _ = apps
+	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove original")
+	item = result(analyze_overrides(custom, root))
+	assert item["classification"] == "affected"
+	assert item["change_kind"] == "missing"
+	assert item["upstream"]["baseline_body_sha256"]
+	assert item["upstream"]["target_body_sha256"] is None
+
+
+def test_analyze_overrides_structures_missing_annotations(apps):
+	root, custom, _, _ = apps
+	write(custom / "custom/override.py", "def replacement():\n    return 'custom'\n")
+	commit(custom, "remove annotation")
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["outcome"] == "completed_with_findings"
+	assert item["classification"] == "invalid_annotation"
+	assert item["annotation"]["fields"] == {}
+	assert item["diagnostics"][0]["code"] == "annotation_missing"
+
+
+def test_analyze_overrides_does_not_compare_invalid_annotations(apps):
+	root, custom, _, _ = apps
+	path = custom / "custom/override.py"
+	path.write_text(path.read_text().replace("APP: custom", "APP: wrong"))
+	commit(custom, "invalidate annotation")
+	item = result(analyze_overrides(custom, root))
+	assert item["classification"] == "invalid_annotation"
+	assert item["change_kind"] is None
+	assert item["diff"] == ""
+	assert any(diagnostic["code"] == "annotation_invalid" for diagnostic in item["diagnostics"])
+
+
+def test_invalid_hash_remains_raw_but_baseline_revision_is_null(apps):
+	root, custom, _, baseline = apps
+	path = custom / "custom/override.py"
+	path.write_text(path.read_text().replace(baseline, "abc123"))
+	commit(custom, "invalidate baseline hash")
+	item = result(analyze_overrides(custom, root))
+	assert item["classification"] == "invalid_annotation"
+	assert item["annotation"]["fields"]["HASH"] == "abc123"
+	assert item["upstream"]["baseline_revision"] is None
+
+
+def test_unresolved_original_with_invalid_hash_keeps_schema_valid(apps):
+	root, custom, upstream, baseline = apps
+	path = custom / "custom/override.py"
+	path.write_text(path.read_text().replace(baseline, "abc123"))
+	commit(custom, "invalidate unresolved baseline hash")
+	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove original with invalid annotation")
+	item = result(analyze_overrides(custom, root))
+	assert item["classification"] == "invalid_annotation"
+	assert item["annotation"]["fields"]["HASH"] == "abc123"
+	assert item["upstream"]["baseline_revision"] is None
+
+
+def test_unresolved_original_with_unmatched_repository_is_invalid_annotation(apps):
+	root, custom, upstream, _ = apps
+	path = custom / "custom/override.py"
+	path.write_text(path.read_text().replace("example/upstream", "example/missing"))
+	commit(custom, "point annotation to unavailable repository")
+	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove original with unmatched repository")
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["outcome"] == "completed_with_findings"
+	assert item["classification"] == "invalid_annotation"
+	assert any(diagnostic["code"] == "annotation_invalid" for diagnostic in item["diagnostics"])
+
+
+def test_unrelated_deleted_annotation_cannot_confirm_registered_original_deletion(apps):
+	root, custom, upstream, baseline = apps
+	write(
+		upstream / "upstream/api.py",
+		"def original():\n    return 'original'\n\ndef unrelated():\n    return 'unrelated'\n",
+	)
+	historical = commit(upstream, "add unrelated historical method")
+	path = custom / "custom/override.py"
+	path.write_text(
+		path.read_text().replace(baseline, historical).replace("METHOD: original", "METHOD: unrelated")
+	)
+	commit(custom, "point annotation to unrelated method")
+	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove registered and unrelated methods")
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["outcome"] == "completed_with_findings"
+	assert item["classification"] == "invalid_annotation"
+	assert item["change_kind"] is None
+	assert item["diff"] == ""
+	assert any(diagnostic["code"] == "annotation_original_mismatch" for diagnostic in item["diagnostics"])
+
+
+def test_ambiguous_historical_original_cannot_confirm_deletion(apps):
+	root, custom, upstream, baseline = apps
+	write(
+		upstream / "upstream/api.py",
+		"def original():\n    return 'first'\n\n"
+		"def original():\n    return 'second'\n\n"
+		"def unrelated():\n    return 'unrelated'\n",
+	)
+	historical = commit(upstream, "make registered original historically ambiguous")
+	path = custom / "custom/override.py"
+	path.write_text(
+		path.read_text().replace(baseline, historical).replace("METHOD: original", "METHOD: unrelated")
+	)
+	commit(custom, "point annotation away from ambiguous original")
+	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove ambiguous original")
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["outcome"] == "incomplete"
+	assert item["classification"] == "inconclusive"
+	assert item["change_kind"] is None
+	assert any(diagnostic["code"] == "original_identity_inconclusive" for diagnostic in item["diagnostics"])
+
+
+def test_historical_reexport_can_confirm_the_real_declaration_deletion(apps):
+	root, custom, upstream, baseline = apps
+	write(upstream / "upstream/reexport.py", "from upstream.api import original\n")
+	historical = commit(upstream, "add original reexport")
+	hooks_path = custom / "custom/hooks.py"
+	hooks_path.write_text(
+		hooks_path.read_text().replace("upstream.api.original", "upstream.reexport.original")
+	)
+	override_path = custom / "custom/override.py"
+	override_path.write_text(override_path.read_text().replace(baseline, historical))
+	commit(custom, "register original through reexport")
+	write(upstream / "upstream/api.py", "def renamed():\n    return 'after'\n")
+	commit(upstream, "remove reexported original")
+	item = result(analyze_overrides(custom, root))
+	assert item["classification"] == "affected"
+	assert item["change_kind"] == "missing"
+
+
+def test_analyze_overrides_ignores_annotations_that_are_not_registered(apps):
+	root, custom, _, baseline = apps
+	write(
+		custom / "custom/orphan.py",
+		f'''def annotated_but_not_registered():
+	"""
+	APP: custom
+	HASH: {baseline}
+	REPO: example/upstream
+	PATH: upstream/api.py
+	METHOD: original
+	"""
+	return "orphan"
+''',
+	)
+	commit(custom, "add orphan annotation")
+	document = analyze_overrides(custom, root)
+	assert len(document["results"]) == 1
+	assert document["results"][0]["owner"]["symbol"] == "custom.override.replacement"
+
+
+def test_analyze_overrides_reports_an_ambiguous_historical_symbol_as_inconclusive(apps):
+	root, custom, upstream, baseline = apps
+	write(
+		upstream / "upstream/api.py",
+		"def original():\n    return 'first'\n\ndef original():\n    return 'second'\n",
+	)
+	git(upstream, "add", ".")
+	git(upstream, "commit", "--amend", "--no-edit", "-q")
+	ambiguous = git(upstream, "rev-parse", "HEAD")
+	path = custom / "custom/override.py"
+	path.write_text(path.read_text().replace(baseline, ambiguous))
+	commit(custom, "point to ambiguous baseline")
+	write(upstream / "upstream/api.py", "def original():\n    return 'after'\n")
+	commit(upstream, "resolve ambiguity")
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["outcome"] == "incomplete"
+	assert item["classification"] == "inconclusive"
+	assert item["change_kind"] is None
+	assert any(diagnostic["code"] == "comparison_inconclusive" for diagnostic in item["diagnostics"])
+
+
+def test_analyze_overrides_reports_an_inaccessible_source_as_technical_error(apps, monkeypatch):
+	root, custom, _, _ = apps
+
+	class InaccessibleSources:
+		def __init__(self, repo_url, revision, *, checkout=None):
+			self.revision = revision
+
+		@property
+		def paths(self):
+			raise UpstreamFetchError("source unavailable")
+
+	monkeypatch.setattr(override_analysis, "RevisionSources", InaccessibleSources)
+	document = analyze_overrides(custom, root)
+	item = result(document)
+	assert document["outcome"] == "incomplete"
+	assert item["classification"] == "technical_error"
+	assert item["change_kind"] is None
+	assert any(diagnostic["code"] == "source_access_error" for diagnostic in item["diagnostics"])
+
+
+def test_analyze_overrides_rejects_a_revision_different_from_checkout_head(apps):
+	root, custom, _, _ = apps
+	document = analyze_overrides(custom, root, revisions={"custom": "a" * 40})
+	assert document["outcome"] == "incomplete"
+	assert document["results"] == []
+	assert document["errors"][0]["code"] == "analysis_setup_error"
+
+
+def test_analyze_overrides_rejects_a_dirty_checkout(apps):
+	root, custom, _, _ = apps
+	write(custom / "custom/uncommitted.py", "value = 1\n")
+	document = analyze_overrides(custom, root)
+	assert document["outcome"] == "incomplete"
+	assert document["results"] == []
+	assert "uncommitted changes" in document["errors"][0]["message"]
+
+
+def test_analyze_overrides_cli_writes_only_json_to_stdout(apps, capsys):
+	root, custom, _, _ = apps
+	assert main(["--app", str(custom), "--apps-root", str(root)]) == 0
+	document = json.loads(capsys.readouterr().out)
+	assert document["schema_version"] == 1
+	assert document["outcome"] == "completed"
+
+
+def test_analyze_overrides_cli_writes_json_to_the_selected_file(apps, tmp_path, capsys):
+	root, custom, _, _ = apps
+	output = tmp_path / "analysis.json"
+	assert main(["--app", str(custom), "--apps-root", str(root), "--output", str(output)]) == 0
+	assert capsys.readouterr().out == ""
+	assert json.loads(output.read_text())["outcome"] == "completed"
+
+
+def test_analyze_overrides_cli_returns_two_with_a_valid_error_document(tmp_path, capsys):
+	assert main(["--app", str(tmp_path / "missing"), "--apps-root", str(tmp_path)]) == 2
+	document = json.loads(capsys.readouterr().out)
+	assert document["outcome"] == "incomplete"
+	assert document["errors"][0]["code"] == "analysis_setup_error"

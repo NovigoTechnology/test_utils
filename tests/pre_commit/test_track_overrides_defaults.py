@@ -80,6 +80,12 @@ def test_no_arguments_checks_the_current_repository_against_local_head(bench, ca
 	assert "local Git HEAD" in capsys.readouterr().out
 
 
+def test_short_github_repository_matches_a_local_checkout(bench):
+	_, custom, _, sha = bench
+	annotated(custom / "custom/override.py", sha, repo="example/upstream")
+	assert run() == 0
+
+
 def test_no_arguments_detects_method_changes_on_a_detached_dependency_head(bench, capsys):
 	_, _, upstream, _ = bench
 	(upstream / "upstream/api.py").write_text("def value():\n    return 'after'\n")

@@ -196,6 +196,7 @@ def test_adjacent_string_literals_in_a_docstring_are_tracked():
 @pytest.mark.parametrize(
 	"repo",
 	[
+		"Owner/repo",
 		"https://github.com/Owner/repo.git/",
 		"git@github.com:Owner/repo.git",
 		"ssh://git@github.com/Owner/repo.git",
