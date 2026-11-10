@@ -44,9 +44,10 @@ def test_discovers_the_four_direct_nagus_monkey_patches_without_annotations(benc
 	assert result.checked == 4
 	assert len(result.errors) == 4
 	assert all("Missing annotation fields" in error for error in result.errors)
-	assert all("installed at" in error and "nagus/__init__.py" in error for error in result.errors)
+	assert all("Installed at:" in error and "nagus/__init__.py" in error for error in result.errors)
 	assert any(
-		"nagus.controllers.trends.get_data -> erpnext.controllers.trends.get_data" in error
+		"Override: nagus.controllers.trends.get_data\n"
+		"  Upstream: erpnext.controllers.trends.get_data" in error
 		for error in result.errors
 	)
 

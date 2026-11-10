@@ -23,12 +23,12 @@ def write(path, source):
 	return path
 
 
-def repository(root, name):
+def repository(root, name, remote="origin"):
 	root.mkdir()
 	git(root, "init", "-q")
 	git(root, "config", "user.name", "Override Analysis Tests")
 	git(root, "config", "user.email", "overrides@example.invalid")
-	git(root, "remote", "add", "origin", f"https://github.com/example/{name}")
+	git(root, "remote", "add", remote, f"https://github.com/example/{name}")
 	write(root / name / "__init__.py", "")
 	write(root / name / "hooks.py", "")
 	return root
@@ -44,7 +44,7 @@ def commit(root, message="fixture"):
 def apps(tmp_path):
 	frappe = repository(tmp_path / "frappe", "frappe")
 	commit(frappe)
-	upstream = repository(tmp_path / "upstream", "upstream")
+	upstream = repository(tmp_path / "upstream", "upstream", remote="upstream")
 	write(upstream / "upstream/api.py", "def original():\n    return 'before'\n")
 	baseline = commit(upstream)
 	custom = repository(tmp_path / "custom", "custom")
