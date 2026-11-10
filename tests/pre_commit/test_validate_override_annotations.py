@@ -104,8 +104,14 @@ def test_missing_whitelisted_annotation_is_actionable(bench):
 	result = validate(bench)
 	assert result.checked == 1
 	assert len(result.errors) == 1
-	assert f"{path}:1: nagus.overrides.get_coa -> erpnext.accounts.utils.get_coa" in result.errors[0]
-	assert "Missing annotation fields: APP, HASH, REPO, PATH, METHOD" in result.errors[0]
+	assert result.errors[0] == "\n".join(
+		[
+			f"{path}:1: override validation failed",
+			"  Override: nagus.overrides.get_coa",
+			"  Upstream: erpnext.accounts.utils.get_coa",
+			"  Problem: Missing annotation fields: APP, HASH, REPO, PATH, METHOD; add them to the overriding callable's docstring",
+		]
+	)
 
 
 @pytest.mark.parametrize("prefix,name", [("", "get_coa"), ("async ", "async_coa")])
@@ -170,11 +176,13 @@ def test_doctype_methods_are_detected_and_new_helpers_ignored(bench, hook):
 	assert result.checked == 2
 	assert len(result.errors) == 2
 	assert any(
-		"CustomLedger.validate -> erpnext.accounts.doctype.ledger.ledger.Ledger.validate" in error
+		"Override: nagus.overrides.CustomLedger.validate\n"
+		"  Upstream: erpnext.accounts.doctype.ledger.ledger.Ledger.validate" in error
 		for error in result.errors
 	)
 	assert any(
-		"CustomLedger.reconcile -> erpnext.accounts.doctype.ledger.ledger.Ledger.reconcile" in error
+		"Override: nagus.overrides.CustomLedger.reconcile\n"
+		"  Upstream: erpnext.accounts.doctype.ledger.ledger.Ledger.reconcile" in error
 		for error in result.errors
 	)
 	assert all("new_helper" not in error for error in result.errors)
@@ -320,7 +328,8 @@ def test_removed_whitelisted_upstream_method_is_reported(bench):
 	write(bench / "erpnext/erpnext/accounts/utils.py", "def renamed(): pass")
 	result = validate(bench)
 	assert len(result.errors) == 1
-	assert "nagus.overrides.get_coa -> erpnext.accounts.utils.get_coa" in result.errors[0]
+	assert "Override: nagus.overrides.get_coa" in result.errors[0]
+	assert "Upstream: erpnext.accounts.utils.get_coa" in result.errors[0]
 	assert "removed or renamed" in result.errors[0]
 
 
@@ -389,16 +398,41 @@ def test_missing_frappe_checkout_is_an_error(bench):
 
 
 @pytest.mark.parametrize(
-	"remote",
+	("remote_name", "remote"),
 	[
-		"git@github.com:NovigoTechnology/erpnext.git",
-		"ssh://git@github.com/NovigoTechnology/erpnext.git",
-		"https://github.com/NovigoTechnology/erpnext.git/",
+		("origin", "git@github.com:NovigoTechnology/erpnext.git"),
+		("origin", "ssh://git@github.com/NovigoTechnology/erpnext.git"),
+		("upstream", "https://github.com/NovigoTechnology/erpnext.git/"),
+		("source", "https://github.com/NovigoTechnology/erpnext"),
 	],
 )
-def test_repository_remote_formats_are_equivalent(bench, remote):
+def test_repository_remote_formats_and_names_are_equivalent(bench, remote_name, remote):
 	register_function(bench, annotation())
-	git(bench / "erpnext", "remote", "set-url", "origin", remote)
+	if remote_name != "origin":
+		git(bench / "erpnext", "remote", "rename", "origin", remote_name)
+	git(bench / "erpnext", "remote", "set-url", remote_name, remote)
+	assert not validate(bench).errors
+
+
+def test_bench_upstream_remote_precedes_a_distinct_origin(bench):
+	register_function(bench, annotation())
+	git(bench / "erpnext", "remote", "rename", "origin", "upstream")
+	git(bench / "erpnext", "remote", "add", "origin", "https://github.com/example/erpnext")
+	assert not validate(bench).errors
+
+
+def test_ambiguous_nonstandard_remotes_require_explicit_identity(bench):
+	register_function(bench, annotation())
+	git(bench / "erpnext", "remote", "remove", "origin")
+	git(bench / "erpnext", "remote", "add", "mirror", "https://github.com/example/erpnext")
+	git(bench / "erpnext", "remote", "add", "source", "https://github.com/NovigoTechnology/erpnext")
+	error = validate(bench).errors[0]
+	assert "Cannot determine repository for dependency 'erpnext'" in error
+	assert "mirror: github.com/example/erpnext" in error
+	assert "source: github.com/novigotechnology/erpnext" in error
+	assert "configure 'upstream' (Bench default), 'origin'" in error
+	path = bench / "nagus/nagus/hooks.py"
+	path.write_text(path.read_text().replace("'erpnext'", "'NovigoTechnology/erpnext'"))
 	assert not validate(bench).errors
 
 
@@ -420,7 +454,11 @@ def test_owner_repository_is_fallback_when_remote_is_unavailable(bench):
 def test_short_app_without_remote_does_not_guess_repository(bench):
 	register_function(bench, annotation())
 	git(bench / "erpnext", "remote", "remove", "origin")
-	assert any("Cannot validate REPO" in error for error in validate(bench).errors)
+	error = validate(bench).errors[0]
+	assert "Cannot determine repository for dependency 'erpnext'" in error
+	assert "Annotated REPO: github.com/novigotechnology/erpnext" in error
+	assert "Remotes: no valid repository remotes found" in error
+	assert "configure 'upstream' (Bench default), 'origin'" in error
 
 
 def test_hooks_support_static_names_annotations_concat_and_augmented_assignments(bench):
@@ -492,7 +530,8 @@ def test_unresolved_imports_and_cycles_fail_with_context(bench):
 	""",
 	)
 	result = validate(bench)
-	assert "CustomLedger -> DocType Ledger" in result.errors[0]
+	assert "Override: nagus.overrides.CustomLedger" in result.errors[0]
+	assert "Upstream: DocType Ledger" in result.errors[0]
 	assert "erpnext.missing.Ledger" in result.errors[0]
 	register_class(bench, "class CustomLedger(CustomLedger): pass")
 	assert any("Cyclic inheritance" in error for error in validate(bench).errors)

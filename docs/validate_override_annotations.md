@@ -196,14 +196,32 @@ validate_override_annotations: checked 7 override(s), 0 error(s)
 ```
 
 Exit code `0` means the check passed. Exit code `1` means it found invalid annotations or
-could not finish validation. Errors identify the affected source or hook registration.
+could not finish validation. Errors use a consistent block that separates the source,
+override, upstream declaration, problem and actionable resolution when one is available:
+
+```text
+nagus/utils/stock.py:42: override validation failed
+  Override: nagus.utils.stock.scan_barcode_nagus
+  Upstream: erpnext.stock.utils.scan_barcode
+  Problem: REPO does not match dependency checkout
+  Dependency: erpnext
+  Checkout: /bench/apps/erpnext
+  Annotated: github.com/novigotechnology/erpnext
+  Detected from upstream: github.com/frappe/erpnext
+  Resolution: update REPO or correct the dependency remote
+```
+
+Repository identities are normalized before display. Credential-bearing remote URLs are
+never included in validation messages. Repository discovery prefers `upstream`, the remote
+created by `bench get-app`, then `origin`, then any unambiguous repository identity under a
+different remote name.
 
 | Reported problem | What to do |
 | --- | --- |
 | Missing annotation fields | Add all five fields to the overriding function or method's docstring. |
 | App checkout not found | Check out the named repository under `--apps-root`. |
 | An app is missing from `required_apps` | Correct the dependency declaration or add `--dependency` for this run. |
-| `REPO` does not match the checkout | Check the annotation's upstream repository and the checkout's `origin` remote. |
+| `REPO` does not match the checkout | Check the annotation and the detected `upstream` (Bench default) or `origin` repository identity. |
 | Incorrect `PATH` or `METHOD` | Use the file and defining class/function named in the error. The method reference must identify a single declaration. |
 | Upstream method no longer exists | Review whether upstream renamed or removed the method, then update the customization and annotation. |
 | Ambiguous or unresolved reference | Inspect the reported file and line. Use explicit imports and straightforward hook declarations in your app. An unsupported upstream pattern needs review before the check can pass. |
