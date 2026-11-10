@@ -50,6 +50,48 @@ class OwnerResolutionError(ResolutionError):
 	"""A module-assignment owner is imported from a dependency but cannot be verified."""
 
 
+class RepositoryAmbiguityError(ResolutionError):
+	"""A checkout has multiple repository identities without a canonical remote."""
+
+	def __init__(self, app_name, root, identities):
+		self.app_name = app_name
+		self.root = root
+		self.identities = identities
+		super().__init__(repository_resolution_problem(app_name, root, identities))
+
+
+def repository_resolution_problem(app_name, root, identities=(), annotated=None):
+	"""Describe repository discovery without exposing credential-bearing URLs."""
+	lines = [f"Cannot determine repository for dependency {app_name!r}", f"Checkout: {root}"]
+	if annotated:
+		lines.append(f"Annotated REPO: {repository_identity(annotated)}")
+	if identities:
+		lines.append("Repository identities:")
+		for remote, identity in identities:
+			lines.append(f"  {remote}: {identity}")
+	else:
+		lines.append("Remotes: no valid repository remotes found")
+	lines.append(
+		"Resolution: configure 'upstream' (Bench default), 'origin', or qualify the dependency in required_apps"
+	)
+	return "\n".join(lines)
+
+
+def format_validation_error(location, problem, *, override=None, upstream=None, installed_at=None):
+	"""Render every human validator diagnostic with the same navigable layout."""
+	lines = [f"{location}: override validation failed"]
+	if override:
+		lines.append(f"  Override: {override}")
+	if upstream:
+		lines.append(f"  Upstream: {upstream}")
+	if installed_at:
+		lines.append(f"  Installed at: {installed_at}")
+	problem_lines = str(problem).splitlines() or [""]
+	lines.append(f"  Problem: {problem_lines[0]}")
+	lines.extend(f"  {line}" for line in problem_lines[1:])
+	return "\n".join(lines)
+
+
 def read_tree(path: Path) -> ast.Module:
 	try:
 		return ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
@@ -311,17 +353,73 @@ class App:
 	fallback_repo: str | None = None
 
 	@cached_property
-	def repository(self) -> str | None:
+	def repository_remotes(self):
 		try:
 			result = subprocess.run(
-				["git", "-C", str(self.root), "config", "--get", "remote.origin.url"],
+				["git", "-C", str(self.root), "config", "--get-regexp", r"^remote\..*\.url$"],
 				capture_output=True,
 				text=True,
 				check=False,
 			)
 		except OSError:
-			return self.fallback_repo
-		return result.stdout.strip() or self.fallback_repo
+			return {}
+		remotes = {}
+		for line in result.stdout.splitlines():
+			key, separator, url = line.partition(" ")
+			if not separator or not key.startswith("remote.") or not key.endswith(".url"):
+				continue
+			name = key[len("remote.") : -len(".url")]
+			try:
+				identity = repository_identity(url.strip())
+			except ValueError:
+				continue
+			remotes.setdefault(name, []).append((identity, url.strip()))
+		return remotes
+
+	def repository_problem(self, annotated, identities=()):
+		return repository_resolution_problem(self.name, self.root, identities, annotated)
+
+	@cached_property
+	def repository_source(self):
+		for preferred in ("upstream", "origin"):
+			entries = self.repository_remotes.get(preferred, [])
+			identities = {identity for identity, _ in entries}
+			if len(identities) == 1:
+				return preferred, entries[0][1]
+			if len(identities) > 1:
+				raise RepositoryAmbiguityError(
+					self.name,
+					self.root,
+					[(preferred, identity) for identity in sorted(identities)],
+				)
+		identities = {identity for entries in self.repository_remotes.values() for identity, _ in entries}
+		if len(identities) == 1:
+			identity = next(iter(identities))
+			for remote in sorted(self.repository_remotes):
+				for candidate, url in self.repository_remotes[remote]:
+					if candidate == identity:
+						return remote, url
+		if len(identities) > 1:
+			if self.fallback_repo:
+				try:
+					fallback_identity = repository_identity(self.fallback_repo)
+				except ValueError:
+					fallback_identity = None
+				if fallback_identity in identities:
+					return "required_apps", self.fallback_repo
+			remote_identities = sorted(
+				{
+					(remote, identity)
+					for remote, entries in self.repository_remotes.items()
+					for identity, _ in entries
+				}
+			)
+			raise RepositoryAmbiguityError(self.name, self.root, remote_identities)
+		return ("required_apps", self.fallback_repo) if self.fallback_repo else (None, None)
+
+	@cached_property
+	def repository(self) -> str | None:
+		return self.repository_source[1]
 
 
 def locate_app(path: Path, name: str | None = None, fallback_repo: str | None = None) -> App:
@@ -1187,11 +1285,17 @@ class AnnotationValidator:
 
 	def error(self, custom: Symbol, upstream: str, message: str):
 		context = getattr(self, "discovery_context", {})
-		location = ""
+		installed_at = None
 		if context.get("kind") == "module_assignment":
-			location = f"; installed at {self.app.root / context['file']}:{context['line']}"
+			installed_at = f"{self.app.root / context['file']}:{context['line']}"
 		self.result.errors.append(
-			f"{custom.module.path}:{custom.node.lineno}: {custom.reference} -> {upstream}: {message}{location}"
+			format_validation_error(
+				f"{custom.module.path}:{custom.node.lineno}",
+				message,
+				override=custom.reference,
+				upstream=upstream,
+				installed_at=installed_at,
+			)
 		)
 
 	def validate_annotation(self, custom: Symbol, upstream: Symbol):
@@ -1208,15 +1312,31 @@ class AnnotationValidator:
 			self.error(custom, upstream.reference, message)
 		if annotations.get("REPO") and "REPO" not in invalid_fields:
 			try:
-				expected = upstream.module.app.repository
+				repository_source, expected = upstream.module.app.repository_source
 				if expected is None:
-					raise ResolutionError(
-						f"Cannot validate REPO: configure remote.origin.url in {upstream.module.app.root} or use owner/repository in required_apps"
-					)
+					raise ResolutionError(upstream.module.app.repository_problem(annotations["REPO"]))
 				expected_identity = repository_identity(expected)
-				if repository_identity(annotations["REPO"]) != expected_identity:
-					raise ResolutionError(f"REPO does not match the upstream checkout ({expected_identity})")
+				annotated_identity = repository_identity(annotations["REPO"])
+				if annotated_identity != expected_identity:
+					raise ResolutionError(
+						"\n".join(
+							[
+								"REPO does not match dependency checkout",
+								f"Dependency: {upstream.module.app.name}",
+								f"Checkout: {upstream.module.app.root}",
+								f"Annotated: {annotated_identity}",
+								f"Detected from {repository_source}: {expected_identity}",
+								"Resolution: update REPO or correct the dependency remote",
+							]
+						)
+					)
 				github_repository(annotations["REPO"])
+			except RepositoryAmbiguityError as exc:
+				self.error(
+					custom,
+					upstream.reference,
+					upstream.module.app.repository_problem(annotations["REPO"], exc.identities),
+				)
 			except (ResolutionError, ValueError) as exc:
 				self.error(custom, upstream.reference, str(exc))
 		if annotations.get("PATH") and "PATH" not in invalid_fields:
@@ -1872,15 +1992,19 @@ def run_override_validation(
 	def fail(context, exc):
 		if resolution_error:
 			resolution_error(context, exc)
-		elif context["kind"] == "hook":
-			validator.result.errors.append(
-				f"{hooks_path}: {context['hook']}[{context['original_reference']!r}] -> "
-				f"{context['replacement_reference']}: {exc}"
-			)
 		else:
+			location = (
+				f"{hooks_path}:{context['line']}"
+				if context["kind"] == "hook"
+				else f"{app.root / context['file']}:{context['line']}"
+			)
 			validator.result.errors.append(
-				f"{app.root / context['file']}:{context['line']}: "
-				f"{context['original_reference']} -> {context['replacement_reference']}: {exc}"
+				format_validation_error(
+					location,
+					exc,
+					override=context["replacement_reference"],
+					upstream=context["original_reference"],
+				)
 			)
 
 	for hook in ("override_whitelisted_methods", "override_doctype_class", "extend_doctype_class"):
@@ -1920,5 +2044,5 @@ def validate_overrides(
 		validator = AnnotationValidator(app, SourceResolver(apps))
 		return run_override_validation(app, apps, validator)
 	except ResolutionError as exc:
-		result.errors.append(str(exc))
+		result.errors.append(format_validation_error(Path(app_path).resolve(), exc))
 	return result
