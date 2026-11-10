@@ -576,6 +576,11 @@ def test_github_repository_names_are_case_insensitive(bench):
 	assert not validate(bench).errors
 
 
+def test_github_owner_repository_annotation_is_valid(bench):
+	register_function(bench, annotation(repo="NovigoTechnology/erpnext"))
+	assert not validate(bench).errors
+
+
 def test_repository_with_a_different_port_fails(bench):
 	register_function(bench, annotation(repo="https://github.com:8443/NovigoTechnology/erpnext"))
 	assert any("REPO does not match" in error for error in validate(bench).errors)

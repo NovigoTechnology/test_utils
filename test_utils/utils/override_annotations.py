@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 
 from test_utils.utils.namespace_types import class_values_are_safe
 from test_utils.utils.override_metadata import (
-	FIELDS,
+	annotation_field_errors,
 	github_repository,
 	parse_annotation,
 	repository_identity,
@@ -44,6 +44,10 @@ class MissingSymbolError(ResolutionError):
 	def __init__(self, message, *, owner_resolved=False):
 		super().__init__(message)
 		self.owner_resolved = owner_resolved
+
+
+class OwnerResolutionError(ResolutionError):
+	"""A module-assignment owner is imported from a dependency but cannot be verified."""
 
 
 def read_tree(path: Path) -> ast.Module:
@@ -1182,8 +1186,12 @@ class AnnotationValidator:
 		self.checked: set[tuple[DeclarationId, DeclarationId]] = set()
 
 	def error(self, custom: Symbol, upstream: str, message: str):
+		context = getattr(self, "discovery_context", {})
+		location = ""
+		if context.get("kind") == "module_assignment":
+			location = f"; installed at {self.app.root / context['file']}:{context['line']}"
 		self.result.errors.append(
-			f"{custom.module.path}:{custom.node.lineno}: {custom.reference} -> {upstream}: {message}"
+			f"{custom.module.path}:{custom.node.lineno}: {custom.reference} -> {upstream}: {message}{location}"
 		)
 
 	def validate_annotation(self, custom: Symbol, upstream: Symbol):
@@ -1193,20 +1201,12 @@ class AnnotationValidator:
 		self.checked.add(key)
 		self.result.checked += 1
 		annotations, duplicates = parse_annotation(ast.get_docstring(custom.node) or "")
-		for name in duplicates:
-			self.error(custom, upstream.reference, f"Duplicate annotation field {name}")
-		missing = [name for name in FIELDS if not annotations.get(name)]
-		if missing:
-			self.error(
-				custom,
-				upstream.reference,
-				f"Missing annotation fields: {', '.join(missing)}; add them to the overriding callable's docstring",
-			)
-		if annotations.get("APP") and annotations["APP"] != self.app.name:
-			self.error(custom, upstream.reference, f"APP must be {self.app.name!r}")
-		if annotations.get("HASH") and not re.fullmatch(r"[0-9a-fA-F]{40}", annotations["HASH"]):
-			self.error(custom, upstream.reference, "HASH must be a full 40-character hexadecimal commit SHA")
-		if annotations.get("REPO"):
+		field_errors = annotation_field_errors(annotations, duplicates, self.app.name)
+		invalid_fields = set()
+		for fields, message in field_errors:
+			invalid_fields.update(fields)
+			self.error(custom, upstream.reference, message)
+		if annotations.get("REPO") and "REPO" not in invalid_fields:
 			try:
 				expected = upstream.module.app.repository
 				if expected is None:
@@ -1219,12 +1219,12 @@ class AnnotationValidator:
 				github_repository(annotations["REPO"])
 			except (ResolutionError, ValueError) as exc:
 				self.error(custom, upstream.reference, str(exc))
-		if annotations.get("PATH"):
+		if annotations.get("PATH") and "PATH" not in invalid_fields:
 			expected_path = upstream.module.path.relative_to(upstream.module.app.root).as_posix()
 			path = PurePosixPath(annotations["PATH"])
 			if path.is_absolute() or ".." in path.parts or annotations["PATH"] != expected_path:
 				self.error(custom, upstream.reference, f"PATH must be {expected_path!r}")
-		if annotations.get("METHOD"):
+		if annotations.get("METHOD") and "METHOD" not in invalid_fields:
 			method = annotations["METHOD"]
 			# Legacy leaf names are valid only when they identify this callable uniquely.
 			valid = (
@@ -1498,6 +1498,413 @@ def dependency_apps(app: App, apps_root: Path, additional_dependencies=()) -> li
 	return list(apps.values())
 
 
+def registration_line(hooks_path, replacement):
+	return next(
+		(
+			node.lineno
+			for node in ast.walk(read_tree(hooks_path))
+			if isinstance(node, ast.Constant) and node.value == replacement
+		),
+		1,
+	)
+
+
+def exact_source_module(resolver, reference):
+	module, remaining = resolver.source_module(reference)
+	if remaining:
+		raise ResolutionError(f"Source module {reference} not found")
+	return module
+
+
+def reachable_app_modules(app, resolver):
+	"""Yield only modules imported from Frappe's static app entrypoints."""
+	entries = []
+	for path in (app.package / "__init__.py", app.package / "hooks.py"):
+		if path.is_file():
+			name = app.name if path.name == "__init__.py" else f"{app.name}.hooks"
+			entries.append(resolver.module(app, name, path))
+	pending = sorted(entries, key=lambda item: item.name)
+	seen = set()
+	while pending:
+		module = pending.pop(0)
+		if module.path in seen:
+			continue
+		seen.add(module.path)
+		yield module
+		references = []
+		body = runtime_body(module.tree)
+		for index, statement in enumerate(body):
+			if isinstance(statement, ast.Import):
+				references.extend(alias.name for alias in statement.names)
+			elif isinstance(statement, ast.ImportFrom):
+				references.append(module.import_reference(statement))
+				for alias in statement.names:
+					if alias.name == "*":
+						continue
+					local = alias.asname or alias.name
+					imported = imported_module(resolver, module, [local], body[: index + 1])
+					if imported is not None and imported.module is not None:
+						references.append(imported.reference)
+		for reference in sorted(dict.fromkeys(references)):
+			parts = reference.split(".")
+			if not parts or parts[0] != app.name:
+				continue
+			# Importing a child executes each package initializer on its path.
+			for end in range(1, len(parts) + 1):
+				try:
+					candidate = exact_source_module(resolver, ".".join(parts[:end]))
+				except ResolutionError:
+					continue
+				if candidate.path not in seen and candidate.path not in {item.path for item in pending}:
+					pending.append(candidate)
+		pending.sort(key=lambda item: item.name)
+
+
+@dataclass(frozen=True)
+class ImportedModule:
+	reference: str
+	module: Module | None
+	error: ResolutionError | None = None
+
+
+def direct_imports(body, local):
+	"""Return unconditional import bindings, rejecting shadowed or conditional names."""
+	matches = []
+	for statement in body:
+		if not isinstance(statement, (ast.Import, ast.ImportFrom)):
+			continue
+		for alias in statement.names:
+			bound = alias.asname or (
+				alias.name.split(".")[0] if isinstance(statement, ast.Import) else alias.name
+			)
+			if bound == local:
+				matches.append((statement, alias))
+	bindings = scope_bindings(body).get(local, [])
+	if (
+		not matches
+		or len(bindings) != len(matches)
+		or any(binding is not match[1] for binding, match in zip(bindings, matches, strict=True))
+	):
+		return []
+	return matches
+
+
+def imported_module(resolver, module, parts, body, seen=frozenset()):
+	"""Resolve only direct static module imports; values and instances are not owners."""
+	key = (module.path, tuple(parts))
+	if not parts or key in seen:
+		return None
+	bindings = direct_imports(body, parts[0])
+	if not bindings:
+		return None
+	candidates = []
+	for statement, alias in bindings:
+		if isinstance(statement, ast.Import):
+			imported = alias.name.split(".")
+			if (alias.asname and parts == [alias.asname]) or (not alias.asname and parts == imported):
+				candidates.append((statement, alias, alias.name))
+		elif parts == [alias.asname or alias.name] and alias.name != "*":
+			candidates.append((statement, alias, None))
+	if len(candidates) != 1:
+		return None
+	statement, alias, reference = candidates[0]
+	if isinstance(statement, ast.ImportFrom):
+		provider_reference = module.import_reference(statement)
+		try:
+			provider = exact_source_module(resolver, provider_reference)
+		except ResolutionError as error:
+			reference = module.import_reference(statement, alias)
+			return ImportedModule(reference, None, error)
+		provider_body = runtime_body(provider.tree)
+		if provider.path == module.path:
+			# A self-relative import can only see bindings executed before itself.
+			position = statement.lineno, statement.col_offset
+			provider_body = [item for item in provider_body if (item.lineno, item.col_offset) < position]
+		if "__getattr__" in scope_bindings(provider_body) or uses_dynamic_namespace(
+			provider_body, provider.tree
+		):
+			return None
+		provider_bindings = scope_bindings(provider_body).get(alias.name, [])
+		if provider_bindings:
+			resolved = imported_module(
+				resolver,
+				provider,
+				[alias.name],
+				provider_body,
+				seen | {key},
+			)
+			if resolved is None:
+				return None
+			return resolved
+		reference = module.import_reference(statement, alias)
+	try:
+		return ImportedModule(reference, exact_source_module(resolver, reference))
+	except ResolutionError as error:
+		return ImportedModule(reference, None, error)
+
+
+def imported_owner_module(resolver, module, parts, limits):
+	body = resolver.module_body(module, limits)
+	owner = imported_module(resolver, module, parts, body)
+	if owner is None:
+		return None
+	owner_app = owner.reference.split(".", 1)[0]
+	if owner_app == module.app.name or owner_app not in resolver.apps:
+		return None
+	return owner
+
+
+def assignment_parts(statement):
+	if isinstance(statement, ast.Assign):
+		if len(statement.targets) != 1:
+			return None
+		target = statement.targets[0]
+	elif isinstance(statement, ast.AnnAssign):
+		target = statement.target
+	else:
+		return None
+	if not isinstance(target, ast.Attribute) or not isinstance(statement.value, (ast.Name, ast.Attribute)):
+		return None
+	try:
+		return target, statement.value, dotted_name(target), dotted_name(statement.value)
+	except ResolutionError:
+		return None
+
+
+def direct_function_import(body, name):
+	return any(
+		isinstance(statement, ast.ImportFrom) and alias.name != "*"
+		for statement, alias in direct_imports(body, name)
+	)
+
+
+def failed_static_reexport(resolver, module, name, limits=()):
+	body = resolver.module_body(module, limits)
+	return (
+		"__getattr__" not in scope_bindings(body)
+		and not uses_dynamic_namespace(body, module.tree)
+		and direct_function_import(body, name)
+	)
+
+
+def original_candidate(resolver, module, name):
+	body = runtime_body(module.tree)
+	terminal_module = imported_module(resolver, module, [name], body)
+	if terminal_module is not None and terminal_module.module is not None:
+		return False, None
+	try:
+		symbol = resolver.resolve_in(module, [name], (), frozenset())
+	except MissingSymbolError as error:
+		return None, error
+	except ResolutionError as error:
+		return (None, error) if failed_static_reexport(resolver, module, name) else (False, None)
+	if not isinstance(symbol.node, FUNCTION_NODES):
+		return False, None
+	return symbol, None
+
+
+def replacement_candidate(resolver, module, value, limits):
+	"""Resolve direct app functions while treating dynamic expressions as out of scope."""
+	parts = dotted_name(value).split(".")
+	body = resolver.module_body(module, limits)
+	if isinstance(value, ast.Attribute):
+		owner = imported_module(resolver, module, parts[:-1], body)
+		if owner is None or owner.reference.split(".", 1)[0] != module.app.name:
+			return False, None
+		if owner.module is None:
+			return None, owner.error
+		owner_limits = limits if owner.module.path == module.path else ()
+		owner_body = resolver.module_body(owner.module, owner_limits)
+		terminal_module = imported_module(resolver, owner.module, [parts[-1]], owner_body)
+		if terminal_module is not None and terminal_module.module is not None:
+			return False, None
+		try:
+			symbol = resolver.resolve_in(owner.module, [parts[-1]], owner_limits, frozenset())
+		except MissingSymbolError as error:
+			return None, error
+		except ResolutionError as error:
+			if failed_static_reexport(resolver, owner.module, parts[-1], owner_limits):
+				return None, error
+			return False, None
+		if not isinstance(symbol.node, FUNCTION_NODES) or symbol.module.app.name != module.app.name:
+			return False, None
+		return symbol, None
+	terminal_module = imported_module(resolver, module, [value.id], body)
+	if terminal_module is not None and terminal_module.module is not None:
+		return False, None
+	imports = direct_imports(body, value.id)
+	if len(imports) == 1 and isinstance(imports[0][0], ast.ImportFrom):
+		statement, alias = imports[0]
+		try:
+			provider = exact_source_module(resolver, module.import_reference(statement))
+		except ResolutionError as error:
+			return None, error
+		provider_limits = (
+			((provider.path, (statement.lineno, statement.col_offset)),)
+			if provider.path == module.path
+			else ()
+		)
+		try:
+			symbol = resolver.resolve_in(provider, [alias.name], provider_limits, frozenset())
+		except MissingSymbolError as error:
+			return None, error
+		except ResolutionError as error:
+			return (
+				(None, error)
+				if failed_static_reexport(resolver, provider, alias.name, provider_limits)
+				else (False, None)
+			)
+		if isinstance(symbol.node, FUNCTION_NODES) and symbol.module.app.name == module.app.name:
+			return symbol, None
+		return False, None
+	definitions = scope_bindings(body).get(value.id, [])
+	if len(definitions) == 1 and definitions[0] in body and isinstance(definitions[0], FUNCTION_NODES):
+		return Symbol(module, value.id, definitions[0], limits), None
+	try:
+		symbol = resolver.resolve_in(module, parts, limits, frozenset())
+	except MissingSymbolError as error:
+		return None, error
+	except ResolutionError as error:
+		if "dynamic namespace" in str(error):
+			return False, None
+		if isinstance(value, ast.Name):
+			bindings = direct_imports(body, value.id)
+			if bindings or not scope_bindings(body).get(value.id):
+				return None, error
+			return False, None
+		return False, None
+	if not isinstance(symbol.node, FUNCTION_NODES) or symbol.module.app.name != module.app.name:
+		return False, None
+	return symbol, None
+
+
+def uses_dynamic_namespace(body, tree):
+	unsupported = {"exec", "globals", "locals", "vars", "setattr", "delattr", "getattr"}
+	return any(
+		isinstance(node, ast.Call)
+		and (
+			(isinstance(node.func, ast.Name) and node.func.id in unsupported)
+			or (isinstance(node.func, ast.Attribute) and node.func.attr in unsupported)
+		)
+		for statement in body
+		for node in executable_nodes(statement, tree=tree)
+	)
+
+
+def validate_module_assignments(app, validator, begin, fail):
+	"""Discover reachable, direct module-function replacements without importing apps."""
+	resolver = validator.resolver
+	for module in reachable_app_modules(app, resolver):
+		for statement in runtime_body(module.tree):
+			parts = assignment_parts(statement)
+			if parts is None:
+				continue
+			target, value, target_text, replacement_text = parts
+			limits = ((module.path, (statement.lineno, statement.col_offset)),)
+			if uses_dynamic_namespace(resolver.module_body(module, limits), module.tree):
+				continue
+			owner = imported_owner_module(resolver, module, target_text.split(".")[:-1], limits)
+			if owner is None:
+				continue
+			replacement, replacement_error = replacement_candidate(resolver, module, value, limits)
+			if replacement is False:
+				continue
+			registration_reference = f"{owner.reference}.{target.attr}"
+			context = {
+				"kind": "module_assignment",
+				"file": module.path.relative_to(app.root).as_posix(),
+				"line": statement.lineno,
+				"original_reference": target_text,
+				"replacement_reference": replacement_text,
+				"owner_module": owner.reference,
+				"registration_reference": registration_reference,
+			}
+			if replacement is not None:
+				context["_custom"] = replacement
+			if owner.module is None:
+				begin(context)
+				fail(
+					context,
+					OwnerResolutionError(
+						f"Cannot resolve monkey-patched owner module {owner.reference}: {owner.error}"
+					),
+				)
+				continue
+			original, original_error = original_candidate(resolver, owner.module, target.attr)
+			if original is False:
+				continue
+			if replacement is None:
+				begin(context)
+				fail(
+					context,
+					ResolutionError(f"Cannot resolve replacement function: {replacement_error}"),
+				)
+				continue
+			if original is None:
+				begin(context)
+				validator.error(
+					replacement,
+					registration_reference,
+					f"Cannot resolve monkey-patched original at {context['file']}:{context['line']}: {original_error}",
+				)
+				continue
+			begin(context)
+			validator.validate_annotation(replacement, original)
+
+
+def run_override_validation(
+	app: App,
+	apps: list[App],
+	validator: AnnotationValidator,
+	*,
+	before_registration=None,
+	resolution_error=None,
+):
+	"""Run every supported discovery source through one configured validator."""
+	hooks_path = app.package / "hooks.py"
+	hooks = read_hooks(hooks_path)
+
+	def begin(context):
+		validator.discovery_context = context
+		if before_registration:
+			before_registration(context)
+
+	def fail(context, exc):
+		if resolution_error:
+			resolution_error(context, exc)
+		elif context["kind"] == "hook":
+			validator.result.errors.append(
+				f"{hooks_path}: {context['hook']}[{context['original_reference']!r}] -> "
+				f"{context['replacement_reference']}: {exc}"
+			)
+		else:
+			validator.result.errors.append(
+				f"{app.root / context['file']}:{context['line']}: "
+				f"{context['original_reference']} -> {context['replacement_reference']}: {exc}"
+			)
+
+	for hook in ("override_whitelisted_methods", "override_doctype_class", "extend_doctype_class"):
+		for original, replacement in hook_mapping(hooks, hook):
+			context = {
+				"kind": "hook",
+				"hook": hook,
+				"file": hooks_path.relative_to(app.root).as_posix(),
+				"line": registration_line(hooks_path, replacement),
+				"original_reference": original,
+				"replacement_reference": replacement,
+			}
+			begin(context)
+			try:
+				if hook == "override_whitelisted_methods":
+					validator.function(original, replacement)
+				else:
+					validator.doctype(original, replacement, extension=hook == "extend_doctype_class")
+			except ResolutionError as exc:
+				fail(context, exc)
+	validate_module_assignments(app, validator, begin, fail)
+	return validator.result
+
+
 def validate_overrides(
 	app_path: Path, apps_root: Path | None = None, additional_dependencies=()
 ) -> ValidationResult:
@@ -1508,22 +1915,10 @@ def validate_overrides(
 		hooks_path = app.package / "hooks.py"
 		if not hooks_path.is_file():
 			raise ResolutionError(f"hooks.py not found in {app.package}")
-		hooks = read_hooks(hooks_path)
 		root = apps_root.resolve() if apps_root else app.root.parent
 		apps = dependency_apps(app, root, additional_dependencies)
 		validator = AnnotationValidator(app, SourceResolver(apps))
-		for hook in ("override_whitelisted_methods", "override_doctype_class", "extend_doctype_class"):
-			for original, replacement in hook_mapping(hooks, hook):
-				try:
-					if hook == "override_whitelisted_methods":
-						validator.function(original, replacement)
-					else:
-						validator.doctype(original, replacement, extension=hook == "extend_doctype_class")
-				except ResolutionError as exc:
-					validator.result.errors.append(
-						f"{hooks_path}: {hook}[{original!r}] -> {replacement}: {exc}"
-					)
-		return validator.result
+		return run_override_validation(app, apps, validator)
 	except ResolutionError as exc:
 		result.errors.append(str(exc))
 	return result

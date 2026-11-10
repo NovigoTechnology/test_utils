@@ -21,7 +21,7 @@ To track the overrides, the methods must have a comment with the following struc
 """
 APP: <app_name>
 HASH: <commit_hash>
-REPO: <repository_url>
+REPO: <owner/repository_or_url>
 PATH: <file_path>
 METHOD: <method_name>
 """
@@ -29,15 +29,15 @@ METHOD: <method_name>
 
 - **APP**: The app that contains this override (e.g. `frappe`, `inventory_tools`). Required for pre-commit to correctly scope checks when using `--app` or `--directory`.
 - **HASH**: Commit hash of the upstream version when this override was last validated.
-- **REPO**: Upstream repository URL.
+- **REPO**: Upstream GitHub repository, preferably as `owner/repository`. HTTPS, SSH, SCP and Git URLs remain supported.
 - **PATH**: Path to the file in the upstream repo.
 - **METHOD**: Function name or qualified class method (`Ledger.validate`). Use qualified names when multiple classes define a method with the same name.
 
 Source extraction uses AST and supports async methods and return annotations.
 The concrete implementation of an overloaded function is selected; declaration-only or
 ambiguous symbols are reported for review. Annotation fields can be reordered or separated
-by prose. HTTPS, SSH and SCP GitHub URLs, including .git suffixes, are normalized before
-calling the API. Legacy complete annotations in comment blocks remain supported by tracking. Removed or
+by prose. GitHub `owner/repository` references and HTTPS, SSH, SCP or Git URLs, including
+.git suffixes, are normalized before calling the API. Legacy complete annotations in comment blocks remain supported by tracking. Removed or
 unresolvable methods are reported for review.
 
 Use [`validate_override_annotations`](../validate_override_annotations.md) alongside tracking
@@ -49,7 +49,7 @@ def is_system_manager_disabled(user):
 	"""
 	APP: frappe
 	HASH: 171e1d0159cda3b8d9415527590c9c3ca0c827be
-	REPO: https://github.com/frappe/frappe/
+	REPO: frappe/frappe
 	PATH: frappe/core/doctype/user/user.py
 	METHOD: is_system_manager_disabled
 	"""

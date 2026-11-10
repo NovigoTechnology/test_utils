@@ -117,10 +117,12 @@ Run mypy on the codebase using a preset configuration
 
 ### Override annotations - `validate_override_annotations`
 
-Discover overrides in `override_whitelisted_methods`, `override_doctype_class`, and
-`extend_doctype_class` using AST, then require valid upstream metadata in each overriding
-callable's docstring. Dependencies from `required_apps`, plus Frappe, must be checked out
-under `--apps-root`. Full reference: [`validate_override_annotations.md`](validate_override_annotations.md).
+Discover overrides in `override_whitelisted_methods`, `override_doctype_class`,
+`extend_doctype_class`, and supported direct module-function assignments using
+AST, then require valid upstream metadata in each overriding callable's
+docstring. Dependencies from `required_apps`, plus Frappe, must be checked out
+under `--apps-root`. Full reference:
+[`validate_override_annotations.md`](validate_override_annotations.md).
 
 ```yaml
   - repo: https://github.com/NovigoTechnology/test_utils

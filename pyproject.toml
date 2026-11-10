@@ -9,6 +9,7 @@ requires-python = ">=3.14,<3.15"
 dynamic = ["dependencies", "version"]
 
 [project.scripts]
+analyze_overrides = "test_utils.utils.override_analysis:main"
 clean_customized_doctypes = "test_utils.pre_commit.clean_customized_doctypes:main"
 create_partition = "test_utils.utils.create_partition:create_partition"
 track_overrides = "test_utils.pre_commit.track_overrides:main"
