@@ -1687,6 +1687,22 @@ def failed_static_reexport(resolver, module, name, limits=()):
 	)
 
 
+def original_candidate(resolver, module, name):
+	body = runtime_body(module.tree)
+	terminal_module = imported_module(resolver, module, [name], body)
+	if terminal_module is not None and terminal_module.module is not None:
+		return False, None
+	try:
+		symbol = resolver.resolve_in(module, [name], (), frozenset())
+	except MissingSymbolError as error:
+		return None, error
+	except ResolutionError as error:
+		return (None, error) if failed_static_reexport(resolver, module, name) else (False, None)
+	if not isinstance(symbol.node, FUNCTION_NODES):
+		return False, None
+	return symbol, None
+
+
 def replacement_candidate(resolver, module, value, limits):
 	"""Resolve direct app functions while treating dynamic expressions as out of scope."""
 	parts = dotted_name(value).split(".")
@@ -1814,6 +1830,9 @@ def validate_module_assignments(app, validator, begin, fail):
 					),
 				)
 				continue
+			original, original_error = original_candidate(resolver, owner.module, target.attr)
+			if original is False:
+				continue
 			if replacement is None:
 				begin(context)
 				fail(
@@ -1821,30 +1840,13 @@ def validate_module_assignments(app, validator, begin, fail):
 					ResolutionError(f"Cannot resolve replacement function: {replacement_error}"),
 				)
 				continue
-			original_body = runtime_body(owner.module.tree)
-			terminal_module = imported_module(resolver, owner.module, [target.attr], original_body)
-			if terminal_module is not None and terminal_module.module is not None:
-				continue
-			try:
-				original = resolver.resolve_in(owner.module, [target.attr], (), frozenset())
-			except MissingSymbolError as error:
+			if original is None:
 				begin(context)
 				validator.error(
 					replacement,
 					registration_reference,
-					f"Cannot resolve monkey-patched original at {context['file']}:{context['line']}: {error}",
+					f"Cannot resolve monkey-patched original at {context['file']}:{context['line']}: {original_error}",
 				)
-				continue
-			except ResolutionError as error:
-				if failed_static_reexport(resolver, owner.module, target.attr):
-					begin(context)
-					validator.error(
-						replacement,
-						registration_reference,
-						f"Cannot resolve monkey-patched original at {context['file']}:{context['line']}: {error}",
-					)
-				continue
-			if not isinstance(original.node, FUNCTION_NODES):
 				continue
 			begin(context)
 			validator.validate_annotation(replacement, original)

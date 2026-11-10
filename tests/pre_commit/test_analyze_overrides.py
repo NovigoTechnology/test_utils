@@ -149,6 +149,7 @@ def test_module_assignment_inventory_keeps_missing_owner_original_and_replacemen
 		upstream / "upstream/reexport.py",
 		"from upstream.api import removed_original as original\n",
 	)
+	write(upstream / "upstream/types.py", "class Controller: pass\n")
 	commit(upstream, "add a broken upstream reexport")
 	write(custom / "custom/hooks.py", "required_apps = ['upstream']\n")
 	write(custom / "custom/reexports.py", "from custom.missing import replacement\n")
@@ -157,11 +158,14 @@ def test_module_assignment_inventory_keeps_missing_owner_original_and_replacemen
 		"import upstream.removed as missing_owner\n"
 		"import upstream.api as api\n"
 		"import upstream.reexport as reexport\n"
+		"import upstream.types as types\n"
 		"import custom.reexports as replacements\n"
+		"import custom.removed as missing_replacement\n"
 		"from custom.override import replacement\n"
 		"missing_owner.original = replacement\n"
 		"reexport.original = replacement\n"
-		"api.original = replacements.replacement\n",
+		"api.original = replacements.replacement\n"
+		"types.Controller = missing_replacement.callback\n",
 	)
 	commit(custom, "register unresolved module assignments")
 	document = analyze_overrides(custom, root)

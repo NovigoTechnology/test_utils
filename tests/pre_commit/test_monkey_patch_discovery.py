@@ -120,6 +120,7 @@ def test_non_function_dynamic_instance_class_and_nested_cases_are_ignored(bench)
 		bench / "erpnext/erpnext/accounts/module_owner.py",
 		"from erpnext.accounts import utils as original\n",
 	)
+	write(bench / "erpnext/erpnext/accounts/types.py", "class Controller: pass\n")
 	write(bench / "nagus/nagus/overrides.py", function_source(annotation()))
 	write(bench / "nagus/nagus/module_replacement.py", "def callback(): pass\n")
 	write(bench / "nagus/nagus/config.py", "ENABLED = True\n")
@@ -134,7 +135,9 @@ def test_non_function_dynamic_instance_class_and_nested_cases_are_ignored(bench)
 		+ "import nagus as app\n"
 		+ "import erpnext.accounts.utils as upstream\n"
 		+ "import erpnext.accounts.module_owner as module_owner\n"
+		+ "import erpnext.accounts.types as types\n"
 		+ "import nagus.dependency_reexport as foreign\n"
+		+ "import nagus.removed as missing_replacement\n"
 		+ "from erpnext import client\n"
 		+ "from nagus import copied as chosen\n"
 		+ "from nagus import module_replacement\n"
@@ -147,6 +150,7 @@ def test_non_function_dynamic_instance_class_and_nested_cases_are_ignored(bench)
 		+ "upstream.enabled = ENABLED\n"
 		+ "client.callback = get_coa\n"
 		+ "module_owner.original = get_coa\n"
+		+ "types.Controller = missing_replacement.callback\n"
 		+ "upstream.get_coa = module_replacement\n"
 		+ "upstream.get_coa = app.module_replacement\n"
 		+ "upstream.get_coa = foreign.dependency_function\n"
